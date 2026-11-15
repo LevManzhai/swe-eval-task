@@ -1,0 +1,22 @@
+--- a/flask/blueprints.py	2026-11-15 01:55:22
++++ b/flask/blueprints.py	2026-11-15 01:56:48
+@@ -52,8 +52,8 @@
+ 
+         #: The prefix that should be used for all URLs defined on the
+         #: blueprint.
+-        if url_prefix and url_prefix[-1] == '/':
+-            url_prefix = url_prefix[:-1]
++        if url_prefix:
++            url_prefix = url_prefix.rstrip('/')
+ 
+         self.url_prefix = url_prefix
+ 
+@@ -68,7 +68,7 @@
+         blueprint's name.
+         """
+         if self.url_prefix:
+-            rule = self.url_prefix + rule
++            rule = '/'.join((self.url_prefix, rule.lstrip('/')))
+         options.setdefault('subdomain', self.subdomain)
+         if endpoint is None:
+             endpoint = _endpoint_from_view_func(view_func)

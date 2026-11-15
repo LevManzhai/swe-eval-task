@@ -1,0 +1,19 @@
+--- a/flask/blueprints.py	2026-11-15 01:55:22
++++ b/flask/blueprints.py	2026-11-15 01:56:48
+@@ -9,6 +9,7 @@
+     :copyright: © 2010 by the Pallets team.
+     :license: BSD, see LICENSE for more details.
+ """
++import re
+ from functools import update_wrapper
+ 
+ from .helpers import _PackageBoundObject, _endpoint_from_view_func
+@@ -68,7 +69,7 @@
+         blueprint's name.
+         """
+         if self.url_prefix:
+-            rule = self.url_prefix + rule
++            rule = re.sub(r'/{2,}', '/', self.url_prefix + rule)
+         options.setdefault('subdomain', self.subdomain)
+         if endpoint is None:
+             endpoint = _endpoint_from_view_func(view_func)

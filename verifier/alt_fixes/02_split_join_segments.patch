@@ -1,0 +1,31 @@
+--- a/flask/blueprints.py	2026-11-15 01:55:22
++++ b/flask/blueprints.py	2026-11-15 01:56:48
+@@ -52,9 +52,6 @@
+ 
+         #: The prefix that should be used for all URLs defined on the
+         #: blueprint.
+-        if url_prefix and url_prefix[-1] == '/':
+-            url_prefix = url_prefix[:-1]
+-
+         self.url_prefix = url_prefix
+ 
+         #: A dictionary with URL defaults that is added to each and every
+@@ -67,8 +64,16 @@
+         to the application.  The endpoint is automatically prefixed with the
+         blueprint's name.
+         """
+-        if self.url_prefix:
+-            rule = self.url_prefix + rule
++        if self.url_prefix is not None:
++            if rule:
++                merged = self.url_prefix.rstrip('/') + '/' + rule.lstrip('/')
++                has_trailing = merged.endswith('/')
++                segments = [s for s in merged.split('/') if s]
++                rule = '/' + '/'.join(segments)
++                if has_trailing and rule != '/':
++                    rule += '/'
++            else:
++                rule = self.url_prefix if self.url_prefix else '/'
+         options.setdefault('subdomain', self.subdomain)
+         if endpoint is None:
+             endpoint = _endpoint_from_view_func(view_func)
