@@ -1,5 +1,8 @@
 # swe-eval-task
 
+[![Self-check](https://github.com/LevManzhai/swe-eval-task/actions/workflows/selfcheck.yml/badge.svg)](https://github.com/LevManzhai/swe-eval-task/actions/workflows/selfcheck.yml)
+**[▶ Run a task's self-check](https://github.com/LevManzhai/swe-eval-task/actions/workflows/selfcheck.yml)**: open the page and press *Run workflow* (repository owner only; anyone can open past runs and their logs).
+
 I build coding tasks for evaluating AI agents. Each one comes from a real
 open-source repository and has the same pieces: a problem statement, a
 Docker environment, a reference solution, and a hidden test suite that
