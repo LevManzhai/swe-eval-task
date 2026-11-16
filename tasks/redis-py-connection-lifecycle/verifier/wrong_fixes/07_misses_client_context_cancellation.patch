@@ -1,0 +1,415 @@
+diff --git a/redis/asyncio/client.py b/redis/asyncio/client.py
+index 9a6738f..c9f0640 100644
+--- a/redis/asyncio/client.py
++++ b/redis/asyncio/client.py
+@@ -1133,16 +1133,28 @@ class Monitor:
+ 
+     async def __aenter__(self):
+         await self.connect()
+-        await self.connection.send_command("MONITOR")
+-        # check that monitor returns 'OK', but don't return it to user
+-        response = await self.connection.read_response()
+-        if not bool_ok(response):
+-            raise RedisError(f"MONITOR failed: {response}")
++        try:
++            await self.connection.send_command("MONITOR")
++            # check that monitor returns 'OK', but don't return it to user
++            response = await self.connection.read_response()
++            if not bool_ok(response):
++                raise RedisError(f"MONITOR failed: {response}")
++        except BaseException:
++            try:
++                await self.__aexit__()
++            except Exception:
++                pass
++            raise
+         return self
+ 
+     async def __aexit__(self, *args):
+-        await self.connection.disconnect()
+-        await self.connection_pool.release(self.connection)
++        connection, self.connection = self.connection, None
++        if connection is None:
++            return
++        try:
++            await connection.disconnect()
++        finally:
++            await asyncio.shield(self.connection_pool.release(connection))
+ 
+     async def next_command(self) -> MonitorCommandInfo:
+         """Parse the response from a monitor command"""
+@@ -1191,6 +1203,13 @@ class Monitor:
+             yield await self.next_command()
+ 
+ 
++class _UncancellableFuture(asyncio.Future):
++    """A future that ignores cancel(): awaiting it is not woken by Task.cancel()."""
++
++    def cancel(self, msg: Any = None) -> bool:
++        return False
++
++
+ class PubSub:
+     """
+     PubSub provides publish, subscribe and listen support to Redis channels.
+@@ -1263,6 +1282,32 @@ class PubSub:
+         # immediately as there is nothing to clean-up.
+         if not hasattr(self, "connection"):
+             return
++        # Shield the teardown so that cancelling the caller (e.g. a cancelled
++        # task or anyio cancel scope exiting ``async with r.pubsub()``) cannot
++        # stop it while it waits for the lock, disconnects, or releases: the
++        # connection would otherwise never be returned to the pool. The caller
++        # still sees the CancelledError.
++        teardown = asyncio.ensure_future(self._aclose())
++        try:
++            await asyncio.shield(teardown)
++        except asyncio.CancelledError:
++            # Finish first so callers' locks (e.g. ClusterPubSub) outlive it.
++            # Repeated cancels (anyio re-cancels on every loop turn) only mark
++            # this task while it waits here, so it wakes once, when done.
++            waiter = _UncancellableFuture(loop=asyncio.get_running_loop())
++            teardown.add_done_callback(lambda _: waiter.set_result(None))
++            try:
++                await waiter
++            except asyncio.CancelledError:
++                pass  # the cancels marked while waiting
++            if not teardown.cancelled() and teardown.exception() is not None:
++                logger.warning(
++                    "PubSub teardown failed after a cancellation",
++                    exc_info=teardown.exception(),
++                )
++            raise
++
++    async def _aclose(self) -> None:
+         async with self._lock:
+             if self.connection:
+                 # Use nowait=True to avoid awaiting StreamWriter.wait_closed(),
+@@ -1271,8 +1316,22 @@ class PubSub:
+                 # the transport.  See https://github.com/redis/redis-py/issues/3941
+                 await self.connection.disconnect(nowait=True)
+                 self.connection.deregister_connect_callback(self.on_connect)
+-                await self.connection_pool.release(self.connection)
+-                self.connection = None
++                if self.push_handler_func is not None:
++                    # The handler is set on the parser of a pooled connection:
++                    # put the parser's own back, or the next PubSub that gets
++                    # this connection has its messages handed to ours
++                    parser = self.connection._get_parser()
++                    if (
++                        getattr(parser, "pubsub_push_handler_func", None)
++                        is self.push_handler_func
++                    ):
++                        parser.set_pubsub_push_handler(
++                            parser.handle_pubsub_push_response
++                        )
++                # Detach before awaiting release, as Pipeline.reset() does, so
++                # the pubsub never holds a connection that is back in the pool.
++                connection, self.connection = self.connection, None
++                await self.connection_pool.release(connection)
+             self.channels = {}
+             self.pending_unsubscribe_channels = set()
+             self.patterns = {}
+@@ -1977,8 +2036,9 @@ class Pipeline(Redis):  # lgtm [py/init-calls-subclass]
+         self.scripts = set()
+         try:
+             # make sure to reset the connection state in the event that we were
+-            # watching something
+-            if self.watching and self.connection:
++            # watching something. A dropped connection has already lost its
++            # WATCHes, so skip the UNWATCH instead of reconnecting to send it.
++            if self.watching and self.connection and self.connection.is_connected:
+                 try:
+                     # call this manually since our unwatch or
+                     # immediate_execute_command methods can call reset()
+@@ -2001,12 +2061,11 @@ class Pipeline(Redis):  # lgtm [py/init-calls-subclass]
+             # sure we're no longer WATCHing anything. Detach self.connection
+             # before awaiting release: if a second cancel aborts the await,
+             # the pipeline must not be left holding a reference to a
+-            # connection that is being returned to the pool. Shield the
+-            # release itself so a second cancel cannot split the pool's
+-            # internal in-use/available bookkeeping mid-update.
++            # connection that is being returned to the pool. release() itself
++            # is cancel-safe, so it needs no shield.
+             if self.connection:
+                 connection, self.connection = self.connection, None
+-                await asyncio.shield(self.connection_pool.release(connection))
++                await self.connection_pool.release(connection)
+ 
+     async def aclose(self) -> None:
+         """Alias for reset(), a standard method name for cleanup"""
+diff --git a/redis/asyncio/cluster.py b/redis/asyncio/cluster.py
+index d635e90..adf0561 100644
+--- a/redis/asyncio/cluster.py
++++ b/redis/asyncio/cluster.py
+@@ -5125,7 +5125,9 @@ class TransactionStrategy(AbstractStrategy):
+             # were watching something
+             if self._transaction_connection:
+                 try:
+-                    if self._watching:
++                    # A dropped connection has already lost its WATCHes, so
++                    # skip the UNWATCH instead of reconnecting to send it.
++                    if self._watching and self._transaction_connection.is_connected:
+                         # call this manually since our unwatch or
+                         # immediate_execute_command methods can call reset()
+                         await self._transaction_connection.send_command("UNWATCH")
+diff --git a/redis/asyncio/connection.py b/redis/asyncio/connection.py
+index 558b862..56efadc 100644
+--- a/redis/asyncio/connection.py
++++ b/redis/asyncio/connection.py
+@@ -13,6 +13,7 @@ from itertools import chain
+ from types import MappingProxyType
+ from typing import (
+     Any,
++    Awaitable,
+     Callable,
+     Iterable,
+     List,
+@@ -943,6 +944,15 @@ class AbstractConnection(AsyncMaintNotificationsAbstractConnection):
+             self._writer.close()
+             self._writer = self._reader = None
+ 
++    def _force_disconnect(self) -> None:
++        """Disconnect synchronously, without waiting for the close to finish."""
++        # Same session cleanup as disconnect() does first; both are idempotent.
++        self._reset_himport_state()
++        self._complete_maintenance_on_disconnect()
++        self._parser.on_disconnect()
++        self.reset_should_reconnect()
++        self._close()
++
+     def __repr__(self):
+         repr_args = ",".join((f"{k}={v}" for k, v in self.repr_pieces()))
+         return f"<{self.__class__.__module__}.{self.__class__.__name__}({repr_args})>"
+@@ -1145,6 +1155,12 @@ class AbstractConnection(AsyncMaintNotificationsAbstractConnection):
+             # clean up after any error in on_connect
+             await self.disconnect()
+             raise
++        except BaseException:
++            # Likewise for whatever a credential provider raises and for a
++            # cancelled task. A socket left in place reads as connected, so the
++            # next command would run without AUTH and SELECT.
++            await self.disconnect(nowait=True)
++            raise
+ 
+         # run any user callbacks. right now the only internal callback
+         # is for pubsub channel/pattern resubscription
+@@ -3130,6 +3146,7 @@ class ConnectionPool(
+         self._in_use_connections: Set[AbstractConnection] = set()
+         self.encoder_class = self.connection_kwargs.get("encoder_class", Encoder)
+         self._lock = asyncio.Lock()
++        self._background_releases: Set[asyncio.Task] = set()
+         self._event_dispatcher = self.connection_kwargs.get("event_dispatcher", None)
+         if self._event_dispatcher is None:
+             self._event_dispatcher = EventDispatcher()
+@@ -3369,26 +3386,46 @@ class ConnectionPool(
+ 
+     async def release(self, connection: AbstractConnection):
+         """Releases the connection back to the pool"""
+-        # Connections should always be returned to the correct pool,
+-        # not doing so is an error that will cause an exception here.
+-        async with self._lock:
+-            self._in_use_connections.remove(connection)
+-
+-            if connection.should_reconnect():
+-                if logger.isEnabledFor(logging.DEBUG):
+-                    logger.debug(
+-                        "Disconnecting released connection marked for reconnect: "
+-                        f"{connection}, {connection.extract_connection_details()}"
+-                    )
+-                await connection.disconnect()
+-
+-            self._available_connections.append(connection)
++        locked = False
++        disconnect_failed = False
++        try:
++            async with self._lock:
++                locked = True
++                # Connections should always be returned to the correct pool,
++                # not doing so is an error that will cause an exception here.
++                self._in_use_connections.remove(connection)
++                try:
++                    if connection.should_reconnect():
++                        if logger.isEnabledFor(logging.DEBUG):
++                            logger.debug(
++                                "Disconnecting released connection marked for "
++                                f"reconnect: {connection}, "
++                                f"{connection.extract_connection_details()}"
++                            )
++                        await connection.disconnect()
++                except BaseException:
++                    # Not known to be closed: close it so reuse reconnects.
++                    connection._force_disconnect()
++                    disconnect_failed = True
++                    raise
++                finally:
++                    # Even if disconnect() is cancelled, don't drop it.
++                    self._available_connections.append(connection)
++        except BaseException as e:
++            if disconnect_failed:
++                # It is back in the pool: still notify listeners and metrics.
++                self._run_in_background(self._finish_release(connection))
++            elif not locked and isinstance(e, asyncio.CancelledError):
++                # Cancelled while waiting for a contended lock: don't leak.
++                self._release_in_background(connection)
++            raise
+ 
+-        await self._event_dispatcher.dispatch_async(
+-            AsyncAfterConnectionReleasedEvent(connection)
+-        )
++        await self._finish_release(connection)
+ 
+-        # Record state transition: USED -> IDLE
++    async def _finish_release(self, connection: AbstractConnection) -> None:
++        # Record state transition: USED -> IDLE. Done before the listeners,
++        # which may await I/O and be cancelled, so the counts always match
++        # the pool.
+         pool_name = get_pool_name(self)
+         await record_connection_count(
+             pool_name=pool_name,
+@@ -3401,6 +3438,28 @@ class ConnectionPool(
+             counter=1,
+         )
+ 
++        await self._event_dispatcher.dispatch_async(
++            AsyncAfterConnectionReleasedEvent(connection)
++        )
++
++    def _release_in_background(self, connection: AbstractConnection) -> None:
++        if asyncio.current_task() in self._background_releases:
++            return  # this is the background release itself, e.g. at shutdown
++        self._run_in_background(self.release(connection))
++
++    def _run_in_background(self, release_step: Awaitable[None]) -> None:
++        task = asyncio.ensure_future(release_step)
++        self._background_releases.add(task)
++        task.add_done_callback(self._on_background_release_done)
++
++    def _on_background_release_done(self, task: asyncio.Task) -> None:
++        self._background_releases.discard(task)
++        if not task.cancelled() and task.exception() is not None:
++            logger.warning(
++                "A background connection release failed",
++                exc_info=task.exception(),
++            )
++
+     async def disconnect(self, inuse_connections: bool = True):
+         """
+         Disconnects connections in the pool
+@@ -3651,9 +3710,18 @@ class BlockingConnectionPool(ConnectionPool):
+ 
+     async def release(self, connection: AbstractConnection):
+         """Releases the connection back to the pool."""
+-        async with self._condition:
+-            await super().release(connection)
+-            self._condition.notify()
++        locked = False
++        try:
++            async with self._condition:
++                locked = True
++                try:
++                    await super().release(connection)
++                finally:
++                    self._condition.notify()
++        except asyncio.CancelledError:
++            if not locked:
++                self._release_in_background(connection)
++            raise
+ 
+ 
+ def __getattr__(name: str):
+diff --git a/redis/client.py b/redis/client.py
+index ce267c6..2c24323 100755
+--- a/redis/client.py
++++ b/redis/client.py
+@@ -1129,12 +1129,26 @@ class Monitor:
+         self.connection = self.connection_pool.get_connection()
+ 
+     def __enter__(self):
+-        self._start_monitor()
++        if self.connection is None:
++            self.connection = self.connection_pool.get_connection()
++        try:
++            self._start_monitor()
++        except BaseException:
++            try:
++                self.__exit__()
++            except Exception:
++                pass
++            raise
+         return self
+ 
+     def __exit__(self, *args):
+-        self.connection.disconnect()
+-        self.connection_pool.release(self.connection)
++        connection, self.connection = self.connection, None
++        if connection is None:
++            return
++        try:
++            connection.disconnect()
++        finally:
++            self.connection_pool.release(connection)
+ 
+     def next_command(self):
+         """Parse the response from a monitor command"""
+@@ -1262,6 +1276,16 @@ class PubSub:
+         if self.connection:
+             self.connection.disconnect()
+             self.connection.deregister_connect_callback(self.on_connect)
++            if self.push_handler_func is not None:
++                # The handler is set on the parser of a pooled connection: put
++                # the parser's own back, or the next PubSub that gets this
++                # connection has its messages handed to ours
++                parser = self.connection._get_parser()
++                if (
++                    getattr(parser, "pubsub_push_handler_func", None)
++                    is self.push_handler_func
++                ):
++                    parser.set_pubsub_push_handler(parser.handle_pubsub_push_response)
+             self.connection_pool.release(self.connection)
+             self.connection = None
+         self.health_check_response_counter = 0
+@@ -1994,8 +2018,9 @@ class Pipeline(Redis):
+         self.command_stack = []
+         self.scripts = set()
+         # make sure to reset the connection state in the event that we were
+-        # watching something
+-        if self.watching and self.connection:
++        # watching something. A dropped connection has already lost its
++        # WATCHes, so skip the UNWATCH instead of reconnecting to send it.
++        if self.watching and self.connection and self.connection.is_connected:
+             try:
+                 # call this manually since our unwatch or
+                 # immediate_execute_command methods can call reset()
+diff --git a/redis/cluster.py b/redis/cluster.py
+index 60a5134..1ff844e 100644
+--- a/redis/cluster.py
++++ b/redis/cluster.py
+@@ -7562,7 +7562,9 @@ class TransactionStrategy(AbstractStrategy):
+         # watching something
+         if self._transaction_connection:
+             try:
+-                if self._watching:
++                # A dropped connection has already lost its WATCHes, so skip
++                # the UNWATCH instead of reconnecting to send it.
++                if self._watching and self._transaction_connection.is_connected:
+                     # call this manually since our unwatch or
+                     # immediate_execute_command methods can call reset()
+                     self._transaction_connection.send_command("UNWATCH")
+diff --git a/redis/connection.py b/redis/connection.py
+index e7bd1d1..9cef886 100644
+--- a/redis/connection.py
++++ b/redis/connection.py
+@@ -1350,8 +1350,10 @@ class AbstractConnection(MaintNotificationsAbstractConnection, ConnectionInterfa
+             else:
+                 # Use the passed function redis_connect_func
+                 self.redis_connect_func(self)
+-        except RedisError:
+-            # clean up after any error in on_connect
++        except BaseException:
++            # clean up after any error in on_connect, which includes whatever a
++            # credential provider raises. A socket left in place reads as
++            # connected, so the next command would run without AUTH and SELECT.
+             self.disconnect()
+             raise
+ 
