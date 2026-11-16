@@ -1,0 +1,345 @@
+diff --git a/tomlkit/_utils.py b/tomlkit/_utils.py
+index 2d1c878..1aa374f 100644
+--- a/tomlkit/_utils.py
++++ b/tomlkit/_utils.py
+@@ -123,6 +123,15 @@ _compact_escapes = {
+ _basic_escapes = CONTROL_CHARS | {'"', "\\"}
+ 
+ 
++def validate_comment(comment: str, *, multiline: bool = False) -> None:
++    """Reject forbidden controls, optionally allowing LF and CRLF line endings."""
++    if not multiline and ("\n" in comment or "\r" in comment):
++        raise ValueError("Comment cannot contain line breaks")
++    for char in comment.replace("\r\n", "\n"):
++        if char in CONTROL_CHARS and char not in "\t\n":
++            raise ValueError(f"Comment cannot contain control character {char!r}")
++
++
+ def _unicode_escape(seq: str) -> str:
+     return "".join(f"\\u{ord(c):04x}" for c in seq)
+ 
+diff --git a/tomlkit/api.py b/tomlkit/api.py
+index 3582e8e..d17324e 100644
+--- a/tomlkit/api.py
++++ b/tomlkit/api.py
+@@ -12,6 +12,7 @@ from typing import Any
+ from typing import TypeVar
+ 
+ from tomlkit._utils import parse_rfc3339
++from tomlkit._utils import validate_comment
+ from tomlkit.container import Container
+ from tomlkit.exceptions import UnexpectedCharError
+ from tomlkit.items import CUSTOM_ENCODERS
+@@ -349,6 +350,7 @@ def comment(string: str) -> Comment:
+     A multiline string produces one ``#``-prefixed line per line so that the
+     result is still valid TOML.
+     """
++    validate_comment(string, multiline=True)
+     lines = string.split("\n")
+     rendered = "\n".join(f"# {line}" if line else "#" for line in lines)
+     return Comment(Trivia(comment_ws="  ", comment=rendered))
+diff --git a/tomlkit/container.py b/tomlkit/container.py
+index f199d4c..887ad43 100644
+--- a/tomlkit/container.py
++++ b/tomlkit/container.py
+@@ -470,6 +470,15 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                 return self._insert_at(last_index, key, item)
+             else:
+                 previous_item = self._body[-1][1]
++                if isinstance(previous_item, Table) and previous_item.is_super_table():
++                    previous_child = previous_item.value._previous_item()
++                    if (
++                        previous_child is not None
++                        and not isinstance(previous_child, Whitespace)
++                        and "\n" in previous_item.trivia.trail
++                        and "\n" not in previous_child.trivia.trail
++                    ):
++                        previous_child.trivia.trail += previous_item.trivia.trail
+                 if not (
+                     isinstance(previous_item, Whitespace)
+                     or ends_with_whitespace(previous_item)
+@@ -491,7 +500,9 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                 existing = current.value.item(k)
+                 if isinstance(existing, (Table, AoT)) != isinstance(v, (Table, AoT)):
+                     raise KeyAlreadyPresent(k)
+-                if k.is_dotted():
++                if k.is_dotted() and not (
++                    isinstance(existing, Table) and existing.is_super_table()
++                ):
+                     raise TOMLKitError("Redefinition of an existing table")
+                 if isinstance(existing, Table) and isinstance(v, Table):
+                     if not existing.is_super_table() and not v.is_super_table():
+@@ -532,7 +543,7 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             self._map[key] = len(self._body)
+ 
+         self._body.append((key, item))
+-        if item.is_table() and key is not None:
++        if isinstance(item, (Table, AoT)) and key is not None:
+             self._table_keys.append(key)
+ 
+         if key is not None:
+@@ -917,11 +928,13 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+         assert k is not None
+         # A dotted key renders its value inline (e.g. ``a.b = 1``), which is only
+         # consistent with a super table. When the replacement value renders with
+-        # its own ``[header]`` instead (a non-super table), keeping the dotted key
+-        # duplicates the prefix onto the header (#524). Drop the dotted key so the
+-        # replacement renders as a plain table.
+-        dotted_to_header = (
+-            k.is_dotted() and isinstance(value, Table) and not value.is_super_table()
++        # its own ``[header]`` instead (a non-super table, or an array of tables),
++        # keeping the dotted key duplicates the prefix onto the header (#524) and
++        # lets the header swallow following dotted siblings (#542). Drop the dotted
++        # key so the replacement renders as a plain table/array of tables.
++        dotted_to_header = k.is_dotted() and (
++            isinstance(value, AoT)
++            or (isinstance(value, Table) and not value.is_super_table())
+         )
+         # That new header also captures every sibling that renders inline -- plain
+         # values and dotted keys -- if any still follow it (#513), so it must be
+@@ -1210,11 +1223,16 @@ class OutOfOrderTableProxy(_CustomDict):  # type: ignore[type-arg]
+         _key: Key = key if isinstance(key, Key) else SingleKey(key)
+ 
+         if _key in self._tables_map:
+-            # Overwrite the first table and remove others
++            # Overwrite the first occurrence and remove this key from later parts.
+             map_indices = self._tables_map[_key]
+-            while len(map_indices) > 1:
+-                table = self._tables[map_indices.pop()]
+-                self._remove_table(table)
++            # Keep the first occurrence; drop the key from every later part,
++            # and drop a later part only if nothing else is left in it.
++            later = [self._tables[i] for i in map_indices[1:]]
++            del map_indices[1:]
++            for table in later:
++                table.remove(key)
++                if len(table) == 0:
++                    self._remove_table(table)
+             old_value = self._tables[map_indices[0]][key]
+             if _is_table_or_aot(old_value) and not _is_table_or_aot(value):
+                 # Remove the entry from the map and set value again.
+@@ -1224,27 +1242,24 @@ class OutOfOrderTableProxy(_CustomDict):  # type: ignore[type-arg]
+                 return
+             self._tables[map_indices[0]][key] = value
+         elif self._tables:
+-            if not _is_table_or_aot(value):  # if the value is a plain value
+-                for table in self._tables:
+-                    # find the first table that allows plain values
+-                    if any(not _is_table_or_aot(v) for _, v in table.items()):
+-                        table[key] = value
+-                        break
+-                else:
+-                    # No part holds a plain value yet, so the chosen part must
+-                    # start rendering its own ``[key]`` header. Prefer a part
+-                    # that is not a super table (it already renders that header):
+-                    # turning a header-less super part concrete here would emit a
+-                    # second, duplicate header next to an existing concrete part
+-                    # and produce TOML that no longer parses.
+-                    for table in self._tables:
+-                        if not table.is_super_table():
+-                            table[key] = value
+-                            break
+-                    else:
+-                        self._tables[0][key] = value
+-            else:
+-                self._tables[0][key] = value
++            target = None
++            if not _is_table_or_aot(value):
++                # A plain value goes to the first part that already holds plain
++                # values, else to the first concrete part (never give a
++                # header-less super part a header of its own).
++                target = next(
++                    (
++                        t
++                        for t in self._tables
++                        if any(not _is_table_or_aot(v) for _, v in t.items())
++                    ),
++                    None,
++                ) or next((t for t in self._tables if not t.is_super_table()), None)
++            if target is None:
++                target = self._tables[0]
++            target[key] = value
++            index = next(i for i, t in enumerate(self._tables) if t is target)
++            self._tables_map[_key] = [index]
+         else:
+             self._container[key] = value
+ 
+diff --git a/tomlkit/items.py b/tomlkit/items.py
+index c18e083..07a267d 100644
+--- a/tomlkit/items.py
++++ b/tomlkit/items.py
+@@ -32,6 +32,7 @@ from tomlkit._types import _CustomInt
+ from tomlkit._types import _CustomList
+ from tomlkit._utils import CONTROL_CHARS
+ from tomlkit._utils import escape_string
++from tomlkit._utils import validate_comment
+ from tomlkit.exceptions import ConvertError
+ from tomlkit.exceptions import InvalidStringError
+ 
+@@ -204,7 +205,7 @@ def item(value: Any, _parent: Item | None = None, _sort_keys: bool = False) -> I
+             value.microsecond,
+             value.tzinfo,
+             Trivia(),
+-            value.isoformat().replace("+00:00", "Z"),
++            _format_datetime(value).replace("+00:00", "Z"),
+             fold=value.fold,
+         )
+     elif isinstance(value, date):
+@@ -277,6 +278,30 @@ def _format_time(value: time) -> str:
+     return s
+ 
+ 
++def _format_datetime(value: datetime) -> str:
++    # TOML offsets are ``HH:MM``, but ``isoformat`` adds seconds for an
++    # offset that is not a whole number of minutes (e.g. the LMT offsets
++    # ``zoneinfo`` gives for historical dates), which no TOML parser accepts.
++    # Such a value is written as the same instant in UTC. The conversion
++    # uses a plain ``datetime`` so it does not go back through ``_new``.
++    offset = value.utcoffset()
++    if offset is None or not offset % timedelta(minutes=1):
++        return value.isoformat()
++    utc = (
++        datetime(
++            value.year,
++            value.month,
++            value.day,
++            value.hour,
++            value.minute,
++            value.second,
++            value.microsecond,
++        )
++        - offset
++    )
++    return utc.isoformat() + "+00:00"
++
++
+ # A carriage return that is not the CR of a CRLF line ending. Inside a multiline
+ # string only a raw line feed or a CRLF pair is a valid line ending; a lone CR is
+ # a control character that a basic string must escape.
+@@ -556,8 +581,7 @@ class Item:
+ 
+     def comment(self, comment: str) -> Item:
+         """Attach a comment to this item"""
+-        if "\n" in comment or "\r" in comment:
+-            raise ValueError("Comment cannot contain line breaks")
++        validate_comment(comment)
+         if not comment.strip().startswith("#"):
+             comment = "# " + comment
+ 
+@@ -1141,7 +1165,7 @@ class DateTime(Item, datetime):
+     ) -> None:
+         super().__init__(trivia or Trivia())
+ 
+-        self._raw = raw or self.isoformat()
++        self._raw = raw or _format_datetime(self)
+ 
+     def unwrap(self) -> datetime:
+         (
+@@ -1225,7 +1249,7 @@ class DateTime(Item, datetime):
+         return self._new(result)
+ 
+     def _new(self, result: datetime) -> DateTime:
+-        raw = result.isoformat()
++        raw = _format_datetime(result)
+ 
+         return DateTime(
+             result.year,
+@@ -1599,8 +1623,8 @@ class Array(Item, _CustomList):  # type: ignore[type-arg]
+             4, 5, 6,
+         ]
+         """
+-        if comment and ("\n" in comment or "\r" in comment):
+-            raise ValueError("Comment cannot contain line breaks")
++        if comment:
++            validate_comment(comment)
+         new_values: list[Item] = []
+         first_indent = f"\n{indent}" if newline else indent
+         if first_indent:
+@@ -1756,9 +1780,7 @@ class Array(Item, _CustomList):  # type: ignore[type-arg]
+         list.__delitem__(self, key)
+ 
+         if isinstance(key, slice):
+-            indices_to_remove = list(
+-                range(key.start or 0, key.stop or length, key.step or 1)
+-            )
++            indices_to_remove = list(range(*key.indices(length)))
+         else:
+             indices_to_remove = [length + key if key < 0 else key]
+         for i in sorted(indices_to_remove, reverse=True):
+@@ -2012,7 +2034,9 @@ class Table(AbstractTable):
+ 
+         indent = m.group(1)
+ 
+-        if not isinstance(_item, Whitespace):
++        # A table split out of order is looked up as an OutOfOrderTableProxy,
++        # which has no trivia; its parts keep their own indentation.
++        if isinstance(_item, Item) and not isinstance(_item, Whitespace):
+             m = re.match("(?s)^([^ ]*)(.*)$", _item.trivia.indent)
+             if not m:
+                 _item.trivia.indent = indent
+@@ -2277,6 +2301,9 @@ class InlineTable(AbstractTable):
+                     f"{prefix}{v.trivia.indent}{k.as_string()}{k.sep}{v.as_string()}"
+                     f"{v.trivia.comment_ws}{v.trivia.comment}{trail}"
+                 )
++        if not parts:
++            # every key under the prefix was removed, keep it as an empty table
++            return [f"{key.as_string()} = {{}}"]
+         return parts
+ 
+     def __setitem__(self, key: Key | str, value: Any) -> None:
+@@ -2330,7 +2357,13 @@ class String(str, Item):
+ 
+     def __add__(self, other: str) -> String:
+         result = super().__add__(other)
+-        original = self._original + getattr(other, "_original", other)
++        if isinstance(other, String):
++            original = self._original + other._original
++        else:
++            escaped = self._t.escaped_sequences
++            original = self._original + (
++                escape_string(other, escaped) if escaped else other
++            )
+ 
+         return self._new(result, original)
+ 
+@@ -2418,7 +2451,12 @@ class AoT(Item, _CustomList):  # type: ignore[type-arg]
+         return self._body[key]
+ 
+     def __setitem__(self, key: slice | int, value: Any) -> None:  # type: ignore[override]
+-        self._body[key] = item(value, _parent=self)
++        if isinstance(key, slice):
++            value = [item(v, _parent=self) for v in value]
++        else:
++            value = item(value, _parent=self)
++        self._body[key] = value
++        list.__setitem__(self, key, value)
+ 
+     def __delitem__(self, key: slice | int) -> None:  # type: ignore[override]
+         del self._body[key]
+diff --git a/tomlkit/parser.py b/tomlkit/parser.py
+index c97a08d..dc08f92 100644
+--- a/tomlkit/parser.py
++++ b/tomlkit/parser.py
+@@ -749,7 +749,10 @@ class Parser:
+             raw = raw[1:]
+ 
+         if len(raw) > 1 and (
+-            (raw.startswith("0") and not raw.startswith(("0.", "0o", "0x", "0b", "0e")))
++            (
++                raw.startswith("0")
++                and not raw.startswith(("0.", "0o", "0x", "0b", "0e", "0E"))
++            )
+             or (sign and raw.startswith("."))
+         ):
+             return None
+@@ -775,6 +778,10 @@ class Parser:
+         if "_" in clean:
+             return None
+ 
++        # Special float values must be lowercase in the original token.
++        if clean in ("inf", "nan") and raw != clean:
++            return None
++
+         if clean.endswith(".") or (
+             not clean.startswith("0x") and clean.split("e", 1)[0].endswith(".")
+         ):
