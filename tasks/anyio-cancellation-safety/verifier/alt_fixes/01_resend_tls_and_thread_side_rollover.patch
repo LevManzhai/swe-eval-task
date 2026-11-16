@@ -1,0 +1,295 @@
+diff --git a/src/anyio/_backends/_asyncio.py b/src/anyio/_backends/_asyncio.py
+index 41213ae..5d63a3c 100644
+--- a/src/anyio/_backends/_asyncio.py
++++ b/src/anyio/_backends/_asyncio.py
+@@ -1318,7 +1318,12 @@ class SocketStream(abc.SocketStream):
+                 and not self._protocol.is_at_eof
+             ):
+                 self._transport.resume_reading()
+-                await self._protocol.read_event.wait()
++                try:
++                    await self._protocol.read_event.wait()
++                except BaseException:
++                    self._transport.pause_reading()
++                    raise
++
+                 self._transport.pause_reading()
+             else:
+                 await AsyncIOBackend.checkpoint()
+@@ -2167,11 +2172,14 @@ class CapacityLimiter(BaseCapacityLimiter):
+ 
+                 raise
+         else:
++            acquired = False
+             try:
+                 await AsyncIOBackend.cancel_shielded_checkpoint()
+-            except BaseException:
+-                self.release()
+-                raise
++                acquired = True
++            finally:
++                if not acquired:
++                    # The token was taken for ``borrower``, not the current task
++                    self.release_on_behalf_of(borrower)
+ 
+     def release(self) -> None:
+         self.release_on_behalf_of(current_task())
+diff --git a/src/anyio/_core/_fileio.py b/src/anyio/_core/_fileio.py
+index 661cbfa..236efb8 100644
+--- a/src/anyio/_core/_fileio.py
++++ b/src/anyio/_core/_fileio.py
+@@ -110,7 +110,11 @@ class AsyncFile(AsyncResource, Generic[AnyStr]):
+                 break
+ 
+     async def aclose(self) -> None:
+-        return await to_thread.run_sync(self._fp.close, limiter=self._limiter)
++        from ._tasks import CancelScope
++
++        # Closing must happen even if the caller has been cancelled
++        with CancelScope(shield=True):
++            await to_thread.run_sync(self._fp.close, limiter=self._limiter)
+ 
+     async def read(self, size: int = -1) -> AnyStr:
+         return await to_thread.run_sync(self._fp.read, size, limiter=self._limiter)
+diff --git a/src/anyio/_core/_sockets.py b/src/anyio/_core/_sockets.py
+index bdd493f..e92cb51 100644
+--- a/src/anyio/_core/_sockets.py
++++ b/src/anyio/_core/_sockets.py
+@@ -32,7 +32,7 @@ from ..streams.tls import TLSConnectable, TLSStream
+ from ._eventloop import get_async_backend
+ from ._resources import aclose_forcefully
+ from ._synchronization import Event
+-from ._tasks import create_task_group, move_on_after
++from ._tasks import CancelScope, create_task_group, move_on_after
+ 
+ if TYPE_CHECKING:
+     from _typeshed import FileDescriptorLike
+@@ -247,6 +247,7 @@ async def connect_tcp(
+                 target_addrs.append((af, sa[0]))
+ 
+     oserrors: list[OSError] = []
++    handed_over = False
+     try:
+         async with create_task_group() as tg:
+             for _af, addr in target_addrs:
+@@ -262,8 +263,14 @@ async def connect_tcp(
+                 else ExceptionGroup("multiple connection attempts failed", oserrors)
+             )
+             raise OSError("All connection attempts failed") from cause
++
++        handed_over = True
+     finally:
+         oserrors.clear()
++        if not handed_over and connected_stream is not None:
++            # Cancelled (or otherwise interrupted) after a connection won the race
++            with CancelScope(shield=True):
++                await connected_stream.aclose()
+ 
+     if tls or tls_hostname or ssl_context:
+         try:
+diff --git a/src/anyio/_core/_tempfile.py b/src/anyio/_core/_tempfile.py
+index ca36a51..522b647 100644
+--- a/src/anyio/_core/_tempfile.py
++++ b/src/anyio/_core/_tempfile.py
+@@ -17,6 +17,13 @@ from typing import (
+ from .. import to_thread
+ from .._core._fileio import AsyncFile
+ from ..lowlevel import checkpoint_if_cancelled
++from ._tasks import CancelScope
++
++
++async def _run_to_completion(func: Any, *args: Any) -> Any:
++    """Run ``func`` in a worker thread, ignoring cancellation until it is done."""
++    with CancelScope(shield=True):
++        return await to_thread.run_sync(func, *args)
+ 
+ if TYPE_CHECKING:
+     from _typeshed import OpenBinaryMode, OpenTextMode, ReadableBuffer, WriteableBuffer
+@@ -322,16 +329,26 @@ class SpooledTemporaryFile(AsyncFile[AnyStr]):
+         if self._rolled:
+             return
+ 
+-        self._rolled = True
+         buffer = self._fp
+-        position = buffer.tell()
+-        buffer.seek(0)
+-        self._fp = await to_thread.run_sync(
+-            lambda: tempfile.TemporaryFile(**self._tempfile_params)
+-        )
+-        await self.write(buffer.read())
+-        await self.seek(position)
+-        buffer.close()
++
++        def move_to_disk() -> None:
++            # Everything happens in the worker thread, and the object is only
++            # switched over once the new file holds the complete contents
++            position = buffer.tell()
++            new_file = tempfile.TemporaryFile(**self._tempfile_params)
++            try:
++                new_file.write(buffer.getvalue())
++                new_file.seek(position)
++            except BaseException:
++                new_file.close()
++                raise
++
++            self._fp = new_file
++            self._rolled = True
++            buffer.close()
++
++        await checkpoint_if_cancelled()
++        await _run_to_completion(move_to_disk)
+ 
+     @property
+     def closed(self) -> bool:
+@@ -499,7 +516,12 @@ class TemporaryDirectory(Generic[AnyStr]):
+         self._tempdir = await to_thread.run_sync(
+             lambda: tempfile.TemporaryDirectory(**params)
+         )
+-        return await to_thread.run_sync(self._tempdir.__enter__)
++        try:
++            return await to_thread.run_sync(self._tempdir.__enter__)
++        except BaseException:
++            # __aexit__() won't be called if __aenter__() fails
++            await _run_to_completion(self._tempdir.cleanup)
++            raise
+ 
+     async def __aexit__(
+         self,
+@@ -508,13 +530,13 @@ class TemporaryDirectory(Generic[AnyStr]):
+         traceback: TracebackType | None,
+     ) -> None:
+         if self._tempdir is not None:
+-            await to_thread.run_sync(
++            await _run_to_completion(
+                 self._tempdir.__exit__, exc_type, exc_value, traceback
+             )
+ 
+     async def cleanup(self) -> None:
+         if self._tempdir is not None:
+-            await to_thread.run_sync(self._tempdir.cleanup)
++            await _run_to_completion(self._tempdir.cleanup)
+ 
+ 
+ @overload
+diff --git a/src/anyio/from_thread.py b/src/anyio/from_thread.py
+index df45eda..3e57e96 100644
+--- a/src/anyio/from_thread.py
++++ b/src/anyio/from_thread.py
+@@ -182,6 +182,18 @@ class _BlockingPortalTaskStatus(TaskStatus):
+         self._future.set_result(value)
+ 
+ 
++def _claim(future: Future[Any]) -> bool:
++    """
++    Atomically move ``future`` out of the cancellable state before completing it.
++
++    A ``concurrent.futures.Future`` can be cancelled from another thread at any
++    moment while it is pending, and ``set_result()`` does not notice a
++    cancellation that has not been processed yet. Marking it as running first
++    closes that window: after this returns ``True``, ``cancel()`` is refused.
++    """
++    return future.set_running_or_notify_cancel()
++
++
+ class BlockingPortal:
+     """
+     An object that lets external threads run code in an asynchronous event loop.
+@@ -274,14 +286,14 @@ class BlockingPortal:
+             future.cancel()
+             future.set_running_or_notify_cancel()
+         except BaseException as exc:
+-            if not future.cancelled():
++            if _claim(future):
+                 future.set_exception(exc)
+ 
+             # Let base exceptions fall through
+             if not isinstance(exc, Exception):
+                 raise
+         else:
+-            if not future.cancelled():
++            if _claim(future):
+                 future.set_result(retval)
+         finally:
+             scope = None  # type: ignore[assignment]
+diff --git a/src/anyio/streams/file.py b/src/anyio/streams/file.py
+index b9d7ca4..ad13d56 100644
+--- a/src/anyio/streams/file.py
++++ b/src/anyio/streams/file.py
+@@ -37,7 +37,10 @@ class _BaseFileStream:
+         self._file = file
+ 
+     async def aclose(self) -> None:
+-        await to_thread.run_sync(self._file.close)
++        from .._core._tasks import CancelScope
++
++        with CancelScope(shield=True):
++            await to_thread.run_sync(self._file.close)
+ 
+     @property
+     def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
+diff --git a/src/anyio/streams/tls.py b/src/anyio/streams/tls.py
+index d2a4cb3..a23eb24 100644
+--- a/src/anyio/streams/tls.py
++++ b/src/anyio/streams/tls.py
+@@ -174,17 +174,39 @@ class TLSStream(ByteStream):
+         await wrapper._call_sslobject_method(ssl_object.do_handshake)
+         return wrapper
+ 
++    async def _send_ciphertext(self) -> None:
++        # Ciphertext taken out of the write BIO already carries TLS sequence
++        # numbers, so it must reach the peer in order. If handing it to the
++        # transport is interrupted, keep it and send it before anything else.
++        unsent: bytes = getattr(self, "_unsent_ciphertext", b"")
++        self._unsent_ciphertext = b""
++        data = unsent + self._write_bio.read()
++        if not data:
++            return
++
++        try:
++            await self.transport_stream.send(data)
++        except BaseException:
++            self._unsent_ciphertext = data
++            raise
++
++    def _has_ciphertext(self) -> bool:
++        return bool(self._write_bio.pending or getattr(self, "_unsent_ciphertext", b""))
++
+     async def _call_sslobject_method(
+         self, func: Callable[[Unpack[PosArgsT]], T_Retval], *args: *PosArgsT
+     ) -> T_Retval:
++        if self._has_ciphertext():
++            await self._send_ciphertext()
++
+         while True:
+             try:
+                 result = func(*args)
+             except ssl.SSLWantReadError:
+                 try:
+                     # Flush any pending writes first
+-                    if self._write_bio.pending:
+-                        await self.transport_stream.send(self._write_bio.read())
++                    if self._has_ciphertext():
++                        await self._send_ciphertext()
+ 
+                     data = await self.transport_stream.receive()
+                 except EndOfStream:
+@@ -196,7 +218,7 @@ class TLSStream(ByteStream):
+                 else:
+                     self._read_bio.write(data)
+             except ssl.SSLWantWriteError:
+-                await self.transport_stream.send(self._write_bio.read())
++                await self._send_ciphertext()
+             except ssl.SSLSyscallError as exc:
+                 self._read_bio.write_eof()
+                 self._write_bio.write_eof()
+@@ -215,8 +237,8 @@ class TLSStream(ByteStream):
+                 raise
+             else:
+                 # Flush any pending writes first
+-                if self._write_bio.pending:
+-                    await self.transport_stream.send(self._write_bio.read())
++                if self._has_ciphertext():
++                    await self._send_ciphertext()
+ 
+                 return result
+ 
