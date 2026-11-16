@@ -1,0 +1,37 @@
+name: Self-check a task
+
+# Runs a task's run.sh: builds its Docker image, then checks that the starting
+# state fails the hidden tests, the reference and alternative solutions pass,
+# and every wrong solution fails. Start it from the Actions tab with
+# "Run workflow".
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task to check
+        required: true
+        default: tomlkit-conformance
+        type: choice
+        options:
+          - tomlkit-conformance
+          - anyio-cancellation-safety
+          - redis-py-connection-lifecycle
+          - tomlkit-table-structure
+          - tomlkit-out-of-order-tables
+          - portion-intervaldict
+          - flask-blueprint-prefix
+
+permissions:
+  contents: read
+
+jobs:
+  selfcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the task's self-check
+        working-directory: tasks/${{ inputs.task }}
+        run: ./run.sh

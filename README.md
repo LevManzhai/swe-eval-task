@@ -34,6 +34,14 @@ because that's how I got to the ones that work.
 Two earlier candidates (jsonschema, tenacity) were rejected the same way. They
 aren't in the repo, but [`REJECTED.md`](REJECTED.md) mentions them.
 
+## Running the checks on GitHub
+
+Any task's self-check can be run without installing anything. Open the
+**Actions** tab, pick **Self-check a task**, press **Run workflow** and choose
+the task. It builds the Docker image and runs that task's `run.sh`. The log
+shows a `PASS`/`FAIL` line for every expectation and finishes with
+`ALL EXPECTATIONS MET`.
+
 ## How each task is laid out
 
 ```
