@@ -16,7 +16,7 @@ to get this right: the first, plausibly titled fix introduced a regression for
 empty rules and left a crash in place. The verifier includes that real,
 incomplete upstream commit as a wrong fix, and it does fail.
 
-**Why it was too easy.**
+**Why it was easy.**
 
 1. *The bug is local.* Symptom and cause are in two adjacent methods of one
    small class. There is nothing to trace: reading the file is enough.
@@ -79,7 +79,7 @@ criteria without enumerating the hard cases, four of the seven wrong solutions
 pass the whole visible test suite, and the tempting optimisation (binary search
 on the existing storage) is incorrect for a non-obvious reason.
 
-**Why it was too easy.**
+**Why it was easy.**
 
 1. *The solver could rebuild the hidden verifier.* A "do not change behaviour"
    constraint makes the unmodified code a complete executable specification.

@@ -28,7 +28,7 @@ Finding the rest is up to the solver.
 
 ## Why this setup
 
-My earlier candidates were too easy for three reasons:
+My earlier candidates were easy for three reasons:
 
 - the agent could check its own answer against a ready-made oracle;
 - the problem statement listed every case;

@@ -14,10 +14,10 @@ because those notes are where most of what I learned ended up.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
-| [`tasks/tomlkit-table-structure`](tasks/tomlkit-table-structure) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v2: eight bugs, one symptom in the report | Too easy (first attempt solved it, 100 / 100) |
+| [`tasks/tomlkit-table-structure`](tasks/tomlkit-table-structure) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v2: eight bugs, one symptom in the report | Easy (first attempt solved it, 100 / 100) |
 | [`tasks/tomlkit-out-of-order-tables`](tasks/tomlkit-out-of-order-tables) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt: five bugs, one symptom in the report | Rejected, but close: 2 of 3 solved it, each with a ~1,000-line rewrite |
-| [`tasks/portion-intervaldict`](tasks/portion-intervaldict) | [portion](https://github.com/AlexandreDecan/portion) | Performance, behaviour must not change | Too easy (2 of 2 attempts solved it) |
-| [`tasks/flask-blueprint-prefix`](tasks/flask-blueprint-prefix) | [flask](https://github.com/pallets/flask) | Bug fix | Too easy (3 of 3 attempts solved it) |
+| [`tasks/portion-intervaldict`](tasks/portion-intervaldict) | [portion](https://github.com/AlexandreDecan/portion) | Performance, behaviour must not change | Easy (2 of 2 attempts solved it) |
+| [`tasks/flask-blueprint-prefix`](tasks/flask-blueprint-prefix) | [flask](https://github.com/pallets/flask) | Bug fix | Easy (3 of 3 attempts solved it) |
 
 Two earlier candidates (jsonschema, tenacity) were rejected the same way. They
 aren't in the repo, but [`REJECTED.md`](REJECTED.md) mentions them.

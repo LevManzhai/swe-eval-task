@@ -3,7 +3,7 @@
 > **Status: rejected.** This task did not pass the difficulty gate described in
 > the [top-level README](../../README.md): three out of three independent
 > attempts solved it in a single shot. It is kept as a worked example of a
-> well-built but too-easy task; see [`REJECTED.md`](../../REJECTED.md) for the
+> well-built but easy task; see [`REJECTED.md`](../../REJECTED.md) for the
 > post-mortem.
 
 This repository packages one real, upstream-fixed bug in
