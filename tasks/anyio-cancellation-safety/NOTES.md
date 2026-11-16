@@ -166,6 +166,11 @@ soon as the outcome is decided.
 | Attempt | Time | Result | What it missed |
 |---|---|---|---|
 | 1 | 18 min, 78 tool calls | **failed**, 34 / 36 | `CapacityLimiter.acquire_on_behalf_of()` |
+| 2 | 26 min, 96 tool calls | **failed**, 34 / 36 | `CapacityLimiter.acquire_on_behalf_of()` |
+
+**Result: accepted.** Two of two attempts failed, so even a pass on a third
+attempt would leave it at one in three, within the bar. I didn't run the
+third.
 
 **Attempt 1** (`difficulty/attempt-1.patch`, 15 files, +491 / −110). It was a
 serious audit. It found and fixed ten of the eleven bugs, plus things that
@@ -186,3 +191,33 @@ says which places are wrong.
 Under the first version of the portal tests the attempt also failed those (see
 above). That was my mistake, not the attempt's, and the score here is from the
 corrected tests.
+
+**Attempt 2** (`difficulty/attempt-2.patch`, 16 files, +784 / −162) went even
+wider. It also fixed ten of the eleven, and went much further than the task
+asked: `open_file()` and the temporary file constructors, `mkstemp()` and
+`mkdtemp()`, `anyio.itertools`, `Path.iterdir()`, thread limiter tokens for
+abandoned threads. It even reworked how `to_thread.run_sync()` hands limiter
+tokens around, which is next door to the bug, and still never touched
+`acquire_on_behalf_of()`. Same failure, same `RuntimeError`.
+
+### What I make of it
+
+- Both attempts did what the task asked: audited the library against the
+  contract. Both found the same ten bugs and both missed the same one. That
+  bug's trigger is unusual: a *native* `asyncio` `Task.cancel()` (not an anyio
+  cancel scope) delivered during the cancel-shielded checkpoint that follows a
+  non-blocking acquire. Neither attempt's own tests ever produced that.
+- To be fair to the task: in both attempts the hard part came down to that one
+  bug, and the other ten were found. So the right description is "eleven bugs,
+  the hardest of which neither attempt found", not "every attempt was lost".
+  If upstream changes this method, the task's difficulty probably goes with it.
+- The two attempts' extra changes went well beyond the eleven bugs, and the
+  hidden tests ignore them (both still pass the library's own suite). A
+  reviewer would not merge either patch as a single change. My verifier checks
+  behaviour, not patch size, so it doesn't see that.
+- Isolation was by instruction: each attempt worked in its own copy of the
+  starting repository, with Python available only through the task's Docker
+  image, and was told not to read anything outside that directory. Neither
+  report mentions the verifier or the upstream fixes, and both failed on the
+  same bug they'd have found there.
+

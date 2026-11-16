@@ -1,8 +1,8 @@
 # anyio: operations that aren't safe to cancel
 
-> **Status: difficulty check in progress. Attempt 1 failed (34 / 36): it fixed
-> ten of the eleven bugs and never found the eleventh.** Details at the end of
-> [`NOTES.md`](NOTES.md).
+> **Status: accepted.** Two of two one-shot attempts failed (34 / 36 each).
+> Both fixed ten of the eleven bugs and missed the same one. `run.sh` passes all
+> 34 of its checks. Details at the end of [`NOTES.md`](NOTES.md).
 
 [anyio](https://github.com/agronholm/anyio) is the async I/O layer underneath
 httpx, Starlette/FastAPI and a lot of other Python networking code. Its whole
