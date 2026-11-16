@@ -482,25 +482,30 @@ class TestPubSubAcloseCancelled:
 
                 patcher = mock.patch.object(leased, "disconnect", side_effect=slow)
             else:
-                original_release = pool.release
+                patcher = contextlib.nullcontext()
 
-                async def slow_release(connection):
-                    started.set()
-                    await resume.wait()
-                    return await original_release(connection)
-
-                patcher = mock.patch.object(pool, "release", side_effect=slow_release)
-
-            with patcher:
-                task = asyncio.ensure_future(p.aclose())
-                await asyncio.wait_for(started.wait(), 5)
-                task.cancel()
-                await asyncio.sleep(0.01)
-                task.cancel()
-                await asyncio.sleep(0.01)
-                resume.set()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            if stage == "release":
+                # Keep the release waiting for the pool's lock
+                await pool._lock.acquire()
+            try:
+                with patcher:
+                    task = asyncio.ensure_future(p.aclose())
+                    if stage == "release":
+                        await asyncio.sleep(0.1)
+                    else:
+                        await asyncio.wait_for(started.wait(), 5)
+                    task.cancel()
+                    await asyncio.sleep(0.01)
+                    task.cancel()
+                    await asyncio.sleep(0.01)
+                    resume.set()
+                    if pool._lock.locked() and stage == "release":
+                        pool._lock.release()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+            finally:
+                if stage == "release" and pool._lock.locked():
+                    pool._lock.release()
 
             assert await released(pool, leased)
             assert await client.ping()
@@ -599,10 +604,10 @@ class TestMonitorEntry:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(params=["Redis", "RedisCluster"])
-def ctx_client(request, monkeypatch):
-    cls = getattr(aredis, request.param)
-    client = cls(host=HOST, port=PORT)
+@pytest.fixture
+def ctx_client(monkeypatch):
+    # The statement asks for the standalone client only
+    client = aredis.Redis(host=HOST, port=PORT)
 
     async def initialize():
         return client
@@ -670,56 +675,6 @@ class TestClientContextManager:
         with contextlib.suppress(asyncio.CancelledError):
             await task
         await asyncio.wait_for(closed.wait(), 5)
-
-    @pytest.mark.parametrize("cancel_exit", [False, True])
-    async def test_new_context_waits_for_previous_close(
-        self, ctx_client, monkeypatch, cancel_exit
-    ):
-        closing = asyncio.Event()
-        finish_close = asyncio.Event()
-        close_finished = asyncio.Event()
-        entered = asyncio.Event()
-        finish_second = asyncio.Event()
-        order: list[str] = []
-
-        async def aclose():
-            closing.set()
-            await finish_close.wait()
-            order.append("closed")
-            close_finished.set()
-
-        monkeypatch.setattr(ctx_client, "aclose", aclose)
-
-        async def first():
-            async with ctx_client:
-                pass
-
-        async def second():
-            async with ctx_client:
-                order.append("entered")
-                entered.set()
-                await finish_second.wait()
-
-        t1 = asyncio.create_task(first())
-        await asyncio.wait_for(closing.wait(), 5)
-        if cancel_exit:
-            t1.cancel()
-            await asyncio.sleep(0.01)
-        t2 = asyncio.create_task(second())
-        try:
-            await asyncio.sleep(0.05)
-            assert not entered.is_set(), (
-                "a new context was entered while the previous one was still closing"
-            )
-            finish_close.set()
-            await asyncio.wait_for(entered.wait(), 5)
-            assert order[:2] == ["closed", "entered"]
-        finally:
-            finish_close.set()
-            finish_second.set()
-            await asyncio.gather(t1, t2, return_exceptions=True)
-        # The second context's exit closes the client again
-        assert order.count("closed") == 2
 
     async def test_failed_entry_does_not_close_an_active_context(
         self, ctx_client, monkeypatch

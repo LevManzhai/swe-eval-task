@@ -14,7 +14,7 @@ because those notes are where most of what I learned ended up.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
-| [`tasks/redis-py-connection-lifecycle`](tasks/redis-py-connection-lifecycle) | [redis-py](https://github.com/redis/redis-py) | Bug hunt: seven connection life-cycle bugs, sync and asyncio, no oracle | In progress |
+| [`tasks/redis-py-connection-lifecycle`](tasks/redis-py-connection-lifecycle) | [redis-py](https://github.com/redis/redis-py) | Bug hunt: seven connection life-cycle bugs, sync and asyncio, no oracle | In progress: attempt 1 passed (22 / 22) |
 | [`tasks/anyio-cancellation-safety`](tasks/anyio-cancellation-safety) | [anyio](https://github.com/agronholm/anyio) | Bug hunt: eleven cancellation-safety bugs in seven files, no oracle | **Accepted**: 0 of 2 attempts passed (34 / 36 each) |
 | [`tasks/croniter-expand-from-start-time`](tasks/croniter-expand-from-start-time) | [croniter](https://github.com/pallets-eco/croniter) | Implement documented behaviour | Easy (first attempt solved it in ~2 minutes) |
 | [`tasks/tomlkit-table-structure`](tasks/tomlkit-table-structure) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v2: eight bugs, one symptom in the report | Easy (first attempt solved it, 100 / 100) |

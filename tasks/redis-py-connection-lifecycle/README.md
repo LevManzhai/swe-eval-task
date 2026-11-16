@@ -1,7 +1,8 @@
 # redis-py: pooled connections that go missing or come back wrong
 
-> **Status: built and self-checked; difficulty check in progress.** Details at
-> the end of [`NOTES.md`](NOTES.md).
+> **Status: difficulty check in progress. Attempt 1 passed (22 / 22).** Two
+> more attempts would both have to fail for the task to meet the bar. Details
+> at the end of [`NOTES.md`](NOTES.md).
 
 [redis-py](https://github.com/redis/redis-py) is the standard Python client for
 Redis. Almost everything it does goes through a connection pool: a command
@@ -49,7 +50,7 @@ the first task here to pass the difficulty bar:
 | `environment/Dockerfile` | redis-py at commit `09c5cbf`, Redis 7.4.12 from the official image, plus `starting_state.patch`; git history removed |
 | `environment/starting_state.patch` | reverts the seven fixes and removes their tests |
 | `solution/reference.patch` | the seven upstream fixes, source code only |
-| `verifier/test_task.py` | 29 hidden tests, run against a real Redis server |
+| `verifier/test_task.py` | 22 hidden tests, run against a real Redis server |
 | `verifier/alt_fixes/` | a correct solution with a different design for the pool; must pass |
 | `verifier/wrong_fixes/` | eight wrong or incomplete solutions; must fail |
 | `difficulty/` | the patches the one-shot attempts produced |

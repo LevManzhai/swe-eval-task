@@ -72,7 +72,7 @@ solution fail because it renamed them.
 
 ## The hidden tests
 
-`verifier/test_task.py`, 29 tests in seven groups, one per bug. Points worth
+`verifier/test_task.py`, 22 tests in seven groups, one per bug. Points worth
 noting:
 
 - **Black-box where possible.** `ACL WHOAMI` after a failed handshake; a
@@ -93,7 +93,7 @@ noting:
 each container:
 
 - the starting state passes the upstream tests for the touched modules (about
-  1,450 tests) and fails 20 of the 29 hidden tests;
+  1,450 tests) and fails 15 of the 22 hidden tests;
 - `solution/reference.patch` passes both;
 - `verifier/alt_fixes/01_shielded_release_task.patch` passes both. It fixes
   the pool differently from upstream: `release()` runs the bookkeeping as its
@@ -110,11 +110,30 @@ The upstream-test check skips one test that expects Redis 8 behaviour
 same way on the reference solution and on untouched upstream code against a
 7.4 server.
 
-Mistakes in my own work that the self-check caught before any attempt ran:
+Mistakes in my own work:
 
-- the async push-handler test passed a plain function as the handler; the
-  asyncio client awaits it, so the test failed even on the reference. It now
-  uses a coroutine, as redis-py's own tests do.
+- *Caught by the self-check before any attempt ran:* the async push-handler
+  test passed a plain function as the handler. The asyncio client awaits it,
+  so the test failed even on the reference. It now uses a coroutine, as
+  redis-py's own tests do.
+- *Found while checking attempt 1's failures:* the first version had 29
+  tests, and attempt 1 failed 6 of them. I went through each failure, and
+  three of the causes were mine:
+  - the "cancelled while releasing" PubSub test replaced `pool.release()`
+    with a wrapper that could itself be cancelled. A correct solution that
+    makes `release()` cancel-safe (instead of shielding `aclose()`, as upstream
+    did) failed because of the wrapper, not because of its own code. The test
+    now keeps the release waiting by holding the pool's lock, so both designs
+    pass;
+  - the context-manager tests also ran against `RedisCluster`, although the
+    statement says the cluster clients don't need changing;
+  - "a new context waits until the previous one has finished closing" is
+    what upstream fixed, but the statement doesn't say it clearly enough for
+    a test to demand it. I removed that test rather than add the sentence to
+    the statement in the middle of the difficulty check.
+
+  With those fixed, attempt 1 passes every test. The score below is from the
+  corrected verifier.
 
 ## Difficulty check
 
@@ -122,4 +141,14 @@ Same bar as every task here: a strong coding agent gets `PROBLEM.md` and the
 repository, one try. Accepted if at most one attempt in three passes. Attempts
 run one at a time, stopping as soon as the outcome is decided.
 
-Results are added below as they come in.
+| Attempt | Time | Result |
+|---|---|---|
+| 1 | 19 min, 76 tool calls | **passed**, 22 / 22 (under the first, flawed verifier: 23 / 29) |
+
+**Attempt 1** (`difficulty/attempt-1.patch`, 4 files, +630 / −239) found all
+seven bugs, including the handshake and push-handler ones, and fixed the pool
+with its own design: a cancel-safe `release()` that finishes in a background
+task. It didn't touch the cluster clients, which the statement allowed.
+
+This is a weaker result than anyio's. Two attempts would now have to fail for
+the task to pass the bar.
