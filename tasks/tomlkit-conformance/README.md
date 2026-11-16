@@ -1,6 +1,6 @@
 # tomlkit: fifteen conformance bugs, one symptom in the report
 
-> **Status: difficulty check in progress.** See the end of
+> **Status: difficulty check in progress, 0 of 1 attempts passed so far.** See the end of
 > [`NOTES.md`](NOTES.md).
 
 This is the third version of the tomlkit task, and it's built around what I

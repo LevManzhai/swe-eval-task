@@ -93,4 +93,32 @@ history, and a virtualenv. No network, one try each. Attempts run one at a
 time, and I stop as soon as the result is decided: two passes means rejected,
 two fails means accepted.
 
-_In progress._
+### Attempt 1: failed (162 / 172)
+
+Patch: `difficulty/attempt-1.patch`. The library's suite passed (1,299,
+including 71 tests of its own), and the hidden tests passed **162 of 172**.
+
+All 10 failures are the same bug: `+NaN`, `-Inf` and other *signed*
+uppercase special floats are still accepted. (An unsigned `NaN` was already
+rejected before, so a quick check with no sign shows nothing wrong.) Its
+version still parses `v = +NaN` as `nan`, and `tomllib` rejects that. So it's
+a real missed bug, not a disagreement about the statement.
+
+It was a very large attempt: about 1,750 changed lines in five files of the
+library, a new module `tomlkit/_semantics.py` with a TOML rule checker, a
+rewritten proxy for split tables, and fuzzers against `tomllib` for parsing,
+round trips and edits. It also hit my usage limit once and was resumed from
+where it stopped, with no extra information. It found and fixed 14 of the 15
+bugs, including every one that was missed or nearly missed in earlier versions
+(the indented header, a time offset in seconds, `0E5`, `+` on a string,
+control characters in comments, a negative `del` slice, a dotted key at the
+end of the file).
+
+What it reported as ambiguous was the same as in the first version: the
+existing tests pin down a few non-conforming behaviours (AoT merging,
+`\r\n` in multiline strings). It kept them, as the statement asks. None of
+that touches the hidden tests.
+
+### Score so far
+
+0 passed out of 1.
