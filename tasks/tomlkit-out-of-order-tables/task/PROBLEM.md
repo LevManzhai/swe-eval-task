@@ -60,6 +60,9 @@ defined in several non-contiguous parts:
    the data that was written, and `doc.as_string()` is valid TOML that
    `tomllib` parses to that same data.
 
+Where the existing test suite already pins down a specific behaviour that
+conflicts with the list above, keep the tested behaviour.
+
 Please fix the library so that these hold. We don't mind how the code is
 organised internally.
 

@@ -112,4 +112,51 @@ all five.
 To save my usage limit I run attempts one at a time. If the first one solves
 the task, it's rejected straight away. If it doesn't, I run one or two more.
 
-_In progress._
+### Attempt 1: failed (73 / 77)
+
+The setup is the same as for my other tasks: a folder with `PROBLEM.md`, the
+repo without git history, and a virtualenv. No network, no access to this
+repo, one try. I graded the patch in Docker with the hidden tests. The patch
+is saved in `difficulty/attempt-1.patch`.
+
+- The library's suite: 1,417 passed (its own 1,407 plus 10 tests it added).
+- Hidden tests: **73 of 77**. All 4 failures are the same bug: the
+  `AttributeError` on an out-of-order table under an indented header
+  (` [a.b.c.d]` then `[a.b.c]`). On those files its version still crashes
+  while parsing.
+
+It was a serious attempt: 15 minutes, about 880 lines changed across three
+files, and its own random tester run against `tomllib` "on hundreds of
+thousands of documents". It found and fixed four of the five bugs, and fixed
+the update and new-key problems with a much bigger rewrite than upstream did.
+But its generator never produced an indented header, and nothing in the
+statement points to one. That's exactly the kind of failure I wanted: the
+bug is covered by rule 1 of the statement ("`tomllib` accepts it, so tomlkit
+must too"), but you only find it if you read the code paths around indentation
+in `Table.append`.
+
+The attempt also hit my usage limit once and was resumed from where it stopped,
+with no extra information.
+
+### What the attempt flagged as ambiguous, and what I changed
+
+It reported two conflicts between the statement and the library's existing
+tests:
+
+- an array of tables split by other tables (`[[products]]` … `[foo]` …
+  `[[products]]`) is written back reordered, and an existing test requires it;
+- when a split table becomes empty, an existing test expects it to disappear
+  from the output instead of staying as `{}`.
+
+Both points are fair. The statement promised a byte-for-byte round trip and
+exact data for *any* document, and the existing tests pin down different
+behaviour in these two corner cases. Neither is covered by my hidden tests, so
+the score isn't affected. I still added one sentence to `PROBLEM.md`: when the
+existing tests pin down behaviour that conflicts with the list, keep the tested
+behaviour. This was the only change made after the attempt, and it doesn't
+change what the hidden tests check.
+
+### Score so far
+
+0 passed out of 1. The bar is at most 1 of 3, so the task needs at least one
+more attempt to fail, which means running 2 more.

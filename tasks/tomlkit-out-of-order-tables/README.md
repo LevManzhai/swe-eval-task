@@ -1,7 +1,7 @@
 # tomlkit: several bugs in tables that are split across a document
 
-> **Status: difficulty check in progress.** See the end of
-> [`NOTES.md`](NOTES.md).
+> **Status: difficulty check in progress, 0 of 1 attempts passed so far.**
+> See the end of [`NOTES.md`](NOTES.md).
 
 [tomlkit](https://github.com/python-poetry/tomlkit) is the library Poetry uses
 to edit `pyproject.toml` without losing formatting. TOML lets you write one
