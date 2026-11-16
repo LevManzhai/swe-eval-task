@@ -1,7 +1,7 @@
 # tomlkit: eight bugs in document structure, one symptom in the report
 
-> **Status: difficulty check in progress.** See the end of
-> [`NOTES.md`](NOTES.md).
+> **Status: rejected.** The first attempt solved it (100 / 100), and I
+> stopped there. Reasons are at the end of [`NOTES.md`](NOTES.md).
 
 This is the second version of
 [`tomlkit-out-of-order-tables`](../tomlkit-out-of-order-tables). The first

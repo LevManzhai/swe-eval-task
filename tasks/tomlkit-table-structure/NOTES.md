@@ -101,4 +101,34 @@ history, and a virtualenv. No network, one try each. I run attempts one at a
 time and stop as soon as the result is decided: two passes means rejected, two
 fails means accepted.
 
-_In progress._
+### Attempt 1: passed (100 / 100)
+
+Patch: `difficulty/attempt-1.patch`. The library's suite passed (1,389), and
+the hidden tests passed **100 of 100**. It took about 19 minutes of work plus
+one interruption by my usage limit (it was resumed from where it stopped), 79
+tool calls, and about 1,640 changed lines across four files.
+
+It did the same thing as the successful attempts on the first version. It
+built a structure checker into the parser following `tomllib`, rewrote the
+split-table proxy, added a separate view for split arrays of tables, and wrote
+two fuzzers against `tomllib`: one for documents (about 150k) and one for
+edits (about 100k, including slice assignment on arrays of tables). That's
+exactly where the three new bugs live, so making the bugs more numerous didn't
+help. The attempt's generator simply covered the operations named in the
+statement.
+
+### Where this leaves the task
+
+1 of 1 passed. To be accepted it would need both remaining attempts to fail.
+Given that the first version failed only 1 attempt in 3, and this one is
+solved by the same method, I don't think that's likely enough to spend two
+more attempts on. I stopped here.
+
+### What I take from it
+
+Adding more bugs of the same kind doesn't help, as long as they all fall
+under one mechanically checkable contract. Once the attempt writes a fuzzer
+for that contract, it catches them all at once. The first version's attempt
+failed only because its fuzzer didn't vary indentation. Here I listed the
+operations in the statement (I had to, for the contract to cover the new
+bugs), and that told the fuzzer exactly what to generate.
