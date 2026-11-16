@@ -14,7 +14,7 @@ because those notes are where most of what I learned ended up.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
-| [`tasks/anyio-cancellation-safety`](tasks/anyio-cancellation-safety) | [anyio](https://github.com/agronholm/anyio) | Bug hunt: eleven cancellation-safety bugs in seven files, no oracle | **Accepted**: 0 of 2 attempts passed (34 / 36 each, both missed the same bug) |
+| [`tasks/anyio-cancellation-safety`](tasks/anyio-cancellation-safety) | [anyio](https://github.com/agronholm/anyio) | Bug hunt: eleven cancellation-safety bugs in seven files, no oracle | **Accepted**: 0 of 2 attempts passed (34 / 36 each) |
 | [`tasks/croniter-expand-from-start-time`](tasks/croniter-expand-from-start-time) | [croniter](https://github.com/pallets-eco/croniter) | Implement documented behaviour | Easy (first attempt solved it in ~2 minutes) |
 | [`tasks/tomlkit-table-structure`](tasks/tomlkit-table-structure) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v2: eight bugs, one symptom in the report | Easy (first attempt solved it, 100 / 100) |
 | [`tasks/tomlkit-out-of-order-tables`](tasks/tomlkit-out-of-order-tables) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt: five bugs, one symptom in the report | Rejected, but close: 2 of 3 solved it, each with a ~1,000-line rewrite |
