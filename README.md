@@ -15,7 +15,7 @@ post-mortem, in [`REJECTED.md`](REJECTED.md).
 
 | Task | Repository | Kind | Status |
 |---|---|---|---|
-| [`tasks/portion-intervaldict`](tasks/portion-intervaldict) | [AlexandreDecan/portion](https://github.com/AlexandreDecan/portion) | Performance work under a strict behaviour-preservation constraint | see its `NOTES.md` |
+| [`tasks/portion-intervaldict`](tasks/portion-intervaldict) | [AlexandreDecan/portion](https://github.com/AlexandreDecan/portion) | Performance work under a strict behaviour-preservation constraint | **rejected** by the difficulty gate, kept for reference |
 | [`tasks/flask-blueprint-prefix`](tasks/flask-blueprint-prefix) | [pallets/flask](https://github.com/pallets/flask) | Bug fix | **rejected** by the difficulty gate, kept for reference |
 
 ## What every task contains

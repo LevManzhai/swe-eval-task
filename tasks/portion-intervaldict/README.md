@@ -1,5 +1,11 @@
 # `portion.IntervalDict`: logarithmic single-key operations
 
+> **Status: rejected.** The task is reproducible and its verifier is sound, but
+> it did not pass the difficulty gate described in the
+> [top-level README](../../README.md): the first two independent attempts both
+> solved it in a single shot. See the "Difficulty check" section of
+> [`NOTES.md`](NOTES.md) and [`REJECTED.md`](../../REJECTED.md).
+
 A performance task on a real library:
 [`portion`](https://github.com/AlexandreDecan/portion), a Python library for
 interval arithmetic. Its `IntervalDict` (a mapping from intervals to values)

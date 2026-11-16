@@ -41,6 +41,45 @@ incomplete upstream commit as a wrong fix, and it does fail.
   moderately known repositories, or work upstream has never done.
 - Visible tests must not catch the tempting wrong solutions.
 
+## portion — logarithmic `IntervalDict`
+
+- Task: [`tasks/portion-intervaldict`](tasks/portion-intervaldict)
+- Repository: AlexandreDecan/portion, commit `2c34f28` (October 2026)
+- Kind: performance work under a behaviour-preservation constraint, one file,
+  about 290 changed lines in the reference solution
+- Gate result: **2 of 2 graded attempts passed** (179/179 hidden tests each) —
+  rejected before the third attempt finished
+
+**Why it looked promising.** It was chosen to avoid everything that sank the
+Flask task: no upstream fix exists, the statement gives complete acceptance
+criteria without enumerating the hard cases, four of the seven wrong solutions
+pass the whole visible test suite, and the tempting optimisation (binary search
+on the existing storage) is incorrect for a non-obvious reason.
+
+**Why it was too easy.**
+
+1. *The solver could rebuild the hidden verifier.* A "do not change behaviour"
+   constraint makes the unmodified code a complete executable specification.
+   Both attempts wrote their own differential fuzzer against the original class
+   and their own comparison counter, and only stopped when both were clean.
+   Every trap in the task is something a fuzzer finds in seconds.
+2. *Nothing had to be discovered.* One file, and the statement names the class.
+3. *Long is not hard.* The attempts produced 400–500 line rewrites without
+   difficulty. Volume of careful work is not a source of failure for an agent
+   that can test itself.
+
+**What changed in the selection criteria afterwards.**
+
+- Ask of every candidate: *can the solver check its own answer mechanically?*
+  If the starting repository contains an executable oracle for the expected
+  behaviour, the task is self-verifying and will be solved.
+- Difficulty therefore has to sit where self-checking does not reach: behaviour
+  that the existing code does **not** already exhibit and that has to be derived
+  from documentation spread across subsystems; failures that are expensive to
+  reproduce (ordering, concurrency, resource lifetime); or a cause that has to
+  be located in a large codebase from a symptom observed far away.
+- Line count and number of invariants are not predictors of difficulty.
+
 ## Earlier candidates
 
 Two earlier candidates, built on `jsonschema` and on `tenacity`, were rejected

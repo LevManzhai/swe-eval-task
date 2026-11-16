@@ -229,4 +229,76 @@ can run locally.
 
 ## Difficulty check
 
-_In progress — results are added once the three attempts have been graded._
+**Result: rejected. The first two attempts both passed (179/179), so the gate
+(at most 1 of 3) cannot be met whatever the third one does.**
+
+Protocol: each attempt is a fresh agent instance given a directory with
+`PROBLEM.md`, the repository at the starting commit (no upstream history) and a
+virtualenv; no network, no access to this repository, its notes, the verifier
+or the solutions; one shot, no feedback from the hidden tests. The resulting
+diff was then applied to the task image and graded with `verifier/test_task.py`
+with networking disabled, exactly as `run.sh` does.
+
+| Attempt | Upstream tests | Hidden verifier | Diff |
+|---|---|---|---|
+| 1 | 233 passed | **179 / 179** | `portion/dict.py` +390 / −74, changelog entry |
+| 2 | 233 passed | **179 / 179** | `portion/dict.py` +513 / −77, changelog entry |
+| 3 | — | — | still running when the verdict was already settled |
+
+Attempt 1 was interrupted once by an API usage limit and resumed from where it
+had stopped; it received no additional information.
+
+### How the attempts solved it
+
+Both arrived at the same architecture, which is neither the reference nor one
+of the two alternative solutions: a sorted list of disjoint atomic intervals as
+primary storage, a hash index to find an already stored equal value (with an
+equality scan for unhashable values), and the original per-value `SortedDict`
+kept as a lazily rebuilt, cached *view* for whole-mapping operations. Keeping
+the old structure as a derived view is a neat way to make most of the
+"reconstruct the documented behaviour" problem disappear: `keys()`, `items()`,
+`repr()`, `as_dict()` and the views keep running on the very same code as
+before.
+
+Both were also stricter than the verifier: they preserved which of two equal
+objects is kept (`1` vs `1.0`), the non-merging of NaN values, and pickling —
+three things the verifier deliberately does not test.
+
+### Why it was not hard enough
+
+The decisive factor was not any single trap; all seven were avoided. It is that
+**this kind of task lets the solver rebuild the hidden verifier**:
+
+1. *The oracle ships with the task.* "Keep every observable behaviour" means the
+   unmodified class is a complete executable specification. Both attempts
+   copied it aside and wrote their own differential fuzzer before finishing
+   (3 000 seeds × 4 modes in one case, 60 000 operation sequences in the other),
+   covering discrete subclasses, unhashable values and open/closed bounds. Every
+   trap listed above is exactly the kind of thing a fuzzer finds in seconds.
+2. *The performance criterion is fully measurable by the solver.* To be fair,
+   the statement gives the counting protocol, the size and the limit. Both
+   attempts re-implemented the counter and measured every listed operation
+   (worst case 259 and 158 comparisons against a limit of 1000).
+3. *Everything is in one file.* There was nothing to locate.
+
+So the task did require real work — a 400–500 line rewrite — but none of the
+risk was hidden from the solver. A long task is not the same as a hard one.
+
+### Was the statement ambiguous?
+
+Each attempt was asked to report what it found underspecified. Both raised the
+same substantive point: with *unhashable* values, deciding whether an assigned
+value is already stored needs one equality test per distinct stored value, so
+the comparison limit cannot be met there. They resolved it the way the verifier
+does (budgets are measured with hashable values only; unhashable ones are only
+checked for correctness), but the statement does not say so. Had the task been
+accepted, `PROBLEM.md` would have needed one sentence to that effect. The other
+points raised (mixed interval classes in one mapping, private `_storage`) are
+outside what the verifier exercises.
+
+### What this says about the verifier
+
+The verifier itself held up: it accepted a fourth and a fifth implementation
+that were written independently of it, with a different architecture from the
+three it was developed against, and it still rejects all seven wrong ones.
+
