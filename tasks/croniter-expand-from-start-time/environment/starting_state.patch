@@ -1,0 +1,639 @@
+diff --git a/src/croniter/croniter.py b/src/croniter/croniter.py
+index c649213..9bf1224 100644
+--- a/src/croniter/croniter.py
++++ b/src/croniter/croniter.py
+@@ -1153,62 +1153,28 @@ class croniter:
+                     # "{start}/{step}" normalizes to "{start}-{max}/{step}", so when
+                     # the start IS the field maximum the two bounds collide and the
+                     # token becomes indistinguishable from an explicitly written equal
+-                    # range. That is the whole bug: "59/15" was read the way "Jan-Jan"
+-                    # is -- the whole cycle -- and so fired at :00/:15/:30/:45 instead
+-                    # of :59. Recognising the collision here is what keeps the two
+-                    # apart, both in the widening just below and in the range built
+-                    # further down.
++                    # range. That is the whole bug: "59/15" arrived at the ``low ==
++                    # high`` branch below -- which exists for "Jan-Jan" and expands to
++                    # the whole cycle -- and so fired at :00/:15/:30/:45 instead of
++                    # :59. Recognising the collision here is what keeps the two apart.
+                     #
+                     # Deliberately ``low == high`` and not the wider ``low + step >
+-                    # high``. Only the collision is a false equal range: a token whose
+-                    # step merely overshoots its range -- "50-51/15" -- still describes
+-                    # a cycle, and re-basing must stay free to supply its phase.
++                    # high``. Both fix the reported bug, but the wider form also
++                    # suppresses the re-base below for starts that are not at the
++                    # maximum, silently changing ~365 additional
++                    # ``expand_from_start_time`` schedules that were never broken.
++                    # That is a separate question about what an explicit lower bound
++                    # should mean under that flag, and it is not this fix's to answer.
+                     start_at_field_max = start_with_step and low == high
+ 
+-                    # An equal range that was *written* as one -- "Jan-Jan", "Sun-Sun"
+-                    # -- means the whole cycle, so widen it to the field's own bounds
+-                    # here rather than in a branch further down. Widening it before
+-                    # re-basing is what makes the two spellings of one schedule agree:
+-                    # "1-1/3" and "*/3" are the same expression, and both now take the
+-                    # phase of their cycle from ``start_time``.
+-                    #
+-                    # ``start_with_step`` is load-bearing: "{start}/{step}" normalizes
+-                    # to "{start}-{max}/{step}", so at the field maximum its bounds
+-                    # collide without the user having written an equal range at all.
+-                    # That is #246's bug, and widening "59/15" back to the whole field
+-                    # here would reintroduce it.
+-                    if low == high and not start_with_step:
+-                        low, high = cls.RANGES[field_index]
+-
+                     # ``from_timestamp`` re-bases the start of a *cycle* on the start
+-                    # time. A single point has no cycle to re-base: "59/15" is minute
+-                    # 59, not a cycle starting there. (The bounds test below rejects it
+-                    # anyway, since the only phase inside ``low == high`` is ``low``
+-                    # itself; skipping the work here says so outright.)
+-                    if from_timestamp is not None and not start_at_field_max:
+-                        # Re-basing supplies the *phase* of the cycle, not its bounds:
+-                        # take the first value of that phase lying inside the range the
+-                        # expression declares. From a start at minute 7, "10-50/15" is
+-                        # 22,37 -- not 7,22,37, which fires below its own lower bound.
+-                        # If no value of the phase fits, the expression is honoured as
+-                        # written, so an expansion can never come out empty. Note that
+-                        # a re-phased range can hold fewer periods than the one it
+-                        # replaces -- "10-20/7" is 10,17 by default but 14 alone from
+-                        # a start at minute 7 -- which is inherent to re-phasing inside
+-                        # a bounded window, not a value being dropped.
+-                        phase = cls._get_low_from_current_date_number(
++                    # time. A single point has no cycle to re-base, and rewriting its
++                    # bound here would leave the bug reachable in
++                    # ``expand_from_start_time`` mode while looking fixed by default.
++                    if from_timestamp and not start_at_field_max:
++                        low = cls._get_low_from_current_date_number(
+                             field_index, int(step), int(from_timestamp), from_timestamp_tz
+                         )
+-                        if phase < low:
+-                            phase += -(-(low - phase) // step) * step
+-                        # This one test is what keeps re-basing honest, and it covers
+-                        # the wrapping ranges (Apr-Jan, Sat-Sun) too: there ``high``
+-                        # lies below ``low``, no phase can satisfy it, and the range is
+-                        # left as written rather than silently unwrapped. Its lower
+-                        # half restates what the advance above already guarantees; it
+-                        # is written out so the test reads as the range check it is.
+-                        if low <= phase <= high:
+-                            low = phase
+ 
+                     # Handle when the second bound of the range is in backtracking order:
+                     # eg: X-Sun or X-7 (Sat-Sun) in DOW, or X-Jan (Apr-Jan) in MONTH
+@@ -1231,6 +1197,12 @@ class croniter:
+                             ):
+                                 to_skip = step - already_skipped
+                         rng += list(range(cls.RANGES[field_index][0] + to_skip, high + 1, step))
++                    # if we include a range type: Jan-Jan, or Sun-Sun,
++                    #  it means the whole cycle (all days of week, # all monthes of year, etc)
++                    elif low == high:
++                        rng = list(
++                            range(cls.RANGES[field_index][0], cls.RANGES[field_index][1] + 1, step)
++                        )
+                     else:
+                         try:
+                             rng = list(range(low, high + 1, step))
+@@ -1412,18 +1384,11 @@ class croniter:
+         if field_index == DAY_FIELD:
+             return ((dt.day - 1) % step) + 1
+         if field_index == MONTH_FIELD:
+-            return ((dt.month - 1) % step) + 1
++            return dt.month % step
+         if field_index == DOW_FIELD:
+-            return (dt.isoweekday() % 7) % step
+-        if field_index == SECOND_FIELD:
+-            return dt.second % step
+-        if field_index == YEAR_FIELD:
+-            # Like day and month, the year field does not start at 0, so the phase is
+-            # taken from the field minimum rather than from the value itself.
+-            year_start = cls.RANGES[YEAR_FIELD][0]
+-            return ((dt.year - year_start) % step) + year_start
++            return (dt.weekday() + 1) % step
+ 
+-        raise ValueError(f"Can't get current date number for field index {field_index}")
++        raise ValueError("Can't get current date number for index larger than 4")
+ 
+     @classmethod
+     def is_valid(cls, expression, hash_id=None, encoding="UTF-8", second_at_beginning=False, strict=False, strict_year=None):
+@@ -1580,7 +1545,7 @@ class HashExpander:
+     def match(self, efl, idx, expr, hash_id=None, **kw):
+         return hash_expression_re.match(expr)
+ 
+-    def _expand_divisor(self, idx, m, hash_id, range_begin, range_end, from_timestamp=None):
++    def _expand_divisor(self, idx, m, hash_id, range_begin, range_end):
+         """Hash a start offset into the first period, then step to range_end.
+ 
+         The offset is drawn from the first period, [range_begin, range_begin +
+@@ -1589,17 +1554,8 @@ class HashExpander:
+         the step cannot reach a second value, so the result is that single value --
+         emitting "{end}-{end}/{divisor}" instead would read as an explicit equal
+         range, which croniter expands to the whole field.
+-
+-        Under ``expand_from_start_time`` the phase of the cycle comes from the start
+-        time, not from the hash, so the declared range is emitted as written and the
+-        re-basing in ``_expand`` supplies the phase inside it. Emitting the hashed
+-        offset there instead would make re-basing read that offset as a declared
+-        lower bound: ``H/15`` with an offset of 6 from a start at minute 2 would fire
+-        at 17,32,47 rather than 2,17,32,47, losing one period an hour.
+         """
+         divisor = int(m["divisor"])
+-        if from_timestamp is not None:
+-            return f"{range_begin}-{range_end}/{divisor}"
+         x = self.do(
+             idx,
+             hash_type=m["hash_type"],
+@@ -1639,12 +1595,7 @@ class HashExpander:
+                 raise CroniterBadCronError(f"Bad expression: {expr}")
+ 
+             return self._expand_divisor(
+-                idx,
+-                m,
+-                hash_id,
+-                int(m["range_begin"]),
+-                int(m["range_end"]),
+-                from_timestamp=kw.get("from_timestamp"),
++                idx, m, hash_id, int(m["range_begin"]), int(m["range_end"])
+             )
+         if m["range_begin"] and m["range_end"]:
+             # Example: H(0-29) -> 12
+@@ -1663,12 +1614,7 @@ class HashExpander:
+                 raise CroniterBadCronError(f"Bad expression: {expr}")
+ 
+             return self._expand_divisor(
+-                idx,
+-                m,
+-                hash_id,
+-                self.cron.RANGES[idx][0],
+-                self.cron.RANGES[idx][1],
+-                from_timestamp=kw.get("from_timestamp"),
++                idx, m, hash_id, self.cron.RANGES[idx][0], self.cron.RANGES[idx][1]
+             )
+ 
+         # Example: H -> 32
+diff --git a/src/croniter/tests/test_croniter.py b/src/croniter/tests/test_croniter.py
+index b8acb38..ea2c13c 100755
+--- a/src/croniter/tests/test_croniter.py
++++ b/src/croniter/tests/test_croniter.py
+@@ -534,35 +534,6 @@ class CroniterTest(base.TestCase):
+         with self.assertRaises(CroniterBadDateError):
+             croniter("0 0 1 1 * * 2099/1", datetime(2024, 7, 11)).get_next(datetime)
+ 
+-    def test_step_from_field_max_expand_from_start_time(self):
+-        """The fix has to hold under expand_from_start_time as well.
+-
+-        In that mode from_timestamp rewrites the lower bound of a stepped token so
+-        the cycle re-bases on the start time, and it does so before the equal-range
+-        test is reached. Left alone, the fix would be reachable by default and
+-        unreachable here -- the harder failure to notice of the two.
+-        """
+-        m, h, dow = 0, 1, 4
+-        start = datetime(2024, 7, 11, 10, 7)
+-
+-        def efst(expr, field):
+-            return croniter(expr, start_time=start, expand_from_start_time=True).expanded[field]
+-
+-        self.assertEqual(efst("59/15 * * * *", m), [59])
+-        self.assertEqual(efst("* 23/6 * * *", h), [23])
+-        self.assertEqual(efst("* * * * SAT/2", dow), [6])
+-        # Before #254 this raised ValueError out of
+-        # _get_low_from_current_date_number, from outside the CroniterError
+-        # hierarchy, so nothing catching CroniterError ever saw it. That fix made
+-        # the field reachable; this pins the value it reaches.
+-        self.assertEqual(efst("* * * * * 59/15", 5), [59])
+-        # Re-basing still supplies the phase for every token that describes a cycle.
+-        # Where that phase falls below an explicitly written start it is advanced into
+-        # range -- see test_expand_from_start_time_respects_declared_bounds.
+-        self.assertEqual(efst("*/15 * * * *", m), [7, 22, 37, 52])
+-        self.assertEqual(efst("5/15 * * * *", m), [7, 22, 37, 52])
+-        self.assertEqual(efst("45/15 * * * *", m), [52])
+-
+     def test_step_of_one_from_field_max(self):
+         """ "{max}/1" is the start alone, where it used to be the whole field.
+ 
+@@ -2767,24 +2738,6 @@ class CroniterTest(base.TestCase):
+         ).get_prev(datetime)
+         self.assertEqual(ret4, datetime(2024, 5, 1))
+ 
+-    def test_expand_from_start_time_month_divisible(self):
+-        # A start month that is a multiple of the step (here 6 % 3 == 0) must
+-        # still expand to a valid 1-12 month, not month 0.
+-        three_monts_interval_pattern = "0 0 1 */3 *"
+-        ret1 = croniter(
+-            three_monts_interval_pattern,
+-            start_time=datetime(2024, 6, 1),
+-            expand_from_start_time=True,
+-        ).get_next(datetime)
+-        self.assertEqual(ret1, datetime(2024, 9, 1))
+-
+-        ret2 = croniter(
+-            three_monts_interval_pattern,
+-            start_time=datetime(2024, 6, 1),
+-            expand_from_start_time=True,
+-        ).get_prev(datetime)
+-        self.assertEqual(ret2, datetime(2024, 3, 1))
+-
+     def test_expand_from_start_time_day_of_week(self):
+         three_monts_interval_pattern = "0 0 * * */2"
+         ret1 = croniter(
+@@ -2815,35 +2768,6 @@ class CroniterTest(base.TestCase):
+         ).get_prev(datetime)
+         self.assertEqual(ret4, datetime(2024, 7, 9))
+ 
+-    def test_expand_from_start_time_day_of_week_sunday(self):
+-        # A Sunday start (cron day-of-week 0) must keep Sunday in a */step
+-        # schedule.  Sunday is isoweekday 7, so it has to wrap to 0 before the
+-        # step modulo, otherwise the phase is computed from 7 and Sunday drops
+-        # out of the expansion.
+-        every_other_dow = "0 0 * * */2"
+-        ret1 = croniter(
+-            every_other_dow,
+-            start_time=datetime(2024, 7, 14),  # Sunday
+-            expand_from_start_time=True,
+-        ).get_next(datetime)
+-        self.assertEqual(ret1, datetime(2024, 7, 16))
+-
+-        ret2 = croniter(
+-            every_other_dow,
+-            start_time=datetime(2024, 7, 14),
+-            expand_from_start_time=True,
+-        ).get_prev(datetime)
+-        self.assertEqual(ret2, datetime(2024, 7, 13))
+-
+-        # The phased schedule still fires on Sundays.
+-        itr = croniter(
+-            every_other_dow,
+-            start_time=datetime(2024, 7, 14),
+-            expand_from_start_time=True,
+-        )
+-        fires = [itr.get_next(datetime) for _ in range(4)]
+-        self.assertIn(datetime(2024, 7, 21), fires)
+-
+     def test_expand_from_start_time_uses_the_start_times_own_timezone(self):
+         """The phase comes from the start time's wall clock, not from its UTC form.
+ 
+@@ -2917,274 +2841,6 @@ class CroniterTest(base.TestCase):
+                         lo = croniter.RANGES[field][0]
+                         self.assertIn(((local - lo) % 5) + lo, got)
+ 
+-    def test_expand_from_start_time_second(self):
+-        fifteen_seconds_interval_pattern = "* * * * * */15"
+-        ret1 = croniter(
+-            fifteen_seconds_interval_pattern,
+-            start_time=datetime(2024, 7, 11, 10, 7, 23),
+-            expand_from_start_time=True,
+-        ).get_next(datetime)
+-        self.assertEqual(ret1, datetime(2024, 7, 11, 10, 7, 38))
+-
+-        ret2 = croniter(
+-            fifteen_seconds_interval_pattern,
+-            start_time=datetime(2024, 7, 11, 10, 7, 24),
+-            expand_from_start_time=True,
+-        ).get_next(datetime)
+-        self.assertEqual(ret2, datetime(2024, 7, 11, 10, 7, 39))
+-
+-        ret3 = croniter(
+-            fifteen_seconds_interval_pattern,
+-            start_time=datetime(2024, 7, 11, 10, 7, 23),
+-            expand_from_start_time=True,
+-        ).get_prev(datetime)
+-        self.assertEqual(ret3, datetime(2024, 7, 11, 10, 7, 8))
+-
+-        # Seconds take their phase from the start time's second, exactly as minutes
+-        # take theirs from its minute.
+-        self.assertEqual(
+-            croniter(
+-                fifteen_seconds_interval_pattern,
+-                start_time=datetime(2024, 7, 11, 10, 7, 23),
+-                expand_from_start_time=True,
+-            ).expanded[5],
+-            [8, 23, 38, 53],
+-        )
+-
+-    def test_expand_from_start_time_year(self):
+-        every_25_years_pattern = "0 0 1 1 * 0 */25"
+-        ret1 = croniter(
+-            every_25_years_pattern,
+-            start_time=datetime(2024, 7, 11),
+-            expand_from_start_time=True,
+-        ).get_next(datetime)
+-        self.assertEqual(ret1, datetime(2049, 1, 1))
+-
+-        ret2 = croniter(
+-            every_25_years_pattern,
+-            start_time=datetime(2024, 7, 11),
+-            expand_from_start_time=True,
+-        ).get_prev(datetime)
+-        self.assertEqual(ret2, datetime(2024, 1, 1))
+-
+-        # The year field does not start at zero, so its phase is taken from the field
+-        # minimum, as day-of-month and month already do.
+-        self.assertEqual(
+-            croniter(
+-                every_25_years_pattern,
+-                start_time=datetime(2024, 7, 11),
+-                expand_from_start_time=True,
+-            ).expanded[6],
+-            [1974, 1999, 2024, 2049, 2074, 2099],
+-        )
+-
+-    def test_expand_from_start_time_second_and_year_no_longer_raise(self):
+-        """Both fields used to raise a bare ValueError, outside CroniterError.
+-
+-        _get_low_from_current_date_number only handled field indices 0-4, so any
+-        range or step in the seconds or years field aborted with a ValueError that
+-        code catching CroniterError never saw.
+-        """
+-        start = datetime(2024, 7, 11, 10, 7, 23)
+-        for expr in ("* * * * * */15", "* * * * * 10-20", "0 0 1 1 * 0 */25"):
+-            with self.subTest(expr=expr):
+-                croniter(expr, start_time=start, expand_from_start_time=True).get_next(datetime)
+-
+-    def test_expand_from_start_time_seconds_and_years_invariants(self):
+-        """Property sweep: no step in these fields may raise or leave its range.
+-
+-        Every one of these raised the bare ValueError before, whatever the step.
+-        """
+-        start = datetime(2024, 7, 11, 10, 7, 23)
+-        for step in (1, 2, 3, 7, 15, 60, 131):
+-            for expr, field, lo, hi in (
+-                (f"* * * * * */{step}", 5, 0, 59),
+-                (f"0 0 1 1 * 0 */{step}", 6, 1970, 2099),
+-            ):
+-                with self.subTest(expr=expr):
+-                    got = croniter(expr, start_time=start, expand_from_start_time=True).expanded[
+-                        field
+-                    ]
+-                    self.assertTrue(got, "expanded to nothing")
+-                    if got == ["*"]:
+-                        # A step of 1 covers the field, which croniter folds to "*".
+-                        self.assertEqual(step, 1)
+-                        continue
+-                    for value in got:
+-                        self.assertTrue(lo <= value <= hi, f"{value} outside [{lo}, {hi}]")
+-
+-    def test_expand_from_start_time_seconds_phase_matches_minutes(self):
+-        """Seconds must re-base by the same rule minutes already use."""
+-        for second in range(0, 60, 7):
+-            with self.subTest(second=second):
+-                start = datetime(2024, 7, 11, 10, 7, second)
+-                seconds = croniter(
+-                    "* * * * * */15", start_time=start, expand_from_start_time=True
+-                ).expanded[5]
+-                minutes = croniter(
+-                    "*/15 * * * *",
+-                    start_time=start.replace(minute=second),
+-                    expand_from_start_time=True,
+-                ).expanded[0]
+-                self.assertEqual(seconds, minutes)
+-
+-    def test_expand_from_start_time_issue_252(self):
+-        """The three cases reported in #252, each staying inside its own range.
+-
+-        "20-40/5" started 18 minutes early and stopped 3 minutes short, and the
+-        narrow window "0-1/2" widened to every other minute of the whole field.
+-        """
+-        start = datetime(2024, 7, 11, 10, 7)
+-
+-        def efst(expr):
+-            return croniter(expr, start_time=start, expand_from_start_time=True).expanded[0]
+-
+-        self.assertEqual(efst("10-50/15 * * * *"), [22, 37])
+-        self.assertEqual(efst("20-40/5 * * * *"), [22, 27, 32, 37])
+-        self.assertEqual(efst("0-1/2 * * * *"), [1])
+-        # The default expansion of each is unchanged, as #252 notes it should be.
+-        self.assertEqual(croniter("10-50/15 * * * *", start).expanded[0], [10, 25, 40])
+-        self.assertEqual(croniter("20-40/5 * * * *", start).expanded[0], [20, 25, 30, 35, 40])
+-        self.assertEqual(croniter("0-1/2 * * * *", start).expanded[0], [0])
+-
+-    def test_expand_from_start_time_respects_declared_bounds(self):
+-        """Re-basing supplies the phase of a cycle, never a bound outside the range.
+-
+-        expand_from_start_time overwrote the lower bound of every range, so an
+-        explicitly written range fired below its own start: "* 8-17 * * *" expanded
+-        to hours 0-17, and "10-50/15" to minutes 7,22,37 from a start at minute 7.
+-        """
+-        start = datetime(2024, 7, 11, 10, 7)
+-
+-        def efst(expr, field):
+-            return croniter(expr, start_time=start, expand_from_start_time=True).expanded[field]
+-
+-        m, h, dow = 0, 1, 4
+-        # A plain range keeps both of its bounds.
+-        self.assertEqual(efst("10-20 * * * *", m), list(range(10, 21)))
+-        self.assertEqual(efst("* 8-17 * * *", h), list(range(8, 18)))
+-        self.assertEqual(efst("* * * * 1-5", dow), [1, 2, 3, 4, 5])
+-        # A stepped range keeps its phase, advanced into the range.
+-        self.assertEqual(efst("10-50/15 * * * *", m), [22, 37])
+-        self.assertEqual(
+-            croniter("10-50/15 * * * *", start_time=start, expand_from_start_time=True).get_next(
+-                datetime
+-            ),
+-            datetime(2024, 7, 11, 10, 22),
+-        )
+-        # A wildcard is unaffected: its lower bound is the field minimum already.
+-        self.assertEqual(efst("*/15 * * * *", m), [7, 22, 37, 52])
+-        self.assertEqual(efst("5/15 * * * *", m), [7, 22, 37, 52])
+-        # A start above the phase advances to the next value of the same phase.
+-        self.assertEqual(efst("45/15 * * * *", m), [52])
+-        # When no value of the phase fits, the expression is honoured as written
+-        # rather than losing its only fire.
+-        self.assertEqual(efst("50-51/15 * * * *", m), [50])
+-        self.assertEqual(efst("59/15 * * * *", m), [59])
+-        # A re-phased range can hold fewer periods than the default phase does: only
+-        # one multiple of 7 in this phase falls inside 10-20. Inherent to re-phasing a
+-        # step inside a bounded window, not a value being dropped -- pinned so the
+-        # difference from the default expansion stays deliberate.
+-        self.assertEqual(croniter("10-20/7 * * * *", start_time=start).expanded[m], [10, 17])
+-        self.assertEqual(efst("10-20/7 * * * *", m), [14])
+-
+-    def test_expand_from_start_time_respects_declared_bounds_in_seconds_and_years(self):
+-        """The optional fields advance the phase like the five that always could.
+-
+-        #254 is what made the seconds and years fields reachable here at all -- they
+-        raised ValueError before it -- and the years field is where the correction is
+-        largest: "2020-2040/3" used to expand from 1970, eighteen years below its own
+-        lower bound.
+-        """
+-        seconds, years = 5, 6
+-
+-        def efst(expr, start, field):
+-            return croniter(expr, start_time=start, expand_from_start_time=True).expanded[field]
+-
+-        start = datetime(2024, 7, 11, 10, 7, 23)
+-        # Phase 23 % 15 = 8, below the declared start, so it advances to 23.
+-        self.assertEqual(efst("* * * * * 10-50/15", start, seconds), [23, 38])
+-        self.assertEqual(croniter("* * * * * 10-50/15", start).expanded[seconds], [10, 25, 40])
+-        self.assertEqual(efst("* * * * * 20-40/5", start, seconds), [23, 28, 33, 38])
+-        # A second below the range keeps the expression as written rather than firing
+-        # early, exactly as in the five mandatory fields.
+-        self.assertEqual(efst("* * * * * 50-51/15", start, seconds), [50])
+-
+-        start = datetime(2024, 7, 11)
+-        # The years phase is taken from the field minimum, so it starts at 1970 and is
+-        # advanced up into the range: 1970 + ceil((2020 - 1970) / 3) * 3 = 2021.
+-        self.assertEqual(
+-            efst("0 0 1 1 * 0 2020-2040/3", start, years),
+-            [2021, 2024, 2027, 2030, 2033, 2036, 2039],
+-        )
+-        self.assertEqual(
+-            croniter("0 0 1 1 * 0 2020-2040/3", start).expanded[years],
+-            [2020, 2023, 2026, 2029, 2032, 2035, 2038],
+-        )
+-        self.assertEqual(efst("0 0 1 1 * 0 2025-2026/5", start, years), [2025])
+-        self.assertEqual(efst("0 0 1 1 * 0 2020-2040", start, years), list(range(2020, 2041)))
+-
+-    def test_expand_from_start_time_does_not_change_a_range_into_another_kind(self):
+-        """Re-basing must not collide or unwrap the bounds it re-bases.
+-
+-        Landing the lower bound on the upper one made an ordinary range read as
+-        "Jan-Jan" -- the whole cycle -- and re-basing a wrapping range unwrapped it,
+-        so "6-0" (Sat-Sun) became every day of the week.
+-        """
+-        start = datetime(2024, 7, 11, 10, 7)
+-
+-        def efst(expr, field):
+-            return croniter(expr, start_time=start, expand_from_start_time=True).expanded[field]
+-
+-        m, dom, mon, dow = 0, 2, 3, 4
+-        # An explicitly written equal range still means the whole cycle. A step
+-        # written on it is a cycle like any other, so it takes its phase from the
+-        # start time -- the same expansion as the wildcard spelling of the schedule.
+-        self.assertEqual(efst("5-5 * * * *", m), ["*"])
+-        self.assertEqual(efst("59-59/15 * * * *", m), [7, 22, 37, 52])
+-        self.assertEqual(efst("59-59/15 * * * *", m), efst("*/15 * * * *", m))
+-        self.assertEqual(croniter("59-59/15 * * * *", start).expanded[m], [0, 15, 30, 45])
+-        self.assertEqual(efst("* * * 12-12 *", mon), ["*"])
+-        # The month field, where README documents "1-1/3" as Jan/Apr/Jul/Oct.
+-        self.assertEqual(
+-            croniter(
+-                "0 0 1 1-1/3 *", start_time=datetime(2024, 2, 15), expand_from_start_time=True
+-            ).expanded[mon],
+-            [2, 5, 8, 11],
+-        )
+-        self.assertEqual(
+-            croniter("0 0 1 1-1/3 *", datetime(2024, 2, 15)).expanded[mon], [1, 4, 7, 10]
+-        )
+-        # A range whose phase lands on its own upper bound is not an equal range.
+-        self.assertEqual(efst("* * 10-11/2 * *", dom), [11])
+-        self.assertEqual(
+-            croniter(
+-                "0 0 1 */15 *", start_time=datetime(2031, 12, 31), expand_from_start_time=True
+-            ).expanded[mon],
+-            [12],
+-        )
+-        # A wrapping range stays wrapped.
+-        self.assertEqual(efst("* * * * 6-0", dow), [0, 6])
+-
+-    def test_expand_from_start_time_at_the_unix_epoch(self):
+-        """A start time of exactly the epoch re-bases like any other.
+-
+-        The start time reaches the expansion as a timestamp, which is 0.0 here, and
+-        the truthiness test that gated re-basing skipped that one instant: the same
+-        expression one second later re-based, and this one did not.
+-        """
+-        epoch = datetime(1970, 1, 1)
+-        dow = 4
+-
+-        def efst(expr, start, field):
+-            return croniter(expr, start_time=start, expand_from_start_time=True).expanded[field]
+-
+-        # The epoch is a Thursday, so the day-of-week phase is 4 % step.
+-        self.assertEqual(efst("0 0 * * 2-6/3", epoch, dow), [4])
+-        self.assertEqual(efst("0 0 * * 2-6/3", epoch + timedelta(seconds=1), dow), [4])
+-        self.assertEqual(croniter("0 0 * * 2-6/3", epoch).expanded[dow], [2, 5])
+-        self.assertEqual(efst("0 0 * * */3", epoch, dow), [1, 4])
+-
+     def test_expand_from_start_time_with_hashed_divisor(self):
+         """A hashed or random divisor takes its phase from the start time.
+ 
+@@ -3215,90 +2871,6 @@ class CroniterTest(base.TestCase):
+             efst("H(10-50)/7 * * * *", 0, hash_id="xyz"), efst("10-50/7 * * * *", 0)
+         )
+ 
+-    def test_expand_from_start_time_never_leaves_the_declared_range(self):
+-        """Property sweep: a re-based expansion may never fall outside its bounds.
+-
+-        This is the invariant the whole change exists to establish. Before it, 10,571
+-        of 13,332 swept expansions contained at least one value the expression never
+-        allowed.
+-        """
+-        for lo, hi in [(0, 59), (5, 50), (10, 11), (7, 8), (58, 59), (0, 1), (30, 31)]:
+-            for step in (1, 2, 3, 7, 15, 60):
+-                for minute in (0, 7, 23, 41, 59):
+-                    expr = f"{lo}-{hi}/{step} * * * *"
+-                    with self.subTest(expr=expr, minute=minute):
+-                        got = croniter(
+-                            expr,
+-                            start_time=datetime(2024, 7, 11, 10, minute),
+-                            expand_from_start_time=True,
+-                        ).expanded[0]
+-                        self.assertTrue(got, "expanded to nothing")
+-                        if got == ["*"]:
+-                            # Only a written equal range, or a range covering the whole
+-                            # field, may legitimately expand to everything.
+-                            self.assertTrue(lo == hi or (lo, hi) == (0, 59))
+-                            continue
+-                        for value in got:
+-                            self.assertTrue(lo <= value <= hi, f"{value} outside [{lo}, {hi}]")
+-
+-    def test_expand_from_start_time_never_adds_fires(self):
+-        """Re-phasing may move or thin a schedule, never make it fire more often.
+-
+-        It can thin one: "10-20/7" is 10,17 by default but 14 alone from a start at
+-        minute 7. What it must never do is produce more values than the expression
+-        means without the flag, which is what discarding the lower bound did.
+-        """
+-        for lo, hi in [(0, 59), (5, 50), (10, 20), (30, 31), (2, 9)]:
+-            for step in (2, 3, 7, 15):
+-                for minute in (0, 7, 23, 41):
+-                    expr = f"{lo}-{hi}/{step} * * * *"
+-                    start = datetime(2024, 7, 11, 10, minute)
+-                    with self.subTest(expr=expr, minute=minute):
+-                        plain = croniter(expr, start_time=start).expanded[0]
+-                        rebased = croniter(
+-                            expr, start_time=start, expand_from_start_time=True
+-                        ).expanded[0]
+-                        if plain == ["*"] or rebased == ["*"]:
+-                            continue
+-                        self.assertLessEqual(len(rebased), len(plain))
+-
+-    def test_expand_from_start_time_fuzz(self):
+-        """Seeded sweep over random expressions: values stay in range, none empty.
+-
+-        The optional seconds and years fields are swept alongside the five mandatory
+-        ones -- they re-base by the same arithmetic, and only #254 made them reachable.
+-        """
+-        rnd = random.Random(20260801)
+-        for _ in range(500):
+-            parts = []
+-            # Five fields always, then the optional seconds and years fields, which are
+-            # written after them: "{m} {h} {dom} {mon} {dow} [{sec} [{year}]]".
+-            for index in list(range(5)) + [5, 6][: rnd.randint(0, 2)]:
+-                lo, hi = croniter.RANGES[index]
+-                if rnd.random() < 0.5:
+-                    parts.append("*")
+-                    continue
+-                a, b = sorted((rnd.randint(lo, hi), rnd.randint(lo, hi)))
+-                step = rnd.choice([1, 2, 3, 5, 7, 15, 60])
+-                parts.append(
+-                    rnd.choice([f"{a}/{step}", f"{a}-{b}/{step}", f"{a}-{b}", f"*/{step}"])
+-                )
+-            expr = " ".join(parts)
+-            start = datetime(2024, 7, 11, 10, 7) + timedelta(minutes=rnd.randint(0, 500000))
+-            with self.subTest(expr=expr, start=start):
+-                try:
+-                    expanded = croniter(
+-                        expr, start_time=start, expand_from_start_time=True
+-                    ).expanded
+-                except CroniterBadCronError:
+-                    continue
+-                for index, values in enumerate(expanded):
+-                    self.assertTrue(values, f"field {index} expanded to nothing")
+-                    lo, hi = croniter.RANGES[index]
+-                    for value in values:
+-                        if value != "*":
+-                            self.assertTrue(lo <= value <= hi, f"field {index} value {value}")
+-
+     def test_get_next_fails_with_expand_from_start_time_true(self):
+         expanded_croniter = croniter("0 0 */5 * *", expand_from_start_time=True)
+         self.assertRaises(

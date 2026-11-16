@@ -1,0 +1,16 @@
+diff --git a/src/croniter/croniter.py b/src/croniter/croniter.py
+index 9bf1224..7291561 100644
+--- a/src/croniter/croniter.py
++++ b/src/croniter/croniter.py
+@@ -1384,9 +1384,9 @@ class croniter:
+         if field_index == DAY_FIELD:
+             return ((dt.day - 1) % step) + 1
+         if field_index == MONTH_FIELD:
+-            return dt.month % step
++            return ((dt.month - 1) % step) + 1
+         if field_index == DOW_FIELD:
+-            return (dt.weekday() + 1) % step
++            return (dt.isoweekday() % 7) % step
+ 
+         raise ValueError("Can't get current date number for index larger than 4")
+ 
