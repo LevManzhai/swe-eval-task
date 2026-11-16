@@ -1,7 +1,9 @@
 # aiohttp: HTTP edge cases that ordinary traffic never hits
 
-> **Status: difficulty check in progress. Attempt 1 failed (87 / 90): it found
-> eight of the nine bugs.** Details at the end of [`NOTES.md`](NOTES.md).
+> **Status: accepted.** Two of two one-shot attempts failed (87 / 90 and
+> 89 / 90). Each found eight of the nine bugs, and they missed different ones.
+> `run.sh` passes all 24 of its checks. Details at the end of
+> [`NOTES.md`](NOTES.md).
 
 [aiohttp](https://github.com/aio-libs/aiohttp) is one of the most used async
 HTTP libraries in Python, client and server. Between August and October 2026

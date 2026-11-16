@@ -119,6 +119,10 @@ run one at a time, stopping as soon as the outcome is decided.
 | Attempt | Time | Result | What it missed |
 |---|---|---|---|
 | 1 | 22 min, 120 tool calls | **failed**, 87 / 90 | `read_chunk()` on a part with `Content-Length: 0` |
+| 2 | 44 min, 194 tool calls | **failed**, 89 / 90 | `Domain` sub-app routing for absolute-form targets |
+
+**Result: accepted.** Two of two attempts failed, so even a pass on a third
+would leave it at one in three. I didn't run the third.
 
 **Attempt 1** (`difficulty/attempt-1.patch`, 9 files, +192 / −63). It found
 eight of the nine bugs: the `Forwarded` loop, `HEAD` request bodies,
@@ -141,3 +145,32 @@ contract (an unexpected exception), as upstream did when it fixed it.
 To be precise about the edge of the contract: a part *without* a length still
 has that minimum size in both the starting state and upstream. The hidden
 tests don't touch that case.
+
+**Attempt 2** (`difficulty/attempt-2.patch`, 11 files, +408 / −101) was the
+most thorough attempt on any task here: 44 minutes, a split-point tester, a
+small fuzzer and raw-socket sessions with a real server. It fixed eight of
+the nine bugs, and also about a dozen things outside the task (parser line
+limits across chunks, multipart `readline()` at the end of a part, data after
+`Connection: close`, `read_bufsize=0`, HTTP/1.0 responses without a length).
+
+What it missed: it made `request.host` follow an absolute-form target, but
+left the router's `Domain` rule reading the `Host` header. A request for
+`GET http://example.com/` with `Host: other.invalid` still went to the main
+application instead of the `example.com` sub-application. RFC 9112
+section 3.2.2 says the server must ignore `Host` in that case, which is point
+2 of the contract. The upstream fix changed both places in the same commit.
+
+### What I make of it
+
+- The two attempts missed different bugs, and each one's miss was a single
+  bug out of nine. Unlike anyio, the difficulty isn't one bug that everybody
+  misses. It's that nine unusual triggers is enough that an exhaustive
+  audit still drops one.
+- Both attempts fixed many real problems beyond the task, and the hidden
+  tests ignore those (both still pass the library's own tests). A reviewer
+  would want them split into separate changes.
+- Attempt 2's report raised one point about the statement: whether
+  `request.host` should keep an explicit port from an absolute-form target.
+  It kept it, which is what the tests and upstream expect, so this didn't
+  affect its score.
+
