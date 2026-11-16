@@ -1,0 +1,573 @@
+diff --git a/aiohttp/client_reqrep.py b/aiohttp/client_reqrep.py
+index ebe75fd..ccdb977 100644
+--- a/aiohttp/client_reqrep.py
++++ b/aiohttp/client_reqrep.py
+@@ -1180,6 +1180,10 @@ class ClientRequestBase:
+             else:
+                 task = asyncio.create_task(coro)
+             if task.done():
++                # Writing finished eagerly: a failure must surface now, as
++                # the connection cannot be used for this request any more.
++                if not task.cancelled() and (exc := task.exception()) is not None:
++                    raise exc
+                 task = None
+             else:
+                 self._writer = task
+diff --git a/aiohttp/connector.py b/aiohttp/connector.py
+index 6848f66..9c01160 100644
+--- a/aiohttp/connector.py
++++ b/aiohttp/connector.py
+@@ -450,7 +450,7 @@ class BaseConnector:
+         now = monotonic()
+         timeout = self._keepalive_timeout
+ 
+-        if self._conns:
++        if self._conns and timeout is not None:
+             connections = defaultdict(deque)
+             deadline = now - timeout
+             for key, conns in self._conns.items():
+@@ -663,6 +663,7 @@ class BaseConnector:
+             if self._limit_per_host:
+                 self._acquired_per_host[key].add(placeholder)
+ 
++            new_proto: ResponseHandler | None = None
+             try:
+                 # Traces are done inside the try block to ensure that the
+                 # that the placeholder is still cleaned up if an exception
+@@ -670,12 +671,17 @@ class BaseConnector:
+                 if traces:
+                     for trace in traces:
+                         await trace.send_connection_create_start()
+-                proto = await self._create_connection(req, traces, timeout)
++                proto = new_proto = await self._create_connection(
++                    req, traces, timeout
++                )
+                 if traces:
+                     for trace in traces:
+                         await trace.send_connection_create_end()
+             except BaseException:
+                 self._release_acquired(key, placeholder)
++                if new_proto is not None:
++                    # The connection was made but will never be handed out.
++                    new_proto.close()
+                 raise
+             else:
+                 if self._closed:
+@@ -752,7 +758,10 @@ class BaseConnector:
+             proto, t0 = conns.popleft()
+             # We will we reuse the connection if its connected and
+             # the keepalive timeout has not been exceeded
+-            if proto.is_connected() and t1 - t0 <= self._keepalive_timeout:
++            if proto.is_connected() and (
++                self._keepalive_timeout is None
++                or t1 - t0 <= self._keepalive_timeout
++            ):
+                 if not conns:
+                     # The very last connection was reclaimed: drop the key
+                     del self._conns[key]
+@@ -765,6 +774,7 @@ class BaseConnector:
+                             await trace.send_connection_reuseconn()
+                         except BaseException:
+                             self._release_acquired(key, proto)
++                            proto.close()
+                             raise
+                 return Connection(self, key, proto, self._loop)
+ 
+@@ -1542,7 +1552,13 @@ class TCPConnector(BaseConnector):
+             proxy_req.url = req.url
+             key = req.connection_key._replace(proxy=None, proxy_headers_hash=None)
+             conn = _ConnectTunnelConnection(self, key, proto, self._loop)
+-            proxy_resp = await proxy_req._send(conn)
++            try:
++                proxy_resp = await proxy_req._send(conn)
++            except BaseException:
++                # The tunnel can never be established on this connection.
++                conn.close()
++                transport.close()
++                raise
+             try:
+                 protocol = conn._protocol
+                 assert protocol is not None
+diff --git a/aiohttp/http_parser.py b/aiohttp/http_parser.py
+index b4d9190..1b02e30 100644
+--- a/aiohttp/http_parser.py
++++ b/aiohttp/http_parser.py
+@@ -347,6 +347,7 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
+         # Stop emitting messages once this many are queued unconsumed (0 = off).
+         self._max_msg_queue_size = max_msg_queue_size
+         self._msg_in_flight = 0
++        self._should_close = False
+ 
+     @abc.abstractmethod
+     def parse_message(self, lines: list[bytes]) -> _MsgT: ...
+@@ -397,9 +398,7 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
+         data_len = len(data)
+         start_pos = 0
+         loop = self.loop
+-        max_line_length = self.max_line_size
+ 
+-        should_close = False
+         while start_pos < data_len or self._payload_has_more_data:
+             # read HTTP message (request/response line + headers), \r\n\r\n
+             # and split by lines
+@@ -422,19 +421,21 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
+                     continue
+ 
+                 if pos >= start_pos:
+-                    if should_close:
++                    if self._should_close:
+                         raise BadHttpMessage("Data after `Connection: close`")
+ 
+                     # line found
+                     line = data[start_pos:pos]
+                     if SEP == b"\n":  # For lax response parsing
+                         line = line.rstrip(b"\r")
++                    # After the status/request line, everything is a header.
++                    max_line_length = (
++                        self.max_field_size if self._lines else self.max_line_size
++                    )
+                     if len(line) > max_line_length:
+                         raise LineTooLong(line[:100] + b"...", max_line_length)
+ 
+                     self._lines.append(line)
+-                    # After processing the status/request line, everything is a header.
+-                    max_line_length = self.max_field_size
+ 
+                     if len(self._lines) > self.max_headers:
+                         raise BadHttpMessage("Too many headers received")
+@@ -476,8 +477,13 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
+ 
+                         assert self.protocol is not None
+                         # calculate payload
+-                        empty_body = code in EMPTY_BODY_STATUS_CODES or bool(
+-                            method and method in EMPTY_BODY_METHODS
++                        # A request body is always framed by its headers,
++                        # whatever the method; only responses can be bodiless
++                        # because of the status code or the request method.
++                        # https://www.rfc-editor.org/rfc/rfc9112#section-6.3
++                        empty_body = isinstance(msg, RawResponseMessagePy) and (
++                            code in EMPTY_BODY_STATUS_CODES
++                            or bool(method and method in EMPTY_BODY_METHODS)
+                         )
+                         if not empty_body and (
+                             (length is not None and length > 0) or msg.chunked
+@@ -567,7 +573,9 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
+                         messages.append((msg, payload))
+                         if self._max_msg_queue_size:
+                             self._msg_in_flight += 1
+-                        should_close = msg.should_close
++                        # Kept across calls, so how the bytes are split
++                        # into chunks doesn't matter.
++                        self._should_close = msg.should_close
+                 else:
+                     self._tail = data[start_pos:]
+                     # A bare LF here means CRLF was required:
+@@ -575,8 +583,13 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
+                     # bytes get appended to this line and leak in the error.
+                     if b"\n" in self._tail:
+                         raise BadHttpMessage("Bad line ending, expected CRLF")
+-                    if len(self._tail) > self.max_line_size:
+-                        raise LineTooLong(self._tail[:100] + b"...", self.max_line_size)
++                    max_line_length = (
++                        self.max_field_size if self._lines else self.max_line_size
++                    )
++                    # A trailing CR may be the first half of the line separator.
++                    tail_len = len(self._tail) - self._tail.endswith(b"\r")
++                    if tail_len > max_line_length:
++                        raise LineTooLong(self._tail[:100] + b"...", max_line_length)
+                     data = EMPTY
+                     break
+ 
+@@ -1054,7 +1067,8 @@ class HttpPayloadParser:
+                     max_line_length = self._max_line_size
+                     if self._chunk == ChunkState.PARSE_TRAILERS:
+                         max_line_length = self._max_field_size
+-                    if len(self._chunk_tail) > max_line_length:
++                    tail_len = len(self._chunk_tail) - self._chunk_tail.endswith(b"\r")
++                    if tail_len > max_line_length:
+                         raise LineTooLong(
+                             self._chunk_tail[:100] + b"...", max_line_length
+                         )
+diff --git a/aiohttp/multipart.py b/aiohttp/multipart.py
+index c25c98e..71121b5 100644
+--- a/aiohttp/multipart.py
++++ b/aiohttp/multipart.py
+@@ -144,7 +144,7 @@ def parse_content_disposition(
+ 
+             try:
+                 value = unquote(value, encoding, "strict").lstrip("\\/")
+-            except (builtins.LookupError, UnicodeDecodeError):
++            except (builtins.LookupError, ValueError):
+                 # The charset is attacker-controlled here; an unknown name
+                 # raises the builtin LookupError (the bare name is shadowed in
+                 # this module by payload.LookupError).
+@@ -218,14 +218,14 @@ def content_disposition_filename(
+                 # Current value is not encoded, so process encoding of previous parts
+                 try:
+                     parts.append(unquote("".join(pending), encoding, "strict"))
+-                except (builtins.LookupError, UnicodeDecodeError):
++                except (builtins.LookupError, ValueError):
+                     return None
+                 pending.clear()
+             parts.append(value)
+         if pending:
+             try:
+                 parts.append(unquote("".join(pending), encoding, "strict"))
+-            except (builtins.LookupError, UnicodeDecodeError):
++            except (builtins.LookupError, ValueError):
+                 return None
+         if not parts:
+             return None
+@@ -347,14 +347,14 @@ class BodyPartReader:
+         data = bytearray()
+         while not self._at_eof:
+             data.extend(await self.read_chunk(self.chunk_size))
+-            if len(data) > self._client_max_size:
++            if 0 < self._client_max_size < len(data):
+                 raise self._max_size_error_cls(self._client_max_size)
+         # https://github.com/python/mypy/issues/17537
+         if decode:  # type: ignore[unreachable]
+             decoded_data = bytearray()
+             async for d in self.decode_iter(data):
+                 decoded_data.extend(d)
+-                if len(decoded_data) > self._client_max_size:
++                if 0 < self._client_max_size < len(decoded_data):
+                     raise self._max_size_error_cls(self._client_max_size)
+             return decoded_data
+         return data
+@@ -371,30 +371,32 @@ class BodyPartReader:
+         else:
+             chunk = await self._read_chunk_from_stream(size)
+ 
+-        # For the case of base64 data, we must read a fragment of size with a
+-        # remainder of 0 by dividing by 4 for string without symbols \n or \r
++        # Every chunk handed out must be decodable on its own, so a chunk must
++        # not end in the middle of a base64 quantum or a quoted-printable
++        # escape sequence: pull in the few missing bytes when it does.
+         encoding = self.headers.get(CONTENT_TRANSFER_ENCODING)
+-        if encoding and encoding.lower() == "base64":
+-            stripped_chunk = b"".join(chunk.split())
+-            remainder = len(stripped_chunk) % 4
+-
+-            while remainder != 0 and not self.at_eof():
+-                over_chunk_size = 4 - remainder
+-                over_chunk = b""
+-
+-                if self._prev_chunk:
+-                    over_chunk = self._prev_chunk[:over_chunk_size]
+-                    self._prev_chunk = self._prev_chunk[len(over_chunk) :]
+-
+-                if len(over_chunk) != over_chunk_size:
+-                    over_chunk += await self._content.read(4 - len(over_chunk))
+-
+-                if not over_chunk:
+-                    self._at_eof = True
+-
+-                stripped_chunk += b"".join(over_chunk.split())
+-                chunk += over_chunk
+-                remainder = len(stripped_chunk) % 4
++        if encoding:
++            encoding = encoding.lower()
++            if encoding == "base64":
++                stripped_len = len(b"".join(chunk.split()))
++                while stripped_len % 4 and not self._at_eof:
++                    extra = await self._read_extra(4 - stripped_len % 4, len(chunk))
++                    if not extra:
++                        break
++                    chunk += extra
++                    stripped_len += len(b"".join(extra.split()))
++            elif encoding == "quoted-printable":
++                while not self._at_eof:
++                    if chunk[-1:] == b"=":
++                        need = 2
++                    elif chunk[-2:-1] == b"=":
++                        need = 1
++                    else:
++                        break
++                    extra = await self._read_extra(need, len(chunk))
++                    if not extra:
++                        break
++                    chunk += extra
+ 
+         self._read_bytes += len(chunk)
+         if self._read_bytes == self._length:
+@@ -403,6 +405,26 @@ class BodyPartReader:
+             raise ValueError("Reader did not read all the data or it is malformed")
+         return chunk
+ 
++    async def _read_extra(self, n: int, pending: int) -> bytes:
++        """Read up to n more bytes of this part, never past its end."""
++        if self._length:
++            remaining = self._length - self._read_bytes - pending
++            if remaining <= 0:
++                return b""
++            extra = await self._content.read(min(n, remaining))
++            if self._content.at_eof():
++                self._at_eof = True
++            return extra
++        if not self._prev_chunk:
++            # Refill the look-ahead buffer, still watching for the boundary.
++            assert self._prev_chunk is not None
++            await self._read_chunk_from_stream(self.chunk_size)
++            if not self._prev_chunk:
++                return b""
++        extra = self._prev_chunk[:n]
++        self._prev_chunk = self._prev_chunk[n:]
++        return extra
++
+     async def _read_chunk_from_length(self, size: int) -> bytes:
+         # Reads body part content chunk of the specified size.
+         # The body part must has Content-Length header with proper value.
+@@ -675,9 +697,29 @@ class BodyPartReaderPayload(Payload):
+         # payload consumed up front: even an interrupted write leaves nothing that
+         # a retry or redirect could replay.
+         self._consumed = True
++        decompressor = None
++        if field._needs_content_decoding():
++            encoding = field.headers.get(CONTENT_ENCODING, "").lower()
++            if encoding in {"deflate", "gzip"}:
++                # One decompressor for the whole part: a compressed stream
++                # cannot be decoded piece by piece with fresh decompressors.
++                decompressor = ZLibDecompressor(
++                    encoding=encoding, suppress_deflate_header=True
++                )
+         while chunk := await field.read_chunk(size=DEFAULT_CHUNK_SIZE):
+-            async for d in field.decode_iter(chunk):
++            if decompressor is None:
++                async for d in field.decode_iter(chunk):
++                    await writer.write(d)
++                continue
++            data = field._apply_content_transfer_decoding(chunk)
++            max_length = field._max_decompress_size
++            d = await decompressor.decompress(data, max_length=max_length)
++            if d:
+                 await writer.write(d)
++            while decompressor.data_available:
++                d = await decompressor.decompress(b"", max_length=max_length)
++                if d:
++                    await writer.write(d)
+ 
+ 
+ class MultipartReader:
+diff --git a/aiohttp/streams.py b/aiohttp/streams.py
+index d0efcfc..3707495 100644
+--- a/aiohttp/streams.py
++++ b/aiohttp/streams.py
+@@ -396,14 +396,25 @@ class StreamReader:
+         while not_enough:
+             while self._buffer and not_enough:
+                 offset = self._buffer_offset
+-                ichar = self._buffer[0].find(separator, offset) + 1
++                first_buffer = self._buffer[0]
++                size = -1
++                if seplen > 1 and chunk:
++                    # The separator may straddle the boundary between data
++                    # already consumed and the current buffer chunk.
++                    keep = min(seplen - 1, len(chunk))
++                    window = chunk[-keep:] + first_buffer[offset : offset + seplen - 1]
++                    idx = window.find(separator)
++                    if idx != -1:
++                        size = idx - keep + seplen
++                if size == -1:
++                    ichar = first_buffer.find(separator, offset) + 1
++                    if ichar:
++                        size = ichar - offset + seplen - 1
+                 # Read from current offset to found separator or to the end.
+-                data = self._read_nowait_chunk(
+-                    ichar - offset + seplen - 1 if ichar else -1
+-                )
++                data = self._read_nowait_chunk(size)
+                 chunk += data
+                 chunk_size += len(data)
+-                if ichar:
++                if size != -1:
+                     not_enough = False
+ 
+                 if chunk_size > max_size:
+diff --git a/aiohttp/web_protocol.py b/aiohttp/web_protocol.py
+index 0446206..9c466ee 100644
+--- a/aiohttp/web_protocol.py
++++ b/aiohttp/web_protocol.py
+@@ -234,10 +234,13 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+         max_headers: int = 128,
+         max_field_size: int = 8190,
+         lingering_time: float = 10.0,
+-        read_bufsize: int = DEFAULT_CHUNK_SIZE,
++        read_bufsize: int | None = DEFAULT_CHUNK_SIZE,
+         auto_decompress: bool = True,
+         timeout_ceil_threshold: float = 5,
+     ):
++        if read_bufsize is None:
++            # Documented as "None by default": fall back to the default size.
++            read_bufsize = DEFAULT_CHUNK_SIZE
+         self._max_msg_queue_size = MAX_MSG_QUEUE_SIZE
+         # Low-water mark: resume reading once the queue drains to half the limit
+         # so we refill in batches instead of churning pause/resume per request.
+@@ -657,7 +660,7 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+ 
+     def _process_keepalive(self) -> None:
+         self._keepalive_handle = None
+-        if self._force_close or not self._keepalive:
++        if self._force_close:
+             return
+ 
+         loop = self._loop
+@@ -733,6 +736,16 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+         assert self._request_factory is not None
+         assert self._request_handler is not None
+ 
++        # A connection that never completes a request is idle too: close it
++        # once keepalive_timeout elapses without a full request arriving.
++        if keepalive_timeout is not None and not self._messages:
++            close_time = loop.time() + keepalive_timeout
++            self._next_keepalive_close_time = close_time
++            if self._keepalive_handle is None:
++                self._keepalive_handle = loop.call_at(
++                    close_time, self._process_keepalive
++                )
++
+         while not self._force_close:
+             if not self._messages:
+                 try:
+@@ -857,6 +870,8 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+                     self.log_debug("Ignored premature client disconnection.")
+ 
+             if self._keepalive and not self._close and not self._force_close:
++                if keepalive_timeout is None:
++                    continue
+                 # start keep-alive timer
+                 close_time = loop.time() + keepalive_timeout
+                 self._next_keepalive_close_time = close_time
+diff --git a/aiohttp/web_request.py b/aiohttp/web_request.py
+index 4f6649c..b2873d6 100644
+--- a/aiohttp/web_request.py
++++ b/aiohttp/web_request.py
+@@ -117,6 +117,16 @@ _FORWARDED_PAIR_RE: Final[Pattern[str]] = re.compile(_FORWARDED_PAIR)
+ ############################################################
+ 
+ 
++def _target_host(url: URL) -> str:
++    raw_host = url.raw_host or ""
++    if ":" in raw_host:
++        raw_host = f"[{raw_host}]"
++    port = url.explicit_port
++    if port is not None:
++        return f"{raw_host}:{port}"
++    return raw_host
++
++
+ def _too_many_fields(max_fields: int) -> HTTPRequestEntityTooLarge:
+     return HTTPRequestEntityTooLarge(
+         max_fields, text=f"Maximum number of form fields {max_fields} exceeded."
+@@ -180,7 +190,13 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+             # override auto-calculating url, host, and scheme
+             # all other properties should be good
+             self._cache["url"] = url
+-            self._cache["host"] = url.host
++            if host is not None:
++                self._cache["host"] = host
++            else:
++                # https://www.rfc-editor.org/rfc/rfc9112#section-3.2.2-8
++                # The host designated by the request-target, in Host header
++                # form (bracketed IPv6 literal, explicit port kept).
++                self._cache["host"] = _target_host(url)
+             self._rel_url = url.relative()
+         else:
+             self._rel_url = url
+@@ -370,12 +386,16 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+                         value += port
+                     elem[name.lower()] = value
+                     pos += len(match.group(0))
+-                elif not field_value[pos : field_value.find(";", pos)].strip(" \t"):
+-                    # Empty value
+-                    pos = field_value.find(";", pos) + 1
+                 else:
+-                    # bad syntax here, skip to next field value
+-                    break
++                    semi = field_value.find(";", pos)
++                    end = len(field_value) if semi == -1 else semi
++                    if field_value[pos:end].strip(" \t"):
++                        # bad syntax here, skip to next field value
++                        break
++                    # Empty value
++                    if semi == -1:
++                        break
++                    pos = semi + 1
+         return tuple(elems)
+ 
+     @reify
+@@ -649,6 +669,9 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+ 
+             if start is None and end is not None:
+                 # end with no start is to return tail of content
++                if end == 0:
++                    # https://www.rfc-editor.org/rfc/rfc9110#section-14.1.1-11
++                    raise ValueError("suffix-length must be positive")
+                 start = -end
+                 end = None
+ 
+@@ -716,7 +739,7 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+         encoding = self.charset or "utf-8"
+         try:
+             return bytes_body.decode(encoding)
+-        except (LookupError, UnicodeDecodeError):
++        except (LookupError, ValueError):
+             raise HTTPUnsupportedMediaType()
+ 
+     async def json(
+@@ -852,7 +875,7 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+                             charset = field.get_charset(default="utf-8")
+                             try:
+                                 decoded = value.decode(charset)
+-                            except (LookupError, UnicodeDecodeError):
++                            except (LookupError, ValueError):
+                                 raise HTTPUnsupportedMediaType()
+                             out.add(field.name, decoded)
+                         else:
+@@ -868,7 +891,7 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+             bytes_query = data.rstrip()
+             try:
+                 query = bytes_query.decode(charset)
+-            except (LookupError, UnicodeDecodeError):
++            except (LookupError, ValueError):
+                 raise HTTPUnsupportedMediaType()
+             max_fields = self._client_max_fields
+             try:
+diff --git a/aiohttp/web_urldispatcher.py b/aiohttp/web_urldispatcher.py
+index ff0e286..1557b85 100644
+--- a/aiohttp/web_urldispatcher.py
++++ b/aiohttp/web_urldispatcher.py
+@@ -800,7 +800,12 @@ class Domain(AbstractRuleMatching):
+         return f"{url.raw_host}:{url.port}"
+ 
+     async def match(self, request: Request) -> bool:
+-        host = request.headers.get(hdrs.HOST)
++        if request._message.url.absolute:
++            # https://www.rfc-editor.org/rfc/rfc9112#section-3.2.2-8
++            # The Host header is ignored for an absolute-form target.
++            host = request.host
++        else:
++            host = request.headers.get(hdrs.HOST)
+         if not host:
+             return False
+         return self.match_domain(host)
+diff --git a/aiohttp/web_ws.py b/aiohttp/web_ws.py
+index 9847952..5430682 100644
+--- a/aiohttp/web_ws.py
++++ b/aiohttp/web_ws.py
+@@ -1,6 +1,5 @@
+ import asyncio
+ import base64
+-import binascii
+ import hashlib
+ import json
+ import sys
+@@ -316,7 +315,7 @@ class WebSocketResponse(StreamResponse, Generic[_DecodeText]):
+         try:
+             if not key or len(base64.b64decode(key)) != 16:
+                 raise HTTPBadRequest(text=f"Handshake error: {key!r}")
+-        except binascii.Error:
++        except ValueError:  # binascii.Error, or a non-ASCII key
+             raise HTTPBadRequest(text=f"Handshake error: {key!r}") from None
+ 
+         accept_val = base64.b64encode(

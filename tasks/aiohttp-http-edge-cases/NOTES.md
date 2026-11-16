@@ -116,4 +116,28 @@ Same bar as every task here: a strong coding agent gets `PROBLEM.md` and the
 repository, one try. Accepted if at most one attempt in three passes. Attempts
 run one at a time, stopping as soon as the outcome is decided.
 
-Results are added below as they come in.
+| Attempt | Time | Result | What it missed |
+|---|---|---|---|
+| 1 | 22 min, 120 tool calls | **failed**, 87 / 90 | `read_chunk()` on a part with `Content-Length: 0` |
+
+**Attempt 1** (`difficulty/attempt-1.patch`, 9 files, +192 / −63). It found
+eight of the nine bugs: the `Forwarded` loop, `HEAD` request bodies,
+absolute-form targets, the split separator, base64 alignment, idle server
+connections, `keepalive_timeout=None` and the proxy `CONNECT` leak. It also
+fixed a handful of things beyond the task (a `Range: bytes=-0` edge case,
+non-ASCII `Sec-WebSocket-Key`, `read_bufsize=None`, quoted-printable chunk
+alignment). It wrote its own split-point tester, as earlier attempts on other
+tasks did.
+
+What it missed: a multipart part with an explicit `Content-Length: 0` is
+treated as a part of unknown length, because the code tests `if
+self._length:` rather than `is not None`. Read with `read_chunk()` and a size
+smaller than the boundary, it then trips an internal assertion
+(`Chunk size must be greater or equal than boundary length + 2`). The same call
+works on a part with any other `Content-Length`. The documentation for
+`read_chunk()` sets no minimum size, so I count this as point 3 of the
+contract (an unexpected exception), as upstream did when it fixed it.
+
+To be precise about the edge of the contract: a part *without* a length still
+has that minimum size in both the starting state and upstream. The hidden
+tests don't touch that case.

@@ -26,7 +26,7 @@ because that's how I got to the ones that work.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
-| [`tasks/aiohttp-http-edge-cases`](tasks/aiohttp-http-edge-cases) | [aiohttp](https://github.com/aio-libs/aiohttp) | Bug hunt: nine HTTP edge cases with unusual triggers, client and server, no oracle | In progress |
+| [`tasks/aiohttp-http-edge-cases`](tasks/aiohttp-http-edge-cases) | [aiohttp](https://github.com/aio-libs/aiohttp) | Bug hunt: nine HTTP edge cases with unusual triggers, client and server, no oracle | In progress: attempt 1 failed (87 / 90) |
 | [`tasks/tomlkit-conformance`](tasks/tomlkit-conformance) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v3: fifteen bugs with rare triggers, one symptom in the report | **Accepted: 0 of 2 attempts solved it** |
 | [`tasks/anyio-cancellation-safety`](tasks/anyio-cancellation-safety) | [anyio](https://github.com/agronholm/anyio) | Bug hunt: eleven cancellation-safety bugs in seven files, no oracle | **Accepted**: 0 of 2 attempts passed (34 / 36 each) |
 | [`tasks/tomlkit-table-structure`](tasks/tomlkit-table-structure) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v2: eight bugs, one symptom in the report | Easy (first attempt solved it, 100 / 100) |
