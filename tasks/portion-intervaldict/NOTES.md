@@ -230,7 +230,7 @@ can run locally.
 ## Difficulty check
 
 **Result: rejected. The first two attempts both passed (179/179), so the gate
-(at most 1 of 3) cannot be met whatever the third one does.**
+(at most 1 of 3) cannot be met whatever the third one would have done.**
 
 Protocol: each attempt is a fresh agent instance given a directory with
 `PROBLEM.md`, the repository at the starting commit (no upstream history) and a
@@ -243,7 +243,7 @@ with networking disabled, exactly as `run.sh` does.
 |---|---|---|---|
 | 1 | 233 passed | **179 / 179** | `portion/dict.py` +390 / −74, changelog entry |
 | 2 | 233 passed | **179 / 179** | `portion/dict.py` +513 / −77, changelog entry |
-| 3 | — | — | still running when the verdict was already settled |
+| 3 | — | — | stopped unfinished once the verdict was settled; not graded |
 
 Attempt 1 was interrupted once by an API usage limit and resumed from where it
 had stopped; it received no additional information.
