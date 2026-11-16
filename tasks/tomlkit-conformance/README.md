@@ -1,7 +1,8 @@
 # tomlkit: fifteen conformance bugs, one symptom in the report
 
-> **Status: difficulty check in progress, 0 of 1 attempts passed so far.** See the end of
-> [`NOTES.md`](NOTES.md).
+> **Status: accepted.** Two one-shot attempts both failed (162 / 172 and
+> 166 / 172), each on a different real bug it never found, after rewrites of
+> about 1,700 lines. Details at the end of [`NOTES.md`](NOTES.md).
 
 This is the third version of the tomlkit task, and it's built around what I
 learned from the first two:

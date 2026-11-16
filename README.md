@@ -12,9 +12,14 @@ because those notes are where most of what I learned ended up.
 
 ## What's here
 
+The one that passed is [`tasks/tomlkit-conformance`](tasks/tomlkit-conformance).
+Two independent attempts each fixed 14 of its 15 bugs and missed a different
+one. The rest are earlier candidates that turned out easy, kept with notes on
+why, because that's how I got to the one that works.
+
 | Task | Repo | Type | Result |
 |---|---|---|---|
-| [`tasks/tomlkit-conformance`](tasks/tomlkit-conformance) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v3: fifteen bugs with rare triggers, one symptom in the report | In progress: 0 of 1 attempts solved it |
+| [`tasks/tomlkit-conformance`](tasks/tomlkit-conformance) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v3: fifteen bugs with rare triggers, one symptom in the report | **Accepted: 0 of 2 attempts solved it** |
 | [`tasks/tomlkit-table-structure`](tasks/tomlkit-table-structure) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v2: eight bugs, one symptom in the report | Easy (first attempt solved it, 100 / 100) |
 | [`tasks/tomlkit-out-of-order-tables`](tasks/tomlkit-out-of-order-tables) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt: five bugs, one symptom in the report | Rejected, but close: 2 of 3 solved it, each with a ~1,000-line rewrite |
 | [`tasks/portion-intervaldict`](tasks/portion-intervaldict) | [portion](https://github.com/AlexandreDecan/portion) | Performance, behaviour must not change | Easy (2 of 2 attempts solved it) |

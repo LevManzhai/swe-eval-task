@@ -119,6 +119,50 @@ existing tests pin down a few non-conforming behaviours (AoT merging,
 `\r\n` in multiline strings). It kept them, as the statement asks. None of
 that touches the hidden tests.
 
-### Score so far
+### Attempt 2: failed (166 / 172)
 
-0 passed out of 1.
+Patch: `difficulty/attempt-2.patch`. The library's suite passed (1,261,
+including 33 tests of its own), and the hidden tests passed **166 of 172**.
+
+All 6 failures are the same bug, and it's the one the failed attempt on the
+first version also missed: a table defined out of order under an **indented**
+header four levels deep (` [a.b.c.d]`, then `[a.b.c]`). On its version that
+file still fails to parse with
+`'OutOfOrderTableProxy' object has no attribute 'trivia'`, even though
+`tomllib` accepts it.
+
+It was the longest attempt of all: about 49 minutes and 229 tool calls, about
+1,650 changed lines in six files, a new module `tomlkit/_namespace.py`, and
+fuzzers against `tomllib` over random documents, mutated toml-test files and
+edit sequences. In its own words: "A fuzzer only covers what it generates, so
+the hidden suite may still find cases it missed." It found and fixed 14 of the
+15 bugs, including the signed uppercase `+NaN` that attempt 1 missed.
+
+What it reported as ambiguous was the same as attempt 1: the existing tests pin
+down some non-conforming behaviours, and it kept them. None of that touches
+the hidden tests.
+
+## Verdict: accepted, 0 of 2
+
+| Attempt | Hidden tests | Bug it missed | Size of solution |
+|---|---|---|---|
+| 1 | 162 / 172 | signed uppercase `+NaN` / `-Inf` accepted | ~1,750 lines |
+| 2 | 166 / 172 | crash on an indented out-of-order header | ~1,650 lines, 49 min |
+| 3 | not run | the result was already decided: at most 1 of 3 can pass | |
+
+My bar is at most one pass in three. Two fails already meet it, so I didn't
+run the third attempt.
+
+### Why it worked this time
+
+- **Many independent bugs, each with a rare trigger.** Both attempts got 14 of
+  15. Each missed a different bug: a different blind spot in its own testing.
+  That's what I was counting on. The chance of fixing *all* fifteen is the
+  product of the chances of fixing each one, and with fifteen it drops fast.
+- **The contract is fair, but finding the cases is up to the solver.** Both
+  attempts said in their reports that they understood the contract and had
+  nothing to dispute in the statement. They failed on a real bug that they
+  didn't find, not on how something was worded.
+- **Upstream fixes are tiny.** Both missed bugs are fixed upstream in 2–4
+  lines (`398c53e`, `446d6fa`). This isn't about the volume of work. It's
+  about whether you know to look in that particular place.
