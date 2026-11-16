@@ -91,4 +91,32 @@ The setup is the same as before: a folder with `PROBLEM.md`, the repo without
 history, and a virtualenv. No network, one try each. Attempts run one at a
 time, and I stop as soon as the result is decided.
 
-_In progress._
+### Attempt 1: passed (179 / 179), in about 2 minutes
+
+Patch: `difficulty/attempt-1.patch`. The visible suite passed (253, including
+2 tests of its own), and the hidden tests passed **179 of 179**, all 870
+subtests included. It took about **2 minutes, 13 tool calls and 128 changed
+lines**. That's the fastest solve of any candidate so far.
+
+It got every trap right, including the ones I considered hard: the start at
+the Unix epoch (`is not None`), `59/15` at the field maximum, equal ranges,
+wrapping ranges, seconds and years, and hashed `H/15`. In its own words, it
+derived the rules "from every documented example and the changelog fixes".
+
+I stopped after this attempt. The task is rejected.
+
+### Why it was easy
+
+I was wrong about the oracle. I thought "the docs are prose, so there's
+nothing to compare against". But croniter's 7.0 changelog notes and README
+are written so thoroughly that they amount to the spec *and* the test suite:
+the rules, the edge cases (an empty phase, wrapping ranges, `59/15`, equal
+ranges), concrete examples with exact outputs, and even the "old → new"
+behaviour for each case. The CHANGELOG even contains the history of the
+earlier fixes (#235 month, #239 Sunday), with a description of the exact
+formula.
+
+So "implement from documentation" is only hard when the documentation leaves
+real gaps. Here, upstream wrote it after the fact, from the finished
+implementation and with every edge case in mind, which made the task
+almost a transcription.

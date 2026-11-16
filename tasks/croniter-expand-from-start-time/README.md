@@ -1,7 +1,7 @@
 # croniter: make `expand_from_start_time` do what its documentation says
 
-> **Status: difficulty check in progress.** See the end of
-> [`NOTES.md`](NOTES.md).
+> **Status: rejected.** The first attempt solved it in about two minutes
+> (179 / 179). Reasons are at the end of [`NOTES.md`](NOTES.md).
 
 [croniter](https://github.com/pallets-eco/croniter) computes when a cron
 expression fires. With `expand_from_start_time=True`, a step like `*/15`
