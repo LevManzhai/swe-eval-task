@@ -156,7 +156,22 @@ existing tests pin down behaviour that conflicts with the list, keep the tested
 behaviour. This was the only change made after the attempt, and it doesn't
 change what the hidden tests check.
 
+### Attempt 2: passed (77 / 77)
+
+This one got the statement with the added sentence. Patch:
+`difficulty/attempt-2.patch`.
+
+- The library's suite: 1,423 passed (plus 16 of its own tests).
+- Hidden tests: **77 of 77**.
+
+It took about 34 minutes, roughly 150 tool calls, and about 940 changed lines
+in three files. Like the first attempt, it wrote its own random tester against
+`tomllib`, but it also generated the cases that the first one missed. In the
+end it put a separate checker into the parser that follows `tomllib`'s rules,
+and rewrote the split-table proxy. That's a much bigger rewrite than the five
+upstream fixes, which come to 31 changed lines.
+
 ### Score so far
 
-0 passed out of 1. The bar is at most 1 of 3, so the task needs at least one
-more attempt to fail, which means running 2 more.
+1 passed out of 2. The bar is at most 1 of 3, so the third attempt decides:
+if it fails, the task is accepted (1 of 3); if it passes, it's rejected.

@@ -14,7 +14,7 @@ because those notes are where most of what I learned ended up.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
-| [`tasks/tomlkit-out-of-order-tables`](tasks/tomlkit-out-of-order-tables) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt: five bugs, one symptom in the report | In progress: 0 of 1 attempts solved it |
+| [`tasks/tomlkit-out-of-order-tables`](tasks/tomlkit-out-of-order-tables) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt: five bugs, one symptom in the report | In progress: 1 of 2 attempts solved it |
 | [`tasks/portion-intervaldict`](tasks/portion-intervaldict) | [portion](https://github.com/AlexandreDecan/portion) | Performance, behaviour must not change | Too easy (2 of 2 attempts solved it) |
 | [`tasks/flask-blueprint-prefix`](tasks/flask-blueprint-prefix) | [flask](https://github.com/pallets/flask) | Bug fix | Too easy (3 of 3 attempts solved it) |
 

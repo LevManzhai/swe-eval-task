@@ -1,6 +1,6 @@
 # tomlkit: several bugs in tables that are split across a document
 
-> **Status: difficulty check in progress, 0 of 1 attempts passed so far.**
+> **Status: difficulty check in progress, 1 of 2 attempts passed so far.**
 > See the end of [`NOTES.md`](NOTES.md).
 
 [tomlkit](https://github.com/python-poetry/tomlkit) is the library Poetry uses
