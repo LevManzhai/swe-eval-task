@@ -1,94 +1,75 @@
-# `portion.IntervalDict`: logarithmic single-key operations
+# portion: make `IntervalDict` fast without changing what it does
 
-> **Status: rejected.** The task is reproducible and its verifier is sound, but
-> it did not pass the difficulty gate described in the
-> [top-level README](../../README.md): the first two independent attempts both
-> solved it in a single shot. See the "Difficulty check" section of
-> [`NOTES.md`](NOTES.md) and [`REJECTED.md`](../../REJECTED.md).
+> **Status: rejected.** The task builds and the verifier works, but two
+> separate one-shot attempts both solved it, so it didn't clear my difficulty
+> bar. The reasons are in [`NOTES.md`](NOTES.md).
 
-A performance task on a real library:
-[`portion`](https://github.com/AlexandreDecan/portion), a Python library for
-interval arithmetic. Its `IntervalDict` (a mapping from intervals to values)
-scans its whole content on every lookup, assignment and deletion. The task is
-to make single-key operations logarithmic **without changing anything that is
-observable through the public API**.
+[portion](https://github.com/AlexandreDecan/portion) is a Python library for
+working with intervals. One of its classes, `IntervalDict`, maps intervals to
+values. Every lookup or write goes through the entire mapping, so with a few
+thousand intervals stored, a single `d[x]` costs thousands of comparisons.
 
-The solver gets the repository at a pinned commit and
-[`task/PROBLEM.md`](task/PROBLEM.md). The patch is graded by a hidden test
-suite that counts comparisons instead of measuring time, and that compares the
-behaviour of the patched class with the original one on long random operation
-sequences.
+The task: make single-key operations logarithmic, and keep every result the
+public API returns exactly the same as before.
 
-## Why it is not a one-line change
+## Why I expected it to be hard
 
-The class stores one key per *distinct value*: when two intervals share a
-value they are merged into a single, non-atomic key (a union of intervals).
-This is documented, and it is visible everywhere: `len()`, `keys()`,
-`items()`, `repr()`, `as_dict()`, `popitem()`.
+`IntervalDict` keeps one key per distinct value. When two ranges hold the same
+value, their keys get merged into one union. The README documents this, and
+it shows up in `len()`, `keys()`, `items()` and `repr()`.
 
-That representation is exactly what makes the obvious optimisation wrong. The
-storage is a sorted dict ordered by the lower bound of each key, which invites
-a binary search — but the keys interleave (`even` covers `[0,1) | [2,3) | …`,
-`odd` covers `[1,2) | [3,4) | …`), so being sorted by lower bound says nothing
-about which key contains a given point. A correct solution has to change the
-internal representation to disjoint atomic intervals and then *reconstruct*
-the documented per-value view on demand, while preserving:
+The storage is already sorted, so the obvious move is a binary search. That
+answer is wrong, because the merged keys interleave: `"even"` covers
+`[0,1) | [2,3) | [4,5)` and `"odd"` covers `[1,2) | [3,4)`, so finding the
+nearest key tells you nothing about which key actually contains your point.
+That broken version still passes all 233 of the library's own tests.
 
-- grouping by **equality**, not by hash (values only need to support `==`;
-  lists and dicts are valid values);
-- the order of keys, and the merging of adjacent intervals inside a key;
-- live `keys()` / `values()` / `items()` views;
-- support for `Interval` subclasses (discrete intervals merge `[0,1]` and
-  `[2,3]` into `[0,3]`);
-- open/closed bounds at touching points, infinities, non-atomic keys.
+To do it properly you have to store the data a different way, then rebuild the
+documented "one key per value" view out of it, without breaking any of these:
 
-See [`NOTES.md`](NOTES.md) for the full analysis, the wrong solutions the
-verifier is built to reject, and the result of the difficulty check.
+- values only need `==` to be stored, so lists have to work and you can't
+  group values by hash alone;
+- `keys()`, `values()` and `items()` are live views;
+- subclasses of `Interval`, like integer intervals where `[0,1]` and `[2,3]`
+  merge into `[0,3]`, must keep working;
+- open and closed bounds where two intervals touch.
 
-## Layout
+## How it's checked
 
-| Path | What it is |
-|---|---|
-| `task/PROBLEM.md` | The problem statement given to the solver. |
-| `environment/Dockerfile` | Starting environment: pinned Python, `portion` at the pinned commit, pinned dependencies, plus a pristine copy of the original class used as the oracle. |
-| `environment/requirements.txt` | Exact `==` pins. |
-| `solution/reference.patch` | Reference solution (unified diff against the starting commit). |
-| `verifier/test_task.py` | Hidden test suite: documented behaviour, differential tests, comparison budgets. |
-| `verifier/alt_fixes/` | Two structurally different correct solutions; both must pass. |
-| `verifier/wrong_fixes/` | Seven plausible but wrong or incomplete solutions; all must fail. |
-| `run.sh` | Builds the image and checks the whole matrix above. |
-| `NOTES.md` | Design notes, justification of every hidden check, difficulty check. |
+The hidden tests use three methods:
 
-## Running the self-check
+- examples taken directly from the library's README;
+- random sequences of operations run on both the new class and an untouched
+  copy of the original, comparing every result;
+- counting comparisons, not timing anything. Interval bounds are a small class
+  that increments a counter every time it is compared. Each operation on a
+  4096-interval mapping is allowed at most 1000 comparisons. The original code
+  needs up to about 20,000, and my solution about 200.
 
-Requires Docker.
+## Running it
+
+You need Docker.
 
 ```bash
 ./run.sh
 ```
 
-It builds the image, then verifies that the starting state passes the upstream
-tests but fails the hidden verifier, that the reference and both alternative
-solutions pass both, and that every wrong solution fails the hidden verifier.
-All test runs happen with networking disabled. The script exits non-zero if
-any expectation is violated.
+It builds the image and then confirms that:
 
-## Grading a candidate patch
+- the original code fails the hidden tests;
+- my solution and two alternative ones pass;
+- all seven wrong solutions fail.
+
+To grade a patch of your own:
 
 ```bash
-docker build -t portion-intervaldict-task environment
+docker build -t portion-task environment
 docker run --rm --network none \
     -v "$PWD/verifier/test_task.py:/workspace/verifier/test_task.py:ro" \
-    -v "/path/to/candidate.patch:/workspace/candidate.patch:ro" \
-    portion-intervaldict-task \
-    bash -c "git apply /workspace/candidate.patch \
-             && cd /workspace/verifier \
-             && python -m pytest test_task.py -q -p no:cacheprovider -p no:benchmark"
+    -v "/path/to/your.patch:/workspace/candidate.patch:ro" \
+    portion-task \
+    bash -c "git apply /workspace/candidate.patch && cd /workspace/verifier && python -m pytest test_task.py -q -p no:benchmark"
 ```
 
-## Licence
-
-`portion` is distributed under the LGPL-3.0-or-later licence. The patches in
-this directory are derivative works of `portion/dict.py` and are provided under
-the same licence. This repository does not redistribute the library itself:
-the Dockerfile fetches it from upstream.
+portion is LGPL-3.0. The Dockerfile clones it from GitHub; this repo doesn't
+include the library itself.
