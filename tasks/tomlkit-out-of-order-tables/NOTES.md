@@ -171,7 +171,47 @@ end it put a separate checker into the parser that follows `tomllib`'s rules,
 and rewrote the split-table proxy. That's a much bigger rewrite than the five
 upstream fixes, which come to 31 changed lines.
 
-### Score so far
+### Attempt 3: passed (77 / 77)
 
-1 passed out of 2. The bar is at most 1 of 3, so the third attempt decides:
-if it fails, the task is accepted (1 of 3); if it passes, it's rejected.
+Patch: `difficulty/attempt-3.patch`. It ran the library's suite (1,429 passed,
+22 of them its own) and passed **77 of 77** hidden tests. It took about 32
+minutes, about 150 tool calls, and roughly 890 changed lines in three files.
+Like attempt 2, it built a separate structure checker into the parser and
+rewrote the proxy, and it ran its own random tester against `tomllib` and the
+toml-test files.
+
+### Verdict: rejected, 2 of 3
+
+| Attempt | Hidden tests | Time | Changed lines |
+|---|---|---|---|
+| 1 | 73 / 77, missed the indented-header crash | ~15 min | ~1,070 |
+| 2 | **77 / 77** | ~34 min | ~1,120 |
+| 3 | **77 / 77** | ~32 min | ~1,060 |
+
+My bar is at most 1 of 3, so the task doesn't pass.
+
+This is still the closest any of my candidates has come. It's the first where
+an attempt failed on the substance, and the only one where all three attempts
+needed half an hour and a thousand lines of changes to get through. Upstream
+fixed the same five bugs in 31 lines.
+
+### What I take from it
+
+- The "one symptom plus a contract" design worked as intended. No attempt
+  could stop after fixing the visible bug, and all three had to go looking.
+- What let them succeed is the same as before. `tomllib` is right there, so
+  the contract can be checked mechanically, and all three wrote random testers
+  against it. Two of the three generators happened to be broad enough to hit
+  the indented-header case, and one wasn't. That makes the difference between
+  passing and failing largely a matter of how wide their generator was.
+- The attempts didn't make the small, targeted fixes upstream made. They
+  replaced whole subsystems instead (a new structure checker in the parser, a
+  new proxy, a new array view). A verifier that only checks the contract can't
+  tell the two apart, even though a reviewer would never merge a
+  1,000-line rewrite for these bugs. So "solves it" and "solves it the way a
+  maintainer would accept" are two different bars, and my gate only measures
+  the first.
+- I did not add tests after seeing the attempts. Several weak spots they
+  reported (e.g. emptying an array of tables inside a split table) are bugs in
+  upstream as well, so testing them would mean asking for more than the
+  reference does.

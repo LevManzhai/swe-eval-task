@@ -1,0 +1,1463 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index de1a214..4da1d51 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -9,6 +9,12 @@
+ 
+ ### Fixed
+ 
++- Fix the handling of tables written in several non-contiguous parts (e.g. `[tool.poetry]` and `[tool.other]` with another table in between):
++  - parsing and writing back such a document no longer reorders its sections when an array of tables (`[[plugins]]`) sits between the parts, nor when a sub-table extends an element of an array of tables after another table;
++  - documents that TOML forbids (a table defined twice, a table defined by a header extended with dotted keys or the other way round...) are rejected, and valid ones are no longer rejected with `KeyAlreadyPresent` or "Redefinition of an existing table", by checking the structure of the document in document order while parsing;
++  - setting, replacing or deleting keys through the object returned for a split table (or for one of its sub-tables) now changes the right parts and no longer produces duplicate headers or invalid TOML;
++  - a table emptied by deleting its last key keeps rendering (`[a]`, or `a = {}` for a dotted key) instead of disappearing from the output;
++  - a table added under a dotted key (`a.b = 1`) renders with its full path, after the key/value lines of its scope, instead of a wrong header that captured the following lines.
+ - Fix `item()` and `dumps()` writing a `datetime` whose UTC offset is not a whole number of minutes (e.g. the historical LMT offsets `zoneinfo` gives, such as `-00:44:30`) as invalid TOML like `1900-01-01T12:00:00Z:30`, which no parser accepts. Such a value is now written as the same instant in UTC; this also covers `DateTime.replace()` and `astimezone()`.
+ - Allow `DateTime.astimezone()` to use the local timezone when no timezone argument is supplied, matching `datetime.datetime`.
+ - Arithmetic and `replace()` results for `Integer`, `Float`, `String`, `DateTime`, `Date` and `Time` no longer share the original item's `Trivia`, so changing the result's comment or indentation no longer rewrites the item still stored in the document.
+diff --git a/tests/test_toml_document.py b/tests/test_toml_document.py
+index 7c08d05..0104a95 100644
+--- a/tests/test_toml_document.py
++++ b/tests/test_toml_document.py
+@@ -1891,3 +1891,141 @@ def test_emptied_array_of_tables_is_relative_to_the_nearest_header() -> None:
+     doc["t"]["u"]["a"].pop()
+ 
+     assert doc.as_string() == "[t]\nu.a = []\n"
++
++
++# Tables written in several non-contiguous parts.
++
++SPLIT_TABLE_DOCUMENTS = [
++    '[tool.poetry]\nname = "foo"\n\n[[plugins]]\nname = "bar"\n\n[tool.other]\na = "b"\n',
++    "[[b]]\n[c]\na = true\n# comment\n[b.a.a]\n",
++    "x = true\n[[b]]\n[b.b]\n[b.a.a]\n[a.a]\n[[b.b.b]]\n",
++    "[[c]]\ny = 1\n[b.b.a]\nb = true\n[a.b.b]\ny = {}\n[[c.c]]\nc = 2\n",
++    "[[a.a]]\nc = 1\n[c.b]\n\n[[a.a.b]]\n",
++    "[b.c.c]\nb = 1\n[c.a]\na = true\n[b]\nc.b = {}\nx = { p = 1 }\n",
++    "[[a.a]]\n[a]\nb = { p = 1 }\n[[a.a.a]]\n[[a.a]]\n",
++    "[[b]]\n[[b]]\n[b.b.a]\n[[b.b.b]]\n",
++    "[[b]]\nx = 1\n[c]\n[b.a]\ny = 2\n[d]\n[[b]]\nz = 3\n",
++    "  [[b.c.b]]\n[b.c.a]\n",
++]
++
++
++@pytest.mark.parametrize("content", SPLIT_TABLE_DOCUMENTS)
++def test_split_tables_round_trip(content: str) -> None:
++    import tomllib
++
++    doc = parse(content)
++
++    assert doc.as_string() == content
++    assert doc.unwrap() == tomllib.loads(content)
++
++
++@pytest.mark.parametrize(
++    "content",
++    [
++        "[b]\nb = { p = 1 }\n[c]\n[a]\n[c.b.b]\nx = {}\n[c]\nc.c = {}\n",
++        "b = {}\nc.c = 1\n[c.b.b]\nc = {}\n[[a.a]]\n[c]\ny = true\n",
++        "a.a = { p = 1 }\n[a.b.a]\n[a]\n",
++        "[a]\n[c]\nc.b = { p = 1 }\n[a.c.b]\nc = 1\na.c = 2\n[a]\n",
++        "a = true\nc.b = {}\n[c.c]\na = true\n[c]\ny = 1\na.b = 2\n",
++    ],
++)
++def test_split_tables_invalid_documents_are_rejected(content: str) -> None:
++    with pytest.raises(ParseError):
++        parse(content)
++
++
++def test_split_table_can_be_edited_through_its_proxy() -> None:
++    import tomllib
++
++    content = '[tool.poetry]\nname = "foo"\n\n[[plugins]]\nname = "bar"\n\n[tool.other]\na = "b"\n'
++    doc = parse(content)
++    tool = doc["tool"]
++    tool["new"] = {"x": 1}
++    tool["poetry"]["version"] = "1.0"
++    tool.pop("other")
++    tool.update({"black": {"line-length": 88}, "plain": 3})
++    tool["plain"] = 4
++
++    expected = {
++        "tool": {
++            "poetry": {"name": "foo", "version": "1.0"},
++            "new": {"x": 1},
++            "black": {"line-length": 88},
++            "plain": 4,
++        },
++        "plugins": [{"name": "bar"}],
++    }
++    assert doc.unwrap() == expected
++    assert tomllib.loads(doc.as_string()) == expected
++
++
++def test_split_table_child_split_again_can_be_edited() -> None:
++    import tomllib
++
++    doc = parse("[c.b.a]\na = true\n\n[b]\n[c.b]\n# comment\n[c]\n")
++    doc["c"]["b"]["a"] = {"m": {"n": {"o": 3}}, "w": 5}
++    doc["b"]["c"] = [1, 2]
++
++    expected = {"c": {"b": {"a": {"m": {"n": {"o": 3}}, "w": 5}}}, "b": {"c": [1, 2]}}
++    assert doc.unwrap() == expected
++    assert tomllib.loads(doc.as_string()) == expected
++
++
++def test_array_of_tables_element_extended_later_can_be_edited() -> None:
++    import tomllib
++
++    doc = parse("[[b]]\nx = 1\n[c]\n[b.a.a]\nq = 1\n")
++    assert doc.as_string() == "[[b]]\nx = 1\n[c]\n[b.a.a]\nq = 1\n"
++
++    doc["b"].append({"n": 1})
++    doc["b"][0]["y"] = 2
++    doc["b"][0]["a"]["z"] = 3
++
++    expected = {
++        "b": [{"x": 1, "y": 2, "a": {"z": 3, "a": {"q": 1}}}, {"n": 1}],
++        "c": {},
++    }
++    assert doc.unwrap() == expected
++    assert tomllib.loads(doc.as_string()) == expected
++
++    del doc["b"][0]
++    assert doc.unwrap() == {"b": [{"n": 1}], "c": {}}
++    assert tomllib.loads(doc.as_string()) == {"b": [{"n": 1}], "c": {}}
++
++
++def test_table_added_under_dotted_key_keeps_its_path() -> None:
++    import tomllib
++
++    doc = parse("[a]\nb.a = [1, 2]\n")
++    doc["a"]["b"]["x"] = {"w": 5}
++
++    expected = {"a": {"b": {"a": [1, 2], "x": {"w": 5}}}}
++    assert doc.unwrap() == expected
++    assert tomllib.loads(doc.as_string()) == expected
++
++
++def test_table_added_under_dotted_key_does_not_capture_following_values() -> None:
++    import tomllib
++
++    doc = parse("a.b = true\ny = true\n[b]\n")
++    doc["a"]["y"] = {}
++
++    expected = {"a": {"b": True, "y": {}}, "y": True, "b": {}}
++    assert doc.unwrap() == expected
++    assert tomllib.loads(doc.as_string()) == expected
++
++
++def test_emptied_implicit_table_is_kept() -> None:
++    doc = parse("[x]\n[c.a]\nq = 1\n")
++    del doc["c"]["a"]
++
++    assert doc.as_string() == "[x]\n[c]\n"
++    assert parse(doc.as_string()).unwrap() == doc.unwrap() == {"x": {}, "c": {}}
++
++
++def test_emptied_dotted_key_table_is_kept() -> None:
++    doc = parse("a.b = 1\nz = 2\n")
++    del doc["a"]["b"]
++
++    assert doc.as_string() == "a = {}\nz = 2\n"
++    assert parse(doc.as_string()).unwrap() == doc.unwrap() == {"a": {}, "z": 2}
+diff --git a/tomlkit/container.py b/tomlkit/container.py
+index 5386c35..2bdbcd1 100644
+--- a/tomlkit/container.py
++++ b/tomlkit/container.py
+@@ -1,11 +1,14 @@
+ from __future__ import annotations
+ 
++import contextvars
+ import copy
+ import math
+ 
+ from collections.abc import Iterator
+ from typing import TYPE_CHECKING
+ from typing import Any
++from typing import Optional
++from typing import Union
+ 
+ 
+ if TYPE_CHECKING:
+@@ -32,6 +35,15 @@ from tomlkit.items import Whitespace
+ from tomlkit.items import item as _item
+ 
+ 
++# Set while the parser builds a document. The parser checks the structure of
++# the whole document itself (see ``tomlkit.parser._StructureChecker``), in
++# document order, which the per-container checks below cannot always do once a
++# table is split into several parts; they are skipped meanwhile.
++_structure_checked: contextvars.ContextVar[bool] = contextvars.ContextVar(
++    "tomlkit_structure_checked", default=False
++)
++
++
+ def _is_empty_aot(item: Item) -> bool:
+     """Whether ``item`` is an array of tables with no elements left."""
+     return isinstance(item, AoT) and not item.body
+@@ -45,6 +57,7 @@ def _emits_header(key: Key, table: Table) -> bool:
+     """
+     return (
+         not table.is_super_table()
++        or (not _has_keys(table) and not key.is_dotted())
+         or (
+             any(
+                 not isinstance(v, (Table, AoT, Whitespace, Null))
+@@ -63,6 +76,27 @@ def _emits_header(key: Key, table: Table) -> bool:
+     )
+ 
+ 
++def _has_keys(table: Table) -> bool:
++    """Whether ``table`` still holds any key at all."""
++    return any(k is not None for k, _ in table.value.body)
++
++
++def _is_dotted_table(key: Key, item: Item) -> bool:
++    """Whether ``item`` is a table defined by dotted keys (``a.b = 1``)."""
++    return isinstance(item, Table) and key.is_dotted()
++
++
++def _join_lines(before: str, after: str) -> str:
++    """Concatenate two rendered fragments, making sure ``after`` starts on a
++    line of its own."""
++    if not after:
++        return before
++    tail = before.rstrip(" \t")
++    if tail and not tail.endswith("\n") and not after.lstrip(" \t").startswith("\n"):
++        before += "\n"
++    return before + after
++
++
+ def _header_less_aots(
+     body: list[tuple[Key | None, Item]], prefix: str = ""
+ ) -> list[tuple[str, AoT]]:
+@@ -85,7 +119,7 @@ def _header_less_aots(
+         path = f"{prefix}.{k.as_string()}" if prefix else k.as_string()
+         if _is_empty_aot(v):
+             found.append((path, v))
+-        elif isinstance(v, Table) and not _emits_header(k, v):
++        elif isinstance(v, Table) and (k.is_dotted() or not _emits_header(k, v)):
+             found.extend(_header_less_aots(v.value.body, path))
+     return found
+ 
+@@ -145,7 +179,7 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             key=lambda item: item[1][0] if isinstance(item[1], tuple) else item[1],
+         ):
+             if isinstance(idx, tuple):
+-                value: Any = OutOfOrderTableProxy(self, idx)
++                value: Any = _split_view([(self, key, None)])
+             else:
+                 value = self._body[idx][1]
+             unwrapped[key.key] = value.unwrap() if hasattr(value, "unwrap") else value
+@@ -167,7 +201,21 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                 val = val.value
+ 
+             if key_str in d:
+-                merge_dicts(d[key_str], val)
++                existing = d[key_str]
++                if isinstance(existing, list) and isinstance(val, list):
++                    # another part of an array of tables
++                    d[key_str] = existing + [
++                        e.value if isinstance(e, Container) else e for e in val
++                    ]
++                elif isinstance(existing, list):
++                    # a table extending the last element of an array of tables
++                    if existing:
++                        last = existing[-1]
++                        if isinstance(last, Container):
++                            last = existing[-1] = last.value
++                        merge_dicts(last, val)
++                else:
++                    merge_dicts(existing, val)
+             else:
+                 d[key_str] = val
+ 
+@@ -263,6 +311,8 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+         return False
+ 
+     def _validate_out_of_order_table(self, key: Key | None = None) -> None:
++        if _structure_checked.get():
++            return
+         if key is None:
+             for k in list(self._out_of_order_keys):
+                 assert k is not None
+@@ -334,10 +384,10 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+ 
+         if key is not None and key in self:
+             current_idx = self._map[key]
+-            if isinstance(current_idx, tuple):
+-                current_body_element = self._body[current_idx[-1]]
+-            else:
+-                current_body_element = self._body[current_idx]
++            current_body_idx = (
++                current_idx[-1] if isinstance(current_idx, tuple) else current_idx
++            )
++            current_body_element = self._body[current_body_idx]
+ 
+             current = current_body_element[1]
+ 
+@@ -358,6 +408,16 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                     return self
+                 elif isinstance(current, AoT):
+                     if not item.is_aot_element():
++                        if (
++                            item.is_super_table()
++                            and self._parsed
++                            and not self._is_last_table(current_body_idx)
++                        ):
++                            # A sub-table extending the last element of the
++                            # array, after some other table: keep it where it
++                            # is written, as another part of the array.
++                            self._raw_append(key, item)
++                            return self
+                         if item.is_super_table() and len(current.body):
+                             # A sub-table header such as `[fruit.apple.texture]`
+                             # appearing after the array `[[fruit]]` (possibly with
+@@ -383,7 +443,7 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                                 current_body_element[0] is not None
+                                 and current_body_element[0].is_dotted()
+                             )
+-                            or self._table_keys[-1] != current_body_element[0]
++                            or not self._is_last_table(current_body_idx)
+                         ):
+                             if key.is_dotted() and not self._parsed:
+                                 idx = self._get_last_index_before_table()
+@@ -409,7 +469,11 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                         # that protected the out-of-order validation pass has been
+                         # moved into OutOfOrderTableProxy (its only consumer).
+                         for k, v in item.value.body:
+-                            current.append(k, v)
++                            if self._parsed:
++                                # keep the formatting as parsed
++                                current.raw_append(k, v)
++                            else:
++                                current.append(k, v)
+ 
+                         return self
+                     elif (
+@@ -436,12 +500,32 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                     assert isinstance(current, Table)
+                     self._validate_table_candidate(current, item)
+             elif isinstance(item, AoT):
+-                if not isinstance(current, AoT):
++                first_idx = (
++                    current_idx[0] if isinstance(current_idx, tuple) else current_idx
++                )
++                if not isinstance(self._body[first_idx][1], AoT):
++                    if (
++                        _structure_checked.get()
++                        and isinstance(current, Table)
++                        and current.is_super_table()
++                    ):
++                        # This container is only a part of a split table, and
++                        # the array was started in another part: the super
++                        # table extends its last element. The structure of
++                        # the document has already been checked.
++                        self._raw_append(key, item)
++                        return self
+                     # Tried to define an AoT after a table with the same name.
+                     raise KeyAlreadyPresent(key)
+ 
+-                for table in item.body:
+-                    current.append(table)
++                if isinstance(current, AoT):
++                    for table in item.body:
++                        current.append(table)
++                else:
++                    # More elements of the array, after a table extending its
++                    # last element: they must come after that table, so keep
++                    # them where they are written, as another part.
++                    self._raw_append(key, item)
+ 
+                 return self
+             else:
+@@ -491,7 +575,19 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             self._validate_out_of_order_table(key)
+         return self
+ 
++    def _is_last_table(self, idx: int) -> bool:
++        """Whether the body entry at ``idx`` is the last table or array of
++        tables of the body, i.e. whether a table header appended now would
++        directly follow it."""
++        for i in range(len(self._body) - 1, idx, -1):
++            k, v = self._body[i]
++            if k is not None and isinstance(v, (Table, AoT)):
++                return False
++        return True
++
+     def _validate_table_candidate(self, current: Table, candidate: Table) -> None:
++        if _structure_checked.get():
++            return
+         for k, v in candidate.value.body:
+             if k is None:
+                 continue
+@@ -532,7 +628,9 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                 current_idx = (current_idx,)
+ 
+             current = self._body[current_idx[-1]][1]
+-            if not isinstance(current, Table):
++            if not isinstance(current, (Table, AoT)) or not isinstance(
++                item, (Table, AoT)
++            ):
+                 raise KeyAlreadyPresent(key)
+ 
+             self._map[key] = (*current_idx, len(self._body))
+@@ -647,7 +745,7 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             # The item we are getting is an out of order table
+             # so we need a proxy to retrieve the proper objects
+             # from the parent container
+-            return OutOfOrderTableProxy(self, idx)
++            return _split_view([(self, key, None)])
+ 
+         return self._body[idx][1]
+ 
+@@ -662,10 +760,20 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+         s = ""
+         for path, aot in _header_less_aots(self._body):
+             s += _render_empty_aot(path, aot)
++        deferred = ""
+         for k, v in self._body:
+             if k is not None:
+                 if _is_empty_aot(v):
+                     continue
++                if _is_dotted_table(k, v):
++                    assert isinstance(v, Table)
++                    inline, later = self._render_dotted_table(k, v, None, None)
++                    s = _join_lines(s, inline)
++                    deferred += later
++                    continue
++                if isinstance(v, (Table, AoT)) and deferred:
++                    s = _join_lines(s, deferred)
++                    deferred = ""
+                 if isinstance(v, Table):
+                     if (
+                         s.strip(" ")
+@@ -673,7 +781,7 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                         and "\n" not in v.trivia.indent
+                     ):
+                         s += "\n"
+-                    s += self._render_table(k, v)
++                    s = _join_lines(s, self._render_table(k, v))
+                 elif isinstance(v, AoT):
+                     if (
+                         s.strip(" ")
+@@ -681,14 +789,66 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                         and "\n" not in v.trivia.indent
+                     ):
+                         s += "\n"
+-                    s += self._render_aot(k, v)
++                    s = _join_lines(s, self._render_aot(k, v))
+                 else:
+-                    s += self._render_simple_item(k, v)
++                    s = _join_lines(s, self._render_simple_item(k, v))
+             else:
+                 s += self._render_simple_item(k, v)
+ 
++        if deferred:
++            s = _join_lines(s, deferred)
+         return s
+ 
++    def _render_dotted_table(
++        self,
++        key: Key,
++        table: Table,
++        inline_prefix: str | None,
++        scope_prefix: str | None,
++    ) -> tuple[str, str]:
++        """Render a table defined by dotted keys (``a.b = 1``).
++
++        Returns the dotted key/value lines, which belong where the table is,
++        and separately the sub-tables that render a ``[header]`` of their own:
++        those must come after every key/value line of the enclosing scope, or
++        the header would capture the lines that follow it.
++        """
++        path = key.as_string()
++        if inline_prefix is not None:
++            path = inline_prefix + "." + path
++        full = path if scope_prefix is None else scope_prefix + "." + path
++
++        if not _has_keys(table):
++            return (
++                f"{table.trivia.indent}"
++                f"{decode(path)}"
++                f"{key.sep or ' = '}"
++                "{}"
++                f"{table.trivia.trail or chr(10)}"
++            ), ""
++
++        inline = table.trivia.indent if table.trivia.indent == "\n" else ""
++        deferred = ""
++        for k, v in table.value.body:
++            if k is None:
++                inline += v.as_string()
++            elif _is_empty_aot(v):
++                continue
++            elif _is_dotted_table(k, v):
++                assert isinstance(v, Table)
++                i, d = self._render_dotted_table(k, v, path, scope_prefix)
++                inline = _join_lines(inline, i)
++                deferred += d
++            elif isinstance(v, Table):
++                deferred = _join_lines(deferred, self._render_table(k, v, prefix=full))
++            elif isinstance(v, AoT):
++                deferred = _join_lines(deferred, self._render_aot(k, v, prefix=full))
++            else:
++                inline = _join_lines(
++                    inline, self._render_simple_item(k, v, prefix=path)
++                )
++        return inline, deferred
++
+     def _render_table(self, key: Key, table: Table, prefix: str | None = None) -> str:
+         cur = ""
+ 
+@@ -700,6 +860,17 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             if prefix is not None:
+                 _key = prefix + "." + _key
+ 
++        if key.is_dotted() and table.is_super_table() and not _has_keys(table):
++            # An emptied dotted-key table has no child left to carry its
++            # prefix, so it is written as an empty inline table instead.
++            return (
++                f"{table.trivia.indent}"
++                f"{decode(_key)}"
++                f"{key.sep or ' = '}"
++                "{}"
++                f"{table.trivia.trail or chr(10)}"
++            )
++
+         header_emitted = _emits_header(key, table)
+         if header_emitted:
+             open_, close = "[", "]"
+@@ -727,10 +898,22 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             # were already written by -- the nearest enclosing header instead.
+             for path, aot in _header_less_aots(table.value.body):
+                 cur += _render_empty_aot(path, aot)
++        deferred = ""
+         for k, v in table.value.body:
+             if k is not None and _is_empty_aot(v):
+                 continue
+-            elif isinstance(v, Table):
++            elif (
++                k is not None and _is_dotted_table(k, v) and not key.is_dotted()
++            ):
++                assert isinstance(v, Table)
++                inline, later = self._render_dotted_table(k, v, None, _key)
++                cur = _join_lines(cur, inline)
++                deferred += later
++                continue
++            if isinstance(v, (Table, AoT)) and deferred:
++                cur = _join_lines(cur, deferred)
++                deferred = ""
++            if isinstance(v, Table):
+                 if (
+                     cur.strip(" ")
+                     and not cur.strip(" ").endswith("\n")
+@@ -741,11 +924,11 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                 if v.is_super_table():
+                     if k.is_dotted() and not key.is_dotted():
+                         # Dotted key inside table
+-                        cur += self._render_table(k, v)
++                        cur = _join_lines(cur, self._render_table(k, v))
+                     else:
+-                        cur += self._render_table(k, v, prefix=_key)
++                        cur = _join_lines(cur, self._render_table(k, v, prefix=_key))
+                 else:
+-                    cur += self._render_table(k, v, prefix=_key)
++                    cur = _join_lines(cur, self._render_table(k, v, prefix=_key))
+             elif isinstance(v, AoT):
+                 if (
+                     cur.strip(" ")
+@@ -754,12 +937,19 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                 ):
+                     cur += "\n"
+                 assert k is not None
+-                cur += self._render_aot(k, v, prefix=_key)
++                cur = _join_lines(cur, self._render_aot(k, v, prefix=_key))
++            elif k is None:
++                cur += self._render_simple_item(k, v)
+             else:
+-                cur += self._render_simple_item(
+-                    k, v, prefix=_key if key.is_dotted() else None
++                cur = _join_lines(
++                    cur,
++                    self._render_simple_item(
++                        k, v, prefix=_key if key.is_dotted() else None
++                    ),
+                 )
+ 
++        if deferred:
++            cur = _join_lines(cur, deferred)
+         return cur
+ 
+     def _render_aot(self, key: Key, aot: AoT, prefix: str | None = None) -> str:
+@@ -770,13 +960,13 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+         cur = ""
+         _key = decode(_key)
+         for table in aot.body:
+-            cur += self._render_aot_table(table, prefix=_key)
++            cur = _join_lines(cur, self._render_aot_table(table, prefix=_key))
+ 
+         return cur
+ 
+     def _render_aot_table(self, table: Table, prefix: str | None = None) -> str:
+         cur = ""
+-        _key = prefix or ""
++        _key = table.display_name if table.display_name is not None else prefix or ""
+         open_, close = "[[", "]]"
+ 
+         cur += (
+@@ -788,28 +978,37 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             f"{decode(table.trivia.comment)}"
+             f"{table.trivia.trail}"
+         )
++        if "\n" not in table.trivia.trail and len(table.value) > 0:
++            cur += "\n"
+ 
+         for path, aot in _header_less_aots(table.value.body):
+             cur += _render_empty_aot(path, aot)
++        deferred = ""
+         for k, v in table.value.body:
+             if k is not None and _is_empty_aot(v):
+                 continue
+-            elif isinstance(v, Table):
++            elif k is not None and _is_dotted_table(k, v):
++                assert isinstance(v, Table)
++                inline, later = self._render_dotted_table(k, v, None, _key)
++                cur = _join_lines(cur, inline)
++                deferred += later
++                continue
++            if isinstance(v, (Table, AoT)) and deferred:
++                cur = _join_lines(cur, deferred)
++                deferred = ""
++            if isinstance(v, Table):
+                 assert k is not None
+-                if v.is_super_table():
+-                    if k.is_dotted():
+-                        # Dotted key inside table
+-                        cur += self._render_table(k, v)
+-                    else:
+-                        cur += self._render_table(k, v, prefix=_key)
+-                else:
+-                    cur += self._render_table(k, v, prefix=_key)
++                cur = _join_lines(cur, self._render_table(k, v, prefix=_key))
+             elif isinstance(v, AoT):
+                 assert k is not None
+-                cur += self._render_aot(k, v, prefix=_key)
+-            else:
++                cur = _join_lines(cur, self._render_aot(k, v, prefix=_key))
++            elif k is None:
+                 cur += self._render_simple_item(k, v)
++            else:
++                cur = _join_lines(cur, self._render_simple_item(k, v))
+ 
++        if deferred:
++            cur = _join_lines(cur, deferred)
+         return cur
+ 
+     def _render_simple_item(
+@@ -859,14 +1058,6 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+         idx = self._map.get(key)
+         if idx is None:
+             return False
+-        if isinstance(idx, tuple):
+-            # during parsing every fragment append re-probes membership;
+-            # if the validation cache covers exactly these fragments they
+-            # are already known to merge cleanly, so skip rebuilding the
+-            # proxy (which is linear in the number of fragments)
+-            validated, _ = self._validation_cache.get(key, (0, None))
+-            if not (self._parsed and validated == len(idx)):
+-                OutOfOrderTableProxy(self, idx)
+         return True
+ 
+     def _item_for_key(
+@@ -1125,64 +1316,49 @@ class OutOfOrderTableProxy(_CustomDict):  # type: ignore[type-arg]
+         temp_container._validate_out_of_order_table()
+         return temp_container
+ 
+-    def __init__(self, container: Container, indices: tuple[int, ...]) -> None:
++    def __init__(
++        self,
++        container: Container | None,
++        indices: tuple[int, ...] | None,
++        _sources: list[_Source] | None = None,
++        _parent: _SplitView | None = None,
++    ) -> None:
++        if _sources is None:
++            assert container is not None and indices
++            key = container._body[indices[0]][0]
++            assert key is not None
++            _sources = [(container, key, None)]
++        # Where the parts of the table live (see ``_resolve_sources``). They
++        # are resolved again after every change, so the proxy never works on
++        # stale positions.
++        self._sources = _sources
+         self._container = container
++        # the view this one was obtained from, if its parts live in the parts
++        # of another split table or array of tables
++        self._parent = _parent
++        self._build()
++
++    def _parts(self) -> list[_Entry]:
++        """The tables making up this table, in document order."""
++        return [e for e in _resolve_sources(self._sources) if isinstance(e[2], Table)]
++
++    def _build(self) -> None:
++        dict.clear(self)
+         self._internal_container = Container(True)
+         self._tables: list[Table] = []
+         self._tables_map: dict[Key, list[int]] = {}
+ 
+-        for i in indices:
+-            _, _item = self._container._body[i]
+-
+-            if isinstance(_item, Table):
+-                self._tables.append(_item)
+-                table_idx = len(self._tables) - 1
+-                for k, v in _item.value.body:
+-                    merged = self._merge_aot_fragment(k, v)
+-                    if merged is None:
+-                        self._internal_container._raw_append(k, v)
+-                    else:
+-                        v = merged
+-                    key_indices = self._tables_map.setdefault(k, [])  # type: ignore[arg-type]
+-                    if table_idx not in key_indices:
+-                        key_indices.append(table_idx)
+-                    if k is not None:
+-                        dict.__setitem__(self, k.key, v)
+-
+-        self._internal_container._validate_out_of_order_table()
+-
+-    def _merge_aot_fragment(self, key: Key | None, item: Item) -> AoT | None:
+-        """
+-        Merge an array-of-tables fragment from a later out-of-order table part.
+-
+-        An AoT whose elements are split across out-of-order parts of the same
+-        table arrives here once per part; ``_raw_append`` only knows how to
+-        chain duplicate ``Table`` parts and would raise ``KeyAlreadyPresent``.
+-        The fragments are presented as a new merged ``AoT`` referencing the
+-        live element tables, without mutating either fragment (the parts keep
+-        rendering their own elements).
+-
+-        Returns the merged ``AoT``, or ``None`` if this is not such a fragment.
+-        """
+-        internal = self._internal_container
+-        if key is None or not isinstance(item, AoT) or key not in internal._map:
+-            return None
+-        idx = internal._map[key]
+-        if isinstance(idx, tuple):
+-            # A tuple index means the key already resolved to several body
+-            # positions, which here only happens for a degenerate collision
+-            # (e.g. a non-AoT part sharing the key). Three or more genuine AoT
+-            # fragments do not reach this branch: each later fragment merges
+-            # into the single growing AoT below, so ``idx`` stays an int.
+-            return None
+-        existing = internal._body[idx][1]
+-        if not isinstance(existing, AoT):
+-            return None
+-
+-        merged = AoT([*existing.body, *item.body], parsed=True)
+-        internal._body[idx] = (internal._body[idx][0], merged)
+-        dict.__setitem__(internal, key.key, merged.value)
+-        return merged
++        for _, _, _item in self._parts():
++            self._tables.append(_item)
++            table_idx = len(self._tables) - 1
++            for k, v in _item.value.body:
++                self._internal_container._raw_append(k, v)
++                if k is None:
++                    continue
++                key_indices = self._tables_map.setdefault(k, [])
++                if table_idx not in key_indices:
++                    key_indices.append(table_idx)
++                dict.__setitem__(self, k.key, v)
+ 
+     def unwrap(self) -> dict[str, Any]:
+         return self._internal_container.unwrap()
+@@ -1200,92 +1376,120 @@ class OutOfOrderTableProxy(_CustomDict):  # type: ignore[type-arg]
+     def __contains__(self, key: object) -> bool:
+         # Native membership test. The inherited ``MutableMapping.__contains__``
+         # resolves the value via ``__getitem__`` (and builds a ``NonExistentKey``
+-        # on every absent key) only to discard it. Probe the internal container
+-        # directly -- the same predicate ``__getitem__`` already uses -- which is
+-        # itself a native ``_map`` lookup that still rebuilds the proxy for an
+-        # out-of-order key so its validation runs exactly as before.
++        # on every absent key) only to discard it.
+         return key in self._internal_container
+ 
+     def __getitem__(self, key: Key | str) -> Any:
+         if key not in self._internal_container:
+             raise NonExistentKey(key)
+ 
+-        return self._internal_container[key]
++        _key = key if isinstance(key, Key) else SingleKey(key)
++        if isinstance(self._internal_container._map.get(_key), tuple):
++            # The child is itself split across several parts: point a view at
++            # the places they really live, so that changes made through it
++            # reach the document.
++            return _split_view(
++                [(self._tables[i], _key, None) for i in self._tables_map[_key]],
++                parent=self,
++            )
+ 
+-    def __setitem__(self, key: Key | str, value: Any) -> None:
+-        from .items import item as _item_fn
++        return self._internal_container[key]
+ 
+-        def _is_table_or_aot(it: Any) -> bool:
+-            return isinstance(_item_fn(it), (Table, AoT))
++    @staticmethod
++    def _holds_plain_values(entry: _Entry) -> bool:
++        """Whether plain values can be added to the part without making it
++        render a ``[header]`` it does not render yet."""
++        owner, key, table = entry
++        if isinstance(owner, AoT):
++            # an element of an array of tables
++            return True
++        if not _has_keys(table):
++            # an emptied part is about to be dropped, unless it is concrete
++            return not table.is_super_table()
++        return key.is_dotted() or _emits_header(key, table)
++
++    def _choose_part(self, value: Item) -> Table:
++        parts = self._parts()
++        assert parts
++        candidates: list[Table]
++        if isinstance(value, (Table, AoT)):
++            candidates = [
++                t for o, _, t in parts if isinstance(o, AoT) or not t.is_super_table()
++            ]
++            candidates += [
++                t for _, k, t in parts if not k.is_dotted() and t not in candidates
++            ]
++        else:
++            candidates = [e[2] for e in parts if self._holds_plain_values(e)]
++        return candidates[0] if candidates else parts[0][2]
+ 
++    def __setitem__(self, key: Key | str, value: Any) -> None:
+         _key: Key = key if isinstance(key, Key) else SingleKey(key)
++        is_table = isinstance(
++            value if isinstance(value, Item) else _item(value), (Table, AoT)
++        )
++        holders = [self._tables[i] for i in self._tables_map.get(_key, [])]
++        if not self._tables:
++            raise NonExistentKey(key)
+ 
+-        if _key in self._tables_map:
+-            # Overwrite the first table and remove others
+-            map_indices = self._tables_map[_key]
+-            while len(map_indices) > 1:
+-                table = self._tables[map_indices.pop()]
+-                self._remove_table(table)
+-            old_value = self._tables[map_indices[0]][key]
+-            if _is_table_or_aot(old_value) and not _is_table_or_aot(value):
+-                # Remove the entry from the map and set value again.
+-                del self._tables[map_indices[0]][key]
+-                del self._tables_map[_key]
+-                self[key] = value
+-                return
+-            self._tables[map_indices[0]][key] = value
+-        elif self._tables:
+-            if not _is_table_or_aot(value):  # if the value is a plain value
+-                for table in self._tables:
+-                    # find the first table that allows plain values
+-                    if any(not _is_table_or_aot(v) for _, v in table.items()):
+-                        table[key] = value
+-                        break
+-                else:
+-                    # No part holds a plain value yet, so the chosen part must
+-                    # start rendering its own ``[key]`` header. Prefer a part
+-                    # that is not a super table (it already renders that header):
+-                    # turning a header-less super part concrete here would emit a
+-                    # second, duplicate header next to an existing concrete part
+-                    # and produce TOML that no longer parses.
+-                    for table in self._tables:
+-                        if not table.is_super_table():
+-                            table[key] = value
+-                            break
+-                    else:
+-                        self._tables[0][key] = value
+-            else:
+-                self._tables[0][key] = value
++        if holders and (
++            isinstance(holders[0].value.item(_key), (Table, AoT, _SplitView))
++            == is_table
++        ):
++            # Replace the first definition in place, so it keeps its position
++            # and formatting, and drop the other ones.
++            for table in holders[1:]:
++                table.remove(_key.key)
++            holders[0][_key.key] = value
+         else:
+-            self._container[key] = value
++            for table in holders:
++                table.remove(_key.key)
++            if not isinstance(value, Item):
++                value = _item(value)
++            self._choose_part(value)[_key.key] = value
+ 
+-        self._internal_container[key] = value
+-        if key is not None:
+-            dict.__setitem__(self, key, value)
+-
+-    def _remove_table(self, table: Table) -> None:
+-        """Remove table from the parent container"""
+-        self._tables.remove(table)
+-        for idx, body_item in enumerate(self._container._body):
+-            if body_item[1] is table:
+-                self._container._remove_at(idx)
+-                break
++        self._changed()
+ 
+     def __delitem__(self, key: Key | str) -> None:
+         _key: Key = key if isinstance(key, Key) else SingleKey(key)
+         if _key not in self._tables_map:
+             raise NonExistentKey(key)
+ 
+-        for i in reversed(self._tables_map[_key]):
+-            table = self._tables[i]
+-            del table[key]
+-            if not table and len(self._tables) > 1:
+-                self._remove_table(table)
++        for i in self._tables_map[_key]:
++            self._tables[i].remove(_key.key)
+ 
+-        del self._tables_map[_key]
+-        del self._internal_container[key]
+-        if key is not None:
+-            dict.__delitem__(self, key)
++        self._changed()
++
++    def _changed(self) -> None:
++        _changed(self)
++
++    def _prune(self) -> None:
++        """Drop the parts left without any key, keeping at least one part."""
++        parts = self._parts()
++        removable = [
++            p for p in parts if not isinstance(p[0], AoT) and not _has_keys(p[2])
++        ]
++        if len(removable) == len(parts):
++            if len(parts) <= 1:
++                return
++            # Nothing is left in any part. Keep one of them, so the table
++            # still exists, unless they are all implicit tables opened by
++            # sub-table headers, which then had nothing but those sub-tables:
++            # the table is removed altogether, as it always has been.
++            keep = next((p for p in removable if not p[2].is_super_table()), None)
++            if keep is None:
++                # an emptied dotted-key table still renders, as ``a = {}``
++                keep = next((p for p in removable if p[1].is_dotted()), None)
++            if keep is None:
++                for owner, key, fixed in self._sources:
++                    if fixed is None and key in _owner_container(owner)._map:
++                        owner.remove(key)
++                for entry in _resolve_sources(self._sources):
++                    _remove_entry(entry)
++                return
++            removable.remove(keep)
++        for entry in removable:
++            _remove_entry(entry)
+ 
+     def __iter__(self) -> Iterator[str]:
+         return iter(dict.keys(self))
+@@ -1299,6 +1503,191 @@ class OutOfOrderTableProxy(_CustomDict):  # type: ignore[type-arg]
+         return self[key]
+ 
+ 
++class SplitAoTProxy(AoT):
++    """An array of tables written in several non-contiguous parts.
++
++    The parts are either arrays of tables (``[[a]]`` headers) or super tables
++    that extend the element defined last before them (``[a.b]`` after
++    ``[[a]]`` and some other table). The proxy presents them as one array, the
++    elements extended later being presented as :class:`OutOfOrderTableProxy`.
++    Changes are made in the parts themselves.
++    """
++
++    def __init__(self, sources: list[_Source], parent: _SplitView | None = None):
++        Item.__init__(self, Trivia(trail=""))
++        self._sources = sources
++        self._parent = parent
++        self._parsed = True
++        key = sources[0][1]
++        self.name = key.key
++        self._build()
++
++    def _entries(self) -> list[_Entry]:
++        return [
++            e for e in _resolve_sources(self._sources) if isinstance(e[2], (AoT, Table))
++        ]
++
++    def _groups(self) -> list[tuple[AoT, int, Table, list[_Entry]]]:
++        """``(array, index in it, element, extensions)`` for every element."""
++        groups: list[tuple[AoT, int, Table, list[_Entry]]] = []
++        for entry in self._entries():
++            item = entry[2]
++            if isinstance(item, AoT):
++                for i, table in enumerate(item.body):
++                    groups.append((item, i, table, []))
++            elif groups:
++                groups[-1][3].append(entry)
++        return groups
++
++    def _build(self) -> None:
++        elements: list[Any] = []
++        for aot, _, table, extensions in self._groups():
++            if extensions:
++                elements.append(
++                    OutOfOrderTableProxy(
++                        None,
++                        None,
++                        _sources=[(aot, self._sources[0][1], table)]
++                        + [(o, k, t) for o, k, t in extensions],
++                        _parent=self,
++                    )
++                )
++            else:
++                elements.append(table)
++        self._body = elements
++        list.clear(self)
++        list.extend(self, elements)
++
++    def _prune(self) -> None:
++        """Drop the arrays left empty, keeping at least one."""
++        arrays = [e for e in self._entries() if isinstance(e[2], AoT)]
++        empty = [e for e in arrays if not e[2].body]
++        if len(empty) == len(arrays):
++            empty = empty[1:]
++        for entry in empty:
++            _remove_entry(entry)
++
++    def _changed(self) -> None:
++        _changed(self)
++
++    def _remove_extensions(self, index: int) -> None:
++        for entry in self._groups()[index][3]:
++            _remove_entry(entry)
++
++    def insert(self, index: int, value: Any) -> None:
++        groups = self._groups()
++        length = len(groups)
++        if index < 0:
++            index = max(index + length, 0)
++        if index < length:
++            aot, local, _, _ = groups[index]
++            aot.insert(local, value)
++        else:
++            entries = self._entries()
++            owner, key, last = entries[-1]
++            if isinstance(last, AoT):
++                last.append(value)
++            else:
++                # The last element is extended by a later part: a new element
++                # has to come after that part.
++                new = AoT([], name=key.key, parsed=False)
++                new.append(value)
++                container = _owner_container(owner)
++                container._raw_append(key, new)
++        self._changed()
++
++    def __setitem__(self, key: Any, value: Any) -> None:
++        if isinstance(key, slice):
++            raise ValueError("slice assignment is not supported")
++        groups = self._groups()
++        aot, local, _, _ = groups[key]
++        self._remove_extensions(key)
++        aot[local] = value
++        self._changed()
++
++    def __delitem__(self, key: Any) -> None:
++        groups = self._groups()
++        if isinstance(key, slice):
++            indices = sorted(range(len(groups))[key], reverse=True)
++        else:
++            indices = [range(len(groups))[key]]
++        for index in indices:
++            aot, local, _, _ = self._groups()[index]
++            self._remove_extensions(index)
++            del aot[local]
++        self._changed()
++
++    def as_string(self) -> str:
++        return "".join(
++            e[2].as_string() for e in self._entries() if isinstance(e[2], AoT)
++        )
++
++
++_SplitView = Union[OutOfOrderTableProxy, SplitAoTProxy]
++# A place where (part of) a split table lives: the container (or the table,
++# or for an element of an array of tables the array) holding it, its key
++# there, and the part itself, or ``None`` for every part under that key.
++_Source = tuple[Any, Key, Optional[Item]]
++# A resolved part: its owner, its key and the part itself.
++_Entry = tuple[Any, Key, Any]
++
++
++def _owner_container(owner: Any) -> Container:
++    return owner.value if isinstance(owner, Table) else owner  # type: ignore[no-any-return]
++
++
++def _resolve_sources(sources: list[_Source]) -> list[_Entry]:
++    entries: list[_Entry] = []
++    for owner, key, fixed in sources:
++        if fixed is not None:
++            entries.append((owner, key, fixed))
++            continue
++        container = _owner_container(owner)
++        idx = container._map.get(key)
++        if idx is None:
++            continue
++        for i in idx if isinstance(idx, tuple) else (idx,):
++            # the key as written there, which tells whether it is dotted
++            body_key, item = container._body[i]
++            entries.append((owner, body_key or key, item))
++    return entries
++
++
++def _remove_entry(entry: _Entry) -> None:
++    """Remove a part from where it lives."""
++    owner, key, item = entry
++    if isinstance(owner, AoT):
++        return
++    container = _owner_container(owner)
++    for i, (_, v) in enumerate(container._body):
++        if v is item:
++            container._remove_at(i)
++            break
++    else:
++        return
++    if isinstance(owner, Table) and key not in container._map:
++        dict.__delitem__(owner, key.key)
++
++
++def _changed(view: Any) -> None:
++    """Tidy up the parts of ``view`` and of the views it was obtained from,
++    after a change, and refresh them."""
++    while view is not None:
++        view._prune()
++        view._build()
++        view = view._parent
++
++
++def _split_view(sources: list[_Source], parent: _SplitView | None = None) -> Any:
++    """A view of the table or array of tables split across ``sources``."""
++    for _, _, item in _resolve_sources(sources):
++        if isinstance(item, AoT):
++            return SplitAoTProxy(sources, parent)
++        if isinstance(item, Table):
++            break
++    return OutOfOrderTableProxy(None, None, _sources=sources, _parent=parent)
++
++
+ def ends_with_whitespace(it: Any) -> bool:
+     """Returns ``True`` if the given item ``it`` is a ``Table`` or ``AoT`` object
+     ending with a ``Whitespace``.
+diff --git a/tomlkit/items.py b/tomlkit/items.py
+index 41a1759..7b66382 100644
+--- a/tomlkit/items.py
++++ b/tomlkit/items.py
+@@ -2259,7 +2259,7 @@ class InlineTable(AbstractTable):
+                 rendered = (
+                     f"{k.as_string() + ('.' if k.is_dotted() else '')}"
+                     f"{k.sep}"
+-                    f"{v.as_string()}"
++                    f"{_as_inline(v)}"
+                 )
+             buf += f"{v.trivia.indent}{rendered}"
+             last_value_end = len(buf)
+@@ -2291,12 +2291,13 @@ class InlineTable(AbstractTable):
+         for k, v in table.value.body:
+             if k is None:
+                 continue
+-            if isinstance(v, Table):
++            if isinstance(v, Table) and k.is_dotted():
+                 parts.extend(f"{prefix}{sub}" for sub in self._render_dotted(k, v))
+             else:
+                 trail = v.trivia.trail.replace("\n", "")
++                sep = k.sep or " = "
+                 parts.append(
+-                    f"{prefix}{v.trivia.indent}{k.as_string()}{k.sep}{v.as_string()}"
++                    f"{prefix}{v.trivia.indent}{k.as_string()}{sep}{_as_inline(v)}"
+                     f"{v.trivia.comment_ws}{v.trivia.comment}{trail}"
+                 )
+         if not parts:
+@@ -2319,6 +2320,17 @@ class InlineTable(AbstractTable):
+         return (self._value, self._trivia)
+ 
+ 
++def _as_inline(value: Item) -> str:
++    """Render ``value`` the way it can appear inside an inline table.
++
++    A table or array of tables added under a dotted key of an inline table
++    cannot render as a ``[header]`` there, so it is written inline instead.
++    """
++    if isinstance(value, (Table, AoT)):
++        return item(value.unwrap(), _parent=Array([], Trivia())).as_string()
++    return value.as_string()
++
++
+ class String(str, Item):
+     """
+     A string literal.
+diff --git a/tomlkit/parser.py b/tomlkit/parser.py
+index dc08f92..0f193b9 100644
+--- a/tomlkit/parser.py
++++ b/tomlkit/parser.py
+@@ -12,6 +12,7 @@ from tomlkit._utils import RFC_3339_LOOSE
+ from tomlkit._utils import _escaped
+ from tomlkit._utils import parse_rfc3339
+ from tomlkit.container import Container
++from tomlkit.container import _structure_checked
+ from tomlkit.exceptions import EmptyKeyError
+ from tomlkit.exceptions import EmptyTableNameError
+ from tomlkit.exceptions import InternalParserError
+@@ -22,7 +23,9 @@ from tomlkit.exceptions import InvalidDateTimeError
+ from tomlkit.exceptions import InvalidNumberError
+ from tomlkit.exceptions import InvalidTimeError
+ from tomlkit.exceptions import InvalidUnicodeValueError
++from tomlkit.exceptions import KeyAlreadyPresent
+ from tomlkit.exceptions import ParseError
++from tomlkit.exceptions import TOMLKitError
+ from tomlkit.exceptions import UnexpectedCharError
+ from tomlkit.exceptions import UnexpectedEofError
+ from tomlkit.items import AoT
+@@ -90,6 +93,152 @@ _MULTI_LITERAL_STOP = _CTRL_MULTI | {"'", "\r"}  # literal: closing quote or CR
+ _MULTI_BASIC_STOP = _CTRL_MULTI | {'"', "\\", "\r"}  # basic: quote, escape or CR
+ 
+ 
++class _StructureChecker:
++    """Tracks which tables a document defines, and how, while it is parsed.
++
++    TOML forbids defining a table twice, extending a table defined by a
++    ``[header]`` with dotted keys (or the other way round), turning a value
++    into a table, etc. These rules depend on the order of the statements in
++    the document, not only on the resulting data, and the document model
++    cannot always tell them apart once a table is split into several
++    non-contiguous parts. The parser therefore feeds every header and every
++    key/value pair, in document order, to this checker, which follows the
++    same rules as the reference implementation of the TOML specification.
++    """
++
++    # Marks an inline table or an array: nothing can be added to it.
++    FROZEN = 0
++    # Marks a table that has been explicitly created: it can no longer be
++    # opened with a ``[header]`` (nor with dotted keys).
++    EXPLICIT_NEST = 1
++
++    def __init__(self) -> None:
++        self._flags: dict[str, Any] = {}
++        self._pending: set[tuple[tuple[str, ...], int]] = set()
++        self._data: dict[str, Any] = {}
++        self._header: tuple[str, ...] = ()
++
++    # Flags
++
++    def _finalize_pending(self) -> None:
++        for key, flag in self._pending:
++            self._set(key, flag, recursive=False)
++        self._pending.clear()
++
++    def _unset_all(self, key: tuple[str, ...]) -> None:
++        cont = self._flags
++        for k in key[:-1]:
++            if k not in cont:
++                return
++            cont = cont[k]["nested"]
++        cont.pop(key[-1], None)
++
++    def _set(self, key: tuple[str, ...], flag: int, *, recursive: bool) -> None:
++        cont = self._flags
++        for k in key[:-1]:
++            if k not in cont:
++                cont[k] = {"flags": set(), "recursive_flags": set(), "nested": {}}
++            cont = cont[k]["nested"]
++        stem = key[-1]
++        if stem not in cont:
++            cont[stem] = {"flags": set(), "recursive_flags": set(), "nested": {}}
++        cont[stem]["recursive_flags" if recursive else "flags"].add(flag)
++
++    def _is(self, key: tuple[str, ...], flag: int) -> bool:
++        if not key:
++            return False
++        cont = self._flags
++        for k in key[:-1]:
++            if k not in cont:
++                return False
++            inner = cont[k]
++            if flag in inner["recursive_flags"]:
++                return True
++            cont = inner["nested"]
++        stem = key[-1]
++        if stem in cont:
++            entry = cont[stem]
++            return flag in entry["flags"] or flag in entry["recursive_flags"]
++        return False
++
++    # Data
++
++    def _get_or_create_nest(self, key: tuple[str, ...]) -> dict[str, Any]:
++        cont: Any = self._data
++        for k in key:
++            if k not in cont:
++                cont[k] = {}
++            cont = cont[k]
++            if isinstance(cont, list):
++                if not cont:
++                    # an array or inline table written as a value
++                    raise KeyError(k)
++                cont = cont[-1]
++            if not isinstance(cont, dict):
++                raise KeyError(k)
++        return cont  # type: ignore[no-any-return]
++
++    # Statements
++
++    def table(self, key: Key, is_aot: bool) -> None:
++        """A ``[key]`` or ``[[key]]`` header."""
++        parts = tuple(k.key for k in key)
++        self._finalize_pending()
++        if is_aot:
++            if self._is(parts, self.FROZEN):
++                raise TOMLKitError(f'Cannot extend the immutable value "{key.as_string()}"')
++            self._unset_all(parts)
++            self._set(parts, self.EXPLICIT_NEST, recursive=False)
++            try:
++                cont = self._get_or_create_nest(parts[:-1])
++            except KeyError:
++                raise KeyAlreadyPresent(key) from None
++            existing = cont.get(parts[-1])
++            if existing is None:
++                cont[parts[-1]] = [{}]
++            elif isinstance(existing, list) and existing is not _ARRAY:
++                existing.append({})
++            else:
++                raise KeyAlreadyPresent(key)
++        else:
++            if self._is(parts, self.EXPLICIT_NEST) or self._is(parts, self.FROZEN):
++                raise TOMLKitError(f'Redefinition of the table "{key.as_string()}"')
++            self._set(parts, self.EXPLICIT_NEST, recursive=False)
++            try:
++                self._get_or_create_nest(parts)
++            except KeyError:
++                raise KeyAlreadyPresent(key) from None
++        self._header = parts
++
++    def key_value(self, key: Key, value: Item) -> None:
++        """A ``key = value`` pair under the current header."""
++        header = self._header
++        parts = tuple(k.key for k in key)
++        parent, stem = parts[:-1], parts[-1]
++        for i in range(1, len(parts)):
++            cont_key = header + parts[:i]
++            if self._is(cont_key, self.EXPLICIT_NEST):
++                raise TOMLKitError("Redefinition of an existing table")
++            self._pending.add((cont_key, self.EXPLICIT_NEST))
++        if self._is(header + parent, self.FROZEN):
++            raise TOMLKitError(f'Cannot extend the immutable value "{key.as_string()}"')
++        try:
++            nest = self._get_or_create_nest(header + parent)
++        except KeyError:
++            raise KeyAlreadyPresent(key) from None
++        if stem in nest:
++            raise KeyAlreadyPresent(key)
++        if isinstance(value, (InlineTable, Array)):
++            self._set(header + parts, self.FROZEN, recursive=True)
++            nest[stem] = _ARRAY
++        else:
++            nest[stem] = None
++
++
++# Placeholder for a value that cannot be extended (an array or inline table)
++_ARRAY: list[Any] = []
++
++
+ class Parser:
+     """
+     Parser for TOML documents.
+@@ -106,6 +255,7 @@ class Parser:
+ 
+         self._aot_stack: list[Key] = []
+         self._nesting_depth = 0
++        self._structure = _StructureChecker()
+ 
+     @property
+     def _state(self) -> _StateHandler:
+@@ -173,6 +323,13 @@ class Parser:
+         return self._src.parse_error(exception, *args, **kwargs)
+ 
+     def parse(self) -> TOMLDocument:
++        token = _structure_checked.set(True)
++        try:
++            return self._parse_document()
++        finally:
++            _structure_checked.reset(token)
++
++    def _parse_document(self) -> TOMLDocument:
+         body = TOMLDocument(True)
+ 
+         # Take all keyvals outside of tables/AoT's.
+@@ -187,6 +344,8 @@ class Parser:
+                 break
+ 
+             key, value = item
++            if key is not None:
++                self._check_structure(self._structure.key_value, key, value)
+             if (key is not None and key.is_multi()) or not self._merge_ws(value, body):
+                 # We actually have a table
+                 try:
+@@ -212,6 +371,12 @@ class Parser:
+ 
+         return body
+ 
++    def _check_structure(self, check: Callable[..., None], *args: Any) -> None:
++        try:
++            check(*args)
++        except TOMLKitError as e:
++            raise self.parse_error(ParseError, str(e)) from e
++
+     def _merge_ws(self, item: Item, container: Container) -> bool:
+         """
+         Merges the given Item with the last one currently in the given Container if
+@@ -698,6 +863,15 @@ class Parser:
+         raise self.parse_error(ParseError, "Failed to parse array")
+ 
+     def _parse_inline_table(self) -> InlineTable:
++        # The structure checker only follows statements, so the keys of an
++        # inline table are checked by its container as usual.
++        token = _structure_checked.set(False)
++        try:
++            return self._parse_inline_table_body()
++        finally:
++            _structure_checked.reset(token)
++
++    def _parse_inline_table_body(self) -> InlineTable:
+         # consume opening bracket, EOF here is an issue (middle of array)
+         self.inc(exception=UnexpectedEofError)
+ 
+@@ -1070,6 +1244,7 @@ class Parser:
+             self.inc()  # Skip second closing bracket
+ 
+         cws, comment, trail = self._parse_comment_trail()
++        self._check_structure(self._structure.table, full_key, is_aot)
+ 
+         result: Table | AoT = Null()  # type: ignore[assignment]
+         table = Table(
+@@ -1091,7 +1266,7 @@ class Parser:
+                 table = Table(
+                     Container(True),
+                     Trivia("", cws, comment, trail),
+-                    is_aot and name_parts[0] in self._aot_stack,
++                    False,
+                     is_super_table=True,
+                     name=name_parts[0].key,
+                 )
+@@ -1129,6 +1304,8 @@ class Parser:
+             parsed = self._parse_item()
+             if parsed:
+                 _key, _val = parsed
++                if _key is not None:
++                    self._check_structure(self._structure.key_value, _key, _val)
+                 if not self._merge_ws(_val, values):
+                     table.raw_append(_key, _val)
+             else:

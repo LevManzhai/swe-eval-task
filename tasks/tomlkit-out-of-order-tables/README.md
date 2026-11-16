@@ -1,7 +1,9 @@
 # tomlkit: several bugs in tables that are split across a document
 
-> **Status: difficulty check in progress, 1 of 2 attempts passed so far.**
-> See the end of [`NOTES.md`](NOTES.md).
+> **Status: rejected, but close.** One of three one-shot attempts failed on a
+> real bug. The other two passed, but each needed about half an hour and a
+> rewrite of around a thousand lines, where upstream's fix is 31. My bar is
+> at most one pass in three. Details at the end of [`NOTES.md`](NOTES.md).
 
 [tomlkit](https://github.com/python-poetry/tomlkit) is the library Poetry uses
 to edit `pyproject.toml` without losing formatting. TOML lets you write one

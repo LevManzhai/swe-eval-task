@@ -41,6 +41,29 @@ incomplete upstream commit as a wrong fix, and it does fail.
   moderately known repositories, or work upstream has never done.
 - Visible tests must not catch the tempting wrong solutions.
 
+## tomlkit — five bugs in split tables, one symptom in the report
+
+- Task: [`tasks/tomlkit-out-of-order-tables`](tasks/tomlkit-out-of-order-tables)
+- Repository: python-poetry/tomlkit at `7bf7284` (November 2026), with five fixes
+  from October–November 2026 reverted
+- Kind: bug hunt in one subsystem, a 1,300-line file
+- Gate result: **2 of 3 attempts passed** — rejected, narrowly
+
+This is the closest so far. One attempt failed on a real bug it never found
+(73/77). The two that passed each needed about 30 minutes and a rewrite of
+about 1,000 lines, where upstream fixed the same bugs in 31.
+
+**Why it still wasn't enough.** The contract could be checked mechanically
+against `tomllib`, which ships with Python. All three attempts wrote random
+testers. Whether they passed came down to whether their generator happened to
+produce one unusual document shape: an indented header nested four levels
+deep.
+
+**Takeaway.** Hiding the cases helps, but it isn't enough when there's a
+mechanical oracle. Hitting the 1-in-3 bar probably needs a task where the
+expected behaviour can't be checked by a program the solver writes in a few
+minutes.
+
 ## portion — logarithmic `IntervalDict`
 
 - Task: [`tasks/portion-intervaldict`](tasks/portion-intervaldict)
