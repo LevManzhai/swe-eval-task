@@ -71,7 +71,7 @@ Upstream doesn't do that either, and the statement doesn't promise it.
 
 ## Correct and wrong solutions
 
-`solution/reference.patch` is the five upstream fixes, code only, 29 lines in
+`solution/reference.patch` is the five upstream fixes, code only, +18 / −13 lines in
 two files.
 
 Alternatives in `verifier/alt_fixes/`. Both pass the hidden tests and the
