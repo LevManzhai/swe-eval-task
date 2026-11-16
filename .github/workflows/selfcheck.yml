@@ -16,7 +16,6 @@ on:
         options:
           - tomlkit-conformance
           - anyio-cancellation-safety
-          - redis-py-connection-lifecycle
           - tomlkit-table-structure
           - tomlkit-out-of-order-tables
           - portion-intervaldict

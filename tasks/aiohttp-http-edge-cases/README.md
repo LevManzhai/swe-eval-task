@@ -31,7 +31,7 @@ Two earlier tasks here used the same approach, and I learned from both:
 - **anyio** (accepted, 0 of 2 attempts passed): both attempts audited the
   library and found ten of eleven bugs. They missed the one whose trigger was
   exotic.
-- **redis-py** (rejected): every bug sat on the main path of a connection's
+- **redis-py** (an earlier candidate, rejected and not kept here): every bug sat on the main path of a connection's
   life cycle, so a systematic walk through that path found them all.
 
 So this task is built from bugs whose triggers are each unusual in their own

@@ -38,7 +38,8 @@ fixed Cython code in the repository would have shown the solver the answer.
 
 It's the anyio lesson made deliberate. In anyio both attempts found ten of the
 eleven bugs by auditing, and missed the one whose trigger was strange. In
-redis-py every bug was on the main path, and the attempt found them all.
+redis-py (an earlier candidate, not kept in this repo) every bug was on the main
+path, and the attempt found them all.
 Here each of the nine bugs needs its own unusual input or situation, and they
 sit in six different files across client and server.
 
