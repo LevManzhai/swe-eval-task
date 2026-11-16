@@ -1,0 +1,92 @@
+--- a/portion/dict.py
++++ b/portion/dict.py
+@@ -1,3 +1,4 @@
++from bisect import bisect_right
+ from collections.abc import Mapping, MutableMapping
+ 
+ from sortedcontainers import SortedDict
+@@ -29,7 +30,7 @@
+     values (not keys) that are stored.
+     """
+ 
+-    __slots__ = ("_storage",)
++    __slots__ = ("_storage", "_index")
+ 
+     # Class to use when creating Interval instances
+     _klass = Interval
+@@ -49,6 +50,7 @@
+         :param mapping_or_iterable: optional mapping or iterable.
+         """
+         self._storage = SortedDict(_sortkey)  # Mapping from intervals to values
++        self._index = None  # Sorted atomic intervals, rebuilt lazily for lookups
+ 
+         if mapping_or_iterable is not None:
+             self.update(mapping_or_iterable)
+@@ -75,6 +77,7 @@
+         Remove all items from the IntervalDict.
+         """
+         self._storage.clear()
++        self._index = None
+ 
+     def copy(self):
+         """
+@@ -184,6 +187,7 @@
+ 
+         :return: a (key, value) pair.
+         """
++        self._index = None
+         return self._storage.popitem()
+ 
+     def setdefault(self, key, default=None):
+@@ -330,12 +334,14 @@
+                     items.append((intersection, v))
+             return self.__class__._from_items(items)
+         else:
+-            for i, v in self._storage.items():
+-                # Early out
+-                if key < i.lower:
+-                    break
+-                if key in i:
+-                    return v
++            if self._index is None:
++                atomics = [(a, v) for i, v in self._storage.items() for a in i]
++                atomics.sort(key=lambda p: (p[0].lower, p[0].left is Bound.OPEN))
++                self._index = ([(a.lower, a.left is Bound.OPEN) for a, _ in atomics], atomics)
++            keys, atomics = self._index
++            index = bisect_right(keys, (key, False)) - 1
++            if index >= 0 and key in atomics[index][0]:
++                return atomics[index][1]
+             raise KeyError(key)
+ 
+     def __setitem__(self, key, value):
+@@ -368,6 +374,7 @@
+             added_items.append((interval, value))
+ 
+         # Update storage accordingly
++        self._index = None
+         for k in removed_keys:
+             self._storage.pop(k)
+ 
+@@ -403,6 +410,7 @@
+             raise KeyError(key)
+ 
+         # Update storage accordingly
++        self._index = None
+         for k in removed_keys:
+             self._storage.pop(k)
+ 
+@@ -425,7 +433,13 @@
+         return len(self._storage)
+ 
+     def __contains__(self, key):
+-        return key in self.domain()
++        if isinstance(key, Interval):
++            return key in self.domain()
++        try:
++            self[key]
++        except KeyError:
++            return False
++        return True
+ 
+     def __repr__(self):
+         return "{{{}}}".format(

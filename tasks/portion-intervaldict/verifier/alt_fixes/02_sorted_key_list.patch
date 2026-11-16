@@ -1,0 +1,373 @@
+--- a/portion/dict.py
++++ b/portion/dict.py
+@@ -1,6 +1,6 @@
+-from collections.abc import Mapping, MutableMapping
++from collections.abc import ItemsView, KeysView, Mapping, MutableMapping, ValuesView
+ 
+-from sortedcontainers import SortedDict
++from sortedcontainers import SortedKeyList
+ 
+ from .const import Bound
+ from .interval import Interval
+@@ -8,7 +8,64 @@
+ 
+ def _sortkey(i):
+     # Sort by lower bound, closed first
+-    return (i[0].lower, i[0].left is Bound.OPEN)
++    return (i.lower, i.left is Bound.OPEN)
++
++
++def _piecekey(piece):
++    return _sortkey(piece[0])
++
++
++class _IntervalDictView:
++    """
++    Mixin for the live views returned by keys(), values() and items().
++
++    Views expose one element per stored value, sorted by key, and always reflect
++    the current content of the underlying IntervalDict.
++    """
++
++    __slots__ = ()
++
++    def _elements(self):
++        raise NotImplementedError
++
++    def __len__(self):
++        return len(self._mapping._grouped())
++
++    def __iter__(self):
++        return iter(self._elements())
++
++    def __reversed__(self):
++        return reversed(self._elements())
++
++    def __getitem__(self, index):
++        return self._elements()[index]
++
++    def __contains__(self, item):
++        return any(item == e for e in self._elements())
++
++    def __repr__(self):
++        return f"{self.__class__.__name__}({self._elements()!r})"
++
++
++class IntervalDictKeysView(_IntervalDictView, KeysView):
++    __slots__ = ()
++
++    def _elements(self):
++        return [i for i, _ in self._mapping._grouped()]
++
++
++class IntervalDictValuesView(_IntervalDictView, ValuesView):
++    __slots__ = ()
++
++    def _elements(self):
++        return [v for _, v in self._mapping._grouped()]
++
++
++class IntervalDictItemsView(_IntervalDictView, ItemsView):
++    __slots__ = ()
++
++    def _elements(self):
++        return list(self._mapping._grouped())
+ 
+ 
+ class IntervalDict(MutableMapping):
+@@ -24,12 +81,13 @@
+     When keys are "single values", its behaviour corresponds to the one of Python
+     built-in dict. When no matching value is found, a KeyError is raised.
+ 
+-    Note that this class does not aim to have the best performance, but is provided
+-    mainly for convenience. Its performance mainly depends on the number of distinct
+-    values (not keys) that are stored.
++    Internally, the content is stored as a sorted collection of disjoint atomic
++    intervals, so that operations on a key only inspect the stored intervals that
++    are close to that key. Operations that expose the whole content (e.g., keys(),
++    items(), len(), domain()) group these atomic intervals by value on demand.
+     """
+ 
+-    __slots__ = ("_storage",)
++    __slots__ = ("_pieces",)
+ 
+     # Class to use when creating Interval instances
+     _klass = Interval
+@@ -48,7 +106,8 @@
+ 
+         :param mapping_or_iterable: optional mapping or iterable.
+         """
+-        self._storage = SortedDict(_sortkey)  # Mapping from intervals to values
++        # Sorted list of (atomic interval, value) pairs, with disjoint intervals.
++        self._pieces = SortedKeyList(key=_piecekey)
+ 
+         if mapping_or_iterable is not None:
+             self.update(mapping_or_iterable)
+@@ -65,16 +124,56 @@
+         :return: an IntervalDict
+         """
+         d = cls()
+-        for key, value in items:
+-            d._storage[key] = value
+-
++        d._pieces.update((atomic, value) for key, value in items for atomic in key)
+         return d
+ 
++    def _grouped(self):
++        groups = []
++        for atomic, value in self._pieces:
++            for group in groups:
++                if group[0] == value:
++                    group[1].append(atomic)
++                    break
++            else:
++                groups.append((value, [atomic]))
++        return [(self._klass(*atomics), v) for v, atomics in groups]
++
++    def _find_piece(self, value):
++        index = self._pieces.bisect_key_right((value, False)) - 1
++        if index >= 0:
++            piece = self._pieces[index]
++            if value in piece[0]:
++                return piece
++        return None
++
++    def _overlapping(self, atomic):
++        pieces = self._pieces
++        start = max(pieces.bisect_key_right(_sortkey(atomic)) - 1, 0)
++        found = []
++        for piece in pieces.islice(start):
++            if atomic.upper < piece[0].lower:
++                break
++            if piece[0].overlaps(atomic):
++                found.append(piece)
++        return found
++
++    def _remove(self, atomic):
++        found = self._overlapping(atomic)
++        for piece in found:
++            del self._pieces[self._pieces.bisect_key_left(_piecekey(piece))]
++        for interval, value in found:
++            for remaining in interval - atomic:
++                self._pieces.add((remaining, value))
++        return len(found) > 0
++
++    def _insert(self, atomic, value):
++        self._pieces.add((atomic, value))
++
+     def clear(self):
+         """
+         Remove all items from the IntervalDict.
+         """
+-        self._storage.clear()
++        self._pieces.clear()
+ 
+     def copy(self):
+         """
+@@ -82,7 +181,9 @@
+ 
+         :return: a shallow copy.
+         """
+-        return self.__class__._from_items(self.items())
++        d = self.__class__()
++        d._pieces = self._pieces.copy()
++        return d
+ 
+     def get(self, key, default=None):
+         """
+@@ -115,7 +216,7 @@
+         :param value: value to look for.
+         :return: an Interval instance.
+         """
+-        return self._klass(*(i for i, v in self._storage.items() if v == value))
++        return self._klass(*(i for i, v in self._pieces if v == value))
+ 
+     def items(self):
+         """
+@@ -124,7 +225,7 @@
+ 
+         :return: a view object.
+         """
+-        return self._storage.items()
++        return IntervalDictItemsView(self)
+ 
+     def keys(self):
+         """
+@@ -133,7 +234,7 @@
+ 
+         :return: a view object.
+         """
+-        return self._storage.keys()
++        return IntervalDictKeysView(self)
+ 
+     def values(self):
+         """
+@@ -142,7 +243,7 @@
+ 
+         :return: a view object.
+         """
+-        return self._storage.values()
++        return IntervalDictValuesView(self)
+ 
+     def domain(self):
+         """
+@@ -150,7 +251,7 @@
+ 
+         :return: an Interval.
+         """
+-        return self._klass(*self._storage.keys())
++        return self._klass(*(i for i, _ in self._pieces))
+ 
+     def pop(self, key, default=...):
+         """
+@@ -184,7 +285,12 @@
+ 
+         :return: a (key, value) pair.
+         """
+-        return self._storage.popitem()
++        groups = self._grouped()
++        if len(groups) == 0:
++            raise KeyError("popitem(): dictionary is empty")
++        key, value = groups[-1]
++        del self[key]
++        return key, value
+ 
+     def setdefault(self, key, default=None):
+         """
+@@ -310,33 +416,25 @@
+         """
+         if atomic:
+             d = {}
+-            for interval, v in self._storage.items():
++            for interval, v in self._grouped():
+                 for i in interval:
+                     d[i] = v
+             return d
+         else:
+-            return dict(self._storage)
++            return dict(self._grouped())
+ 
+     def __getitem__(self, key):
+         if isinstance(key, Interval):
+-            items = []
+-            for i, v in self._storage.items():
+-                # Early out
+-                if key.upper < i.lower:
+-                    break
+-
+-                intersection = key & i
+-                if not intersection.empty:
+-                    items.append((intersection, v))
+-            return self.__class__._from_items(items)
+-        else:
+-            for i, v in self._storage.items():
+-                # Early out
+-                if key < i.lower:
+-                    break
+-                if key in i:
+-                    return v
+-            raise KeyError(key)
++            d = self.__class__()
++            for atomic in key:
++                for interval, value in self._overlapping(atomic):
++                    d._pieces.add((interval & atomic, value))
++            return d
++        else:
++            piece = self._find_piece(key)
++            if piece is None:
++                raise KeyError(key)
++            return piece[1]
+ 
+     def __setitem__(self, key, value):
+         if isinstance(key, Interval):
+@@ -347,32 +445,9 @@
+         if interval.empty:
+             return
+ 
+-        removed_keys = []
+-        added_items = []
+-
+-        found = False
+-        for i, v in self._storage.items():
+-            if value == v:
+-                found = True
+-                # Extend existing key
+-                removed_keys.append(i)
+-                added_items.append((i | interval, v))
+-            elif i.overlaps(interval):
+-                # Reduce existing key
+-                remaining = i - interval
+-                removed_keys.append(i)
+-                if not remaining.empty:
+-                    added_items.append((remaining, v))
+-
+-        if not found:
+-            added_items.append((interval, value))
+-
+-        # Update storage accordingly
+-        for k in removed_keys:
+-            self._storage.pop(k)
+-
+-        for k, v in added_items:
+-            self._storage[k] = v
++        for atomic in interval:
++            self._remove(atomic)
++            self._insert(atomic, value)
+ 
+     def __delitem__(self, key):
+         if isinstance(key, Interval):
+@@ -383,32 +458,14 @@
+         if interval.empty:
+             return
+ 
+-        removed_keys = []
+-        added_items = []
+-
+         found = False
+-        for i, v in self._storage.items():
+-            # Early out
+-            if interval.upper < i.lower:
+-                break
+-
+-            if i.overlaps(interval):
++        for atomic in interval:
++            if self._remove(atomic):
+                 found = True
+-                remaining = i - interval
+-                removed_keys.append(i)
+-                if not remaining.empty:
+-                    added_items.append((remaining, v))
+ 
+         if not found and not isinstance(key, Interval):
+             raise KeyError(key)
+ 
+-        # Update storage accordingly
+-        for k in removed_keys:
+-            self._storage.pop(k)
+-
+-        for k, value in added_items:
+-            self._storage[k] = value
+-
+     def __or__(self, other):
+         d = self.copy()
+         d.update(other)
+@@ -419,13 +476,16 @@
+         return self
+ 
+     def __iter__(self):
+-        return iter(self._storage)
++        return iter(self.keys())
+ 
+     def __len__(self):
+-        return len(self._storage)
++        return len(self._grouped())
+ 
+     def __contains__(self, key):
+-        return key in self.domain()
++        if isinstance(key, Interval):
++            return key in self.domain()
++        else:
++            return self._find_piece(key) is not None
+ 
+     def __repr__(self):
+         return "{{{}}}".format(

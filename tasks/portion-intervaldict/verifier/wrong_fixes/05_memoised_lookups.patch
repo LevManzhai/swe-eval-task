@@ -1,0 +1,71 @@
+--- a/portion/dict.py
++++ b/portion/dict.py
+@@ -29,7 +29,7 @@
+     values (not keys) that are stored.
+     """
+ 
+-    __slots__ = ("_storage",)
++    __slots__ = ("_storage", "_memo")
+ 
+     # Class to use when creating Interval instances
+     _klass = Interval
+@@ -49,6 +49,7 @@
+         :param mapping_or_iterable: optional mapping or iterable.
+         """
+         self._storage = SortedDict(_sortkey)  # Mapping from intervals to values
++        self._memo = {}  # Results of previous single value lookups
+ 
+         if mapping_or_iterable is not None:
+             self.update(mapping_or_iterable)
+@@ -75,6 +76,7 @@
+         Remove all items from the IntervalDict.
+         """
+         self._storage.clear()
++        self._memo.clear()
+ 
+     def copy(self):
+         """
+@@ -184,6 +186,7 @@
+ 
+         :return: a (key, value) pair.
+         """
++        self._memo.clear()
+         return self._storage.popitem()
+ 
+     def setdefault(self, key, default=None):
+@@ -330,11 +333,19 @@
+                     items.append((intersection, v))
+             return self.__class__._from_items(items)
+         else:
++            try:
++                return self._memo[key]
++            except (KeyError, TypeError):
++                pass
+             for i, v in self._storage.items():
+                 # Early out
+                 if key < i.lower:
+                     break
+                 if key in i:
++                    try:
++                        self._memo[key] = v
++                    except TypeError:
++                        pass
+                     return v
+             raise KeyError(key)
+ 
+@@ -368,6 +379,7 @@
+             added_items.append((interval, value))
+ 
+         # Update storage accordingly
++        self._memo.clear()
+         for k in removed_keys:
+             self._storage.pop(k)
+ 
+@@ -403,6 +415,7 @@
+             raise KeyError(key)
+ 
+         # Update storage accordingly
++        self._memo.clear()
+         for k in removed_keys:
+             self._storage.pop(k)
+ 

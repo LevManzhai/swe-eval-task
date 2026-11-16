@@ -1,0 +1,16 @@
+# Runtime dependency of portion
+sortedcontainers==2.4.0
+# Test tooling (the upstream suite uses pytest-benchmark fixtures)
+pytest==9.2.0
+pytest-benchmark==5.3.1
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+Pygments==2.21.0
+py-cpuinfo2==10.1.1
+# Build backend needed to install the checkout in editable mode, offline
+hatchling==1.33.0
+editables==0.6
+pathspec==1.1.1
+tomlkit==0.15.2
+trove-classifiers==2026.9.21.13

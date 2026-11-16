@@ -1,61 +1,59 @@
-# Flask blueprint URL-prefix merging bug — a SWE-bench-style eval task
+# Coding tasks that stay hard for LLM agents
 
-This repository packages one real, upstream-fixed bug in
-[Flask](https://github.com/pallets/flask) as a self-contained coding task
-for evaluating AI coding models, in the style of
-[SWE-bench](https://www.swebench.com/): given a buggy checkout of a real
-library and a plain-language bug report, produce a patch that makes a
-hidden test suite pass without breaking anything else.
+A small collection of software-engineering tasks built on real open-source
+repositories, each packaged the way SWE-bench-style benchmarks package them:
+a problem statement, a reproducible environment, a reference solution, and a
+deterministic hidden verifier.
 
-## What this is
+What I am actually interested in here is the part that usually goes
+unreported: **most candidate tasks turn out to be too easy**, and the only way
+to know is to measure. Every candidate in this repository goes through the
+same gate before it is accepted, and the ones that fail it are kept, with a
+post-mortem, in [`REJECTED.md`](REJECTED.md).
 
-- **The bug**: `flask.Blueprint` incorrectly merges a blueprint's
-  `url_prefix` with each route's rule string. Depending on incidental
-  trailing/leading slashes (or an empty route string), the resulting URL
-  either has a doubled slash, is missing a slash, or registration raises
-  `ValueError`. See `task/PROBLEM.md` for the exact behaviour a solver is
-  given to work from.
-- **The upstream history**: this is a real bug, fixed for real in Flask
-  1.0.1 (2018, issue
-  [pallets/flask#2731](https://github.com/pallets/flask/issues/2731)).
-  Upstream's own commit history shows the first "obvious" fix was itself
-  incomplete and needed two more follow-up commits — see `NOTES.md` for the
-  full story and why that matters for difficulty.
-- **The task**: starting from the exact parent commit of the real fix, with
-  the bug present, produce a patch to the library source that makes
-  `verifier/test_task.py` (written from scratch, not copied from upstream)
-  pass.
+## Tasks
 
-## Layout
+| Task | Repository | Kind | Status |
+|---|---|---|---|
+| [`tasks/portion-intervaldict`](tasks/portion-intervaldict) | [AlexandreDecan/portion](https://github.com/AlexandreDecan/portion) | Performance work under a strict behaviour-preservation constraint | see its `NOTES.md` |
+| [`tasks/flask-blueprint-prefix`](tasks/flask-blueprint-prefix) | [pallets/flask](https://github.com/pallets/flask) | Bug fix | **rejected** by the difficulty gate, kept for reference |
 
-| Path | What it is |
-|---|---|
-| `task/PROBLEM.md` | The problem statement a solver sees. No hints about which file or function. |
-| `environment/Dockerfile` | Builds the exact starting environment: pinned Python, Flask checked out at the buggy parent commit, pinned dependencies. |
-| `environment/requirements.txt` | Exact `==` pinned dependency versions. |
-| `solution/reference.patch` | The reference fix, as a unified diff against the starting state. |
-| `verifier/test_task.py` | The hidden test suite (21 pytest cases, 3 groups). |
-| `verifier/wrong_fixes/` | 3 plausible-but-wrong/incomplete patches that must still fail the verifier. |
-| `verifier/alt_fixes/` | 2 differently-implemented patches that correctly fix the bug and must pass the verifier. |
-| `run.sh` | End-to-end self-check: builds the image, then proves (b)-(e) from the brief (starting state fails, reference + alt fixes pass, wrong fixes fail). |
-| `NOTES.md` | Upstream references, why this is hard, what each wrong fix gets wrong, a plain-language file-by-file guide, verifier limitations, and the blind difficulty-check result. |
-| `LICENSE-UPSTREAM` | Flask's own license, reproduced for attribution. |
+## What every task contains
 
-## How to run it
+- `task/PROBLEM.md` — what the solver sees. It describes the symptom and the
+  acceptance criteria, not where to look.
+- `environment/` — a Dockerfile with everything pinned (base image, upstream
+  commit, dependencies). Test runs happen with networking disabled.
+- `solution/reference.patch` — one way to solve it.
+- `verifier/` — the hidden test suite, plus two sets of patches that keep the
+  verifier honest: `alt_fixes/` (different but correct implementations, which
+  must pass) and `wrong_fixes/` (plausible but wrong, incomplete or hard-coded
+  ones, which must fail).
+- `run.sh` — builds the image and checks the whole matrix: starting state
+  fails, reference and alternative solutions pass, wrong solutions fail.
+- `NOTES.md` — why the task is hard, why each hidden check is justified by the
+  documented behaviour rather than by an arbitrary choice, and the result of
+  the difficulty check.
 
-Requires Docker.
+## The acceptance gate
 
-```bash
-./run.sh
-```
+A candidate is accepted only if all of the following hold:
 
-This builds the environment image once and then, inside throwaway
-containers with networking disabled, runs the hidden verifier against: the
-unmodified starting state (must fail), `solution/reference.patch` (must
-pass), every patch in `verifier/alt_fixes/` (must pass), and every patch in
-`verifier/wrong_fixes/` (must fail). It prints a `PASS`/`FAIL` line for each
-of these checks and exits non-zero if any expectation is violated.
+1. **Reproducible** — `run.sh` is green from a clean checkout.
+2. **Fair** — every hidden check is traceable to the problem statement, the
+   library's documentation, or the behaviour of the unmodified code. Anything
+   that is merely an accident of the reference solution is left untested.
+3. **Implementation-agnostic** — structurally different correct solutions
+   pass; the verifier never looks at private attributes.
+4. **Hard** — three independent attempts by a frontier coding agent, each given
+   only the problem statement and the repository (no history, no notes, no
+   verifier), in a single shot. The candidate is accepted if at most one of the
+   three passes the hidden verifier.
+5. **Hard for the right reason** — when attempts fail, the failures must come
+   from the engineering difficulty, not from an ambiguous statement or a broken
+   environment. Each attempt is asked to report what it found ambiguous, and
+   every failure is traced back to a specific documented behaviour.
 
-To try solving it yourself: read only `task/PROBLEM.md`, then build the
-image and work against the checkout at `/workspace/repo` inside it. Don't
-look at `solution/`, `verifier/`, or `NOTES.md` first — that's the point.
+Gate 4 is deliberately not tuned after the fact: a statement is never blurred
+or cut down to make a task "pass". If a task is too easy it is rejected and
+written up.

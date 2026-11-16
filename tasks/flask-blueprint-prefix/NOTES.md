@@ -137,6 +137,17 @@ its own branch, not as a side effect of the slash-joining logic.
   attribution of the cloned upstream source and the patches derived from
   it.
 
+### Follow-up: two more attempts, and the verdict
+
+Two further independent attempts were run under the same conditions and graded
+with the real verifier in the task's Docker image (`--network none`, patch
+applied with `git apply`). Both scored 21/21. All three attempts converged on
+the same fix as the reference: stop pre-stripping the prefix, join with
+`rstrip('/')` / `lstrip('/')`, and handle the empty rule as its own branch.
+
+**Gate result: 3 of 3 attempts passed; the task is rejected** (the gate accepts
+at most 1 of 3). The post-mortem is in the top-level `REJECTED.md`.
+
 ## Limitations of this verifier
 
 - It tests blueprint `url_prefix`/rule merging only. It does not exercise
