@@ -1,0 +1,702 @@
+diff --git a/docs/versionhistory.rst b/docs/versionhistory.rst
+index 4f3683e..3c47fe5 100644
+--- a/docs/versionhistory.rst
++++ b/docs/versionhistory.rst
+@@ -71,18 +71,10 @@ This library adheres to `Semantic Versioning 2.0 <http://semver.org/>`_.
+   requested and IPv6 is enabled and the dual-stack path is not available or a specific
+   local host name was given
+   (`#1313 <https://github.com/agronholm/anyio/issues/1313>`_)
+-- Fixed ``AsyncFile`` not shielding against cancellation while closing
+-  (`#1314 <https://github.com/agronholm/anyio/issues/1314>`_)
+-- Fixed ``TemporaryDirectory.cleanup()`` reacting to cancellation prematurely when the host
+-  task was already cancelled, causing the actual cleanup operation to be skipped
+-  (`#1316 <https://github.com/agronholm/anyio/issues/1316>`_; PR by @Yasser-Ameur)
+ - Fixed a NaN deadline being accepted on asyncio while Trio raised ``ValueError``,
+   which silently disabled the timeout (``fail_after(math.nan)`` returned instead of
+   raising ``TimeoutError``); ``CancelScope`` now rejects it on both backends
+   (`#1317 <https://github.com/agronholm/anyio/issues/1317>`_; PR by @dylanpulver)
+-- Fixed ``FileReadStream`` and ``FileWriteStream`` leaving files open when cancelled
+-  during context manager exit, including unflushed writes
+-  (`#1318 <https://github.com/agronholm/anyio/issues/1318>`_; PR by @Kuang-xianxin)
+ - Fixed ``Condition.notify()`` and ``Condition.notify_all()`` failing when the
+   underlying lock was acquired directly rather than through the condition
+   (`#1319 <https://github.com/agronholm/anyio/issues/1319>`_; PR by @GruffElixir)
+@@ -115,9 +107,6 @@ This library adheres to `Semantic Versioning 2.0 <http://semver.org/>`_.
+ - Fixed ``Lock.locked()`` (and ``Condition.locked()``) raising ``NoEventLoopError``
+   when the lock was created outside a running event loop
+   (`#1362 <https://github.com/agronholm/anyio/issues/1362>`_; PR by @00200200)
+-- Fixed ``connect_tcp()`` leaking a connected socket when an enclosing cancel scope
+-  was cancelled before the connection attempt task group exited
+-  (`#1364 <https://github.com/agronholm/anyio/issues/1364>`_; PR by @charan-rathore)
+ - Fixed ``create_connected_udp_socket()`` silently ignoring ``local_port`` when
+   ``local_host`` was not given: the local address was left unset, so the OS picked
+   an ephemeral port instead of the requested one
+@@ -130,10 +119,6 @@ This library adheres to `Semantic Versioning 2.0 <http://semver.org/>`_.
+   (`#1372 <https://github.com/agronholm/anyio/issues/1372>`_; PR by @Rodrigo-Palma)
+ - Fixed ``BufferedByteReceiveStream.receive_exactly()`` and ``receive_until()`` returning buffered data after explicit closure instead of raising ``ClosedResourceError``
+   (`#1378 <https://github.com/agronholm/anyio/issues/1378>`_; PR by @kokotatan)
+-- Fixed a TLS stream sending records the peer could no longer decrypt after a cancelled
+-  ``send()`` lost an already-encrypted record; the stream now raises
+-  ``BrokenResourceError`` on further use instead
+-  (`#1385 <https://github.com/agronholm/anyio/issues/1385>`_; PR by @Kayvan-Zahiri)
+ - Fixed ``close()`` on memory object streams not waking up tasks blocked in ``send()``
+   or ``receive()`` on the same stream
+   (`#1391 <https://github.com/agronholm/anyio/issues/1391>`_)
+@@ -146,11 +131,6 @@ This library adheres to `Semantic Versioning 2.0 <http://semver.org/>`_.
+   (`#1400 <https://github.com/agronholm/anyio/issues/1400>`_; PR by @adenzhou1350)
+ - Fixed SpooledTemporaryFile.rollover() moving the current file position to the end of the file
+   (`#1401 <https://github.com/agronholm/anyio/issues/1401>`_; PR by @fhgffy)
+-- Fixed cancellation during temporary directory creation leaving the directory behind
+-  while its context manager is retained
+-  (`#1403 <https://github.com/agronholm/anyio/issues/1403>`_; PR by @adenzhou1350)
+-- Fixed cancellation during ``SpooledTemporaryFile.rollover()`` losing buffered contents
+-  (`#1404 <https://github.com/agronholm/anyio/issues/1404>`_; PR by @adenzhou1350)
+ - Fixed ``TextSendStream.send()`` re-emitting the byte order mark on every item with
+   BOM-emitting encodings (``utf-16``, ``utf-32``, ``utf-8-sig``), which made the peer decode
+   a stray ``\ufeff`` in front of every message after the first
+@@ -158,17 +138,8 @@ This library adheres to `Semantic Versioning 2.0 <http://semver.org/>`_.
+ - Fixed buffered byte streams returning empty bytes when a wrapped object stream received
+   empty messages instead of waiting for data or raising ``EndOfStream``
+   (`#1409 <https://github.com/agronholm/anyio/issues/1409>`_; PR by @00200200)
+-- Fixed ``BlockingPortal`` crashing with ``InvalidStateError`` when a future it
+-  returned was cancelled just as the callable was completing
+-  (`#1410 <https://github.com/agronholm/anyio/issues/1410>`_; PR by @adenzhou1350)
+ - Fixed ``UNIXSocketStream.send_fds()`` silently truncating messages on short socket writes
+   (`#1422 <https://github.com/agronholm/anyio/issues/1422>`_; PR by @AryanRG)
+-- Fixed cancelled TCP receives on the asyncio backend leaving transport reads enabled,
+-  allowing incoming data to accumulate while the application was not receiving.
+-  (`#1423 <https://github.com/agronholm/anyio/issues/1423>`_; PR by @Master-Norna)
+-- Fixed ``CapacityLimiter.acquire_on_behalf_of()`` on asyncio releasing the wrong
+-  borrower when the acquiring task was cancelled during the cancel-shielded
+-  checkpoint that runs after a non-blocking acquisition
+ 
+ **4.15.1**
+ 
+@@ -268,9 +239,6 @@ This library adheres to `Semantic Versioning 2.0 <http://semver.org/>`_.
+     task.
+ 
+   (`#1197 <https://github.com/agronholm/anyio/issues/1197>`_; PR by @tapetersen)
+-- Fixed ``TemporaryDirectory`` not cleaning up when the host task was cancelled while
+-  exiting the context manager, as the cleanup now runs in a shielded cancel scope
+-  (`#1304 <https://github.com/agronholm/anyio/pull/1304>`_; PR by @smurfix)
+ 
+ **4.14.2**
+ 
+diff --git a/src/anyio/_backends/_asyncio.py b/src/anyio/_backends/_asyncio.py
+index de52517..41213ae 100644
+--- a/src/anyio/_backends/_asyncio.py
++++ b/src/anyio/_backends/_asyncio.py
+@@ -1318,10 +1318,8 @@ class SocketStream(abc.SocketStream):
+                 and not self._protocol.is_at_eof
+             ):
+                 self._transport.resume_reading()
+-                try:
+-                    await self._protocol.read_event.wait()
+-                finally:
+-                    self._transport.pause_reading()
++                await self._protocol.read_event.wait()
++                self._transport.pause_reading()
+             else:
+                 await AsyncIOBackend.checkpoint()
+ 
+@@ -2172,7 +2170,7 @@ class CapacityLimiter(BaseCapacityLimiter):
+             try:
+                 await AsyncIOBackend.cancel_shielded_checkpoint()
+             except BaseException:
+-                self.release_on_behalf_of(borrower)
++                self.release()
+                 raise
+ 
+     def release(self) -> None:
+diff --git a/src/anyio/_core/_fileio.py b/src/anyio/_core/_fileio.py
+index 8d7ac32..661cbfa 100644
+--- a/src/anyio/_core/_fileio.py
++++ b/src/anyio/_core/_fileio.py
+@@ -29,7 +29,6 @@ from typing import (
+ from .. import to_thread
+ from ..abc import AsyncResource
+ from ._synchronization import CapacityLimiter
+-from ._tasks import CancelScope
+ 
+ if sys.version_info >= (3, 14):
+     from pathlib.types import PathInfo
+@@ -111,8 +110,7 @@ class AsyncFile(AsyncResource, Generic[AnyStr]):
+                 break
+ 
+     async def aclose(self) -> None:
+-        with CancelScope(shield=True):
+-            await to_thread.run_sync(self._fp.close, limiter=self._limiter)
++        return await to_thread.run_sync(self._fp.close, limiter=self._limiter)
+ 
+     async def read(self, size: int = -1) -> AnyStr:
+         return await to_thread.run_sync(self._fp.read, size, limiter=self._limiter)
+diff --git a/src/anyio/_core/_sockets.py b/src/anyio/_core/_sockets.py
+index 733341d..bdd493f 100644
+--- a/src/anyio/_core/_sockets.py
++++ b/src/anyio/_core/_sockets.py
+@@ -262,11 +262,6 @@ async def connect_tcp(
+                 else ExceptionGroup("multiple connection attempts failed", oserrors)
+             )
+             raise OSError("All connection attempts failed") from cause
+-    except BaseException:
+-        if connected_stream is not None:
+-            await aclose_forcefully(connected_stream)
+-
+-        raise
+     finally:
+         oserrors.clear()
+ 
+diff --git a/src/anyio/_core/_tempfile.py b/src/anyio/_core/_tempfile.py
+index 56dda47..ca36a51 100644
+--- a/src/anyio/_core/_tempfile.py
++++ b/src/anyio/_core/_tempfile.py
+@@ -17,7 +17,6 @@ from typing import (
+ from .. import to_thread
+ from .._core._fileio import AsyncFile
+ from ..lowlevel import checkpoint_if_cancelled
+-from ._tasks import CancelScope
+ 
+ if TYPE_CHECKING:
+     from _typeshed import OpenBinaryMode, OpenTextMode, ReadableBuffer, WriteableBuffer
+@@ -323,18 +322,16 @@ class SpooledTemporaryFile(AsyncFile[AnyStr]):
+         if self._rolled:
+             return
+ 
+-        await checkpoint_if_cancelled()
+-        with CancelScope(shield=True):
+-            self._rolled = True
+-            buffer = self._fp
+-            position = buffer.tell()
+-            buffer.seek(0)
+-            self._fp = await to_thread.run_sync(
+-                lambda: tempfile.TemporaryFile(**self._tempfile_params)
+-            )
+-            await self.write(buffer.read())
+-            await self.seek(position)
+-            buffer.close()
++        self._rolled = True
++        buffer = self._fp
++        position = buffer.tell()
++        buffer.seek(0)
++        self._fp = await to_thread.run_sync(
++            lambda: tempfile.TemporaryFile(**self._tempfile_params)
++        )
++        await self.write(buffer.read())
++        await self.seek(position)
++        buffer.close()
+ 
+     @property
+     def closed(self) -> bool:
+@@ -502,7 +499,7 @@ class TemporaryDirectory(Generic[AnyStr]):
+         self._tempdir = await to_thread.run_sync(
+             lambda: tempfile.TemporaryDirectory(**params)
+         )
+-        return self._tempdir.name
++        return await to_thread.run_sync(self._tempdir.__enter__)
+ 
+     async def __aexit__(
+         self,
+@@ -511,17 +508,13 @@ class TemporaryDirectory(Generic[AnyStr]):
+         traceback: TracebackType | None,
+     ) -> None:
+         if self._tempdir is not None:
+-            with CancelScope(shield=True):
+-                await to_thread.run_sync(
+-                    self._tempdir.__exit__, exc_type, exc_value, traceback
+-                )
++            await to_thread.run_sync(
++                self._tempdir.__exit__, exc_type, exc_value, traceback
++            )
+ 
+     async def cleanup(self) -> None:
+         if self._tempdir is not None:
+-            with CancelScope(shield=True):
+-                await to_thread.run_sync(self._tempdir.cleanup)
+-
+-            await checkpoint_if_cancelled()
++            await to_thread.run_sync(self._tempdir.cleanup)
+ 
+ 
+ @overload
+diff --git a/src/anyio/from_thread.py b/src/anyio/from_thread.py
+index 03c40a2..df45eda 100644
+--- a/src/anyio/from_thread.py
++++ b/src/anyio/from_thread.py
+@@ -274,14 +274,14 @@ class BlockingPortal:
+             future.cancel()
+             future.set_running_or_notify_cancel()
+         except BaseException as exc:
+-            if future.set_running_or_notify_cancel():
++            if not future.cancelled():
+                 future.set_exception(exc)
+ 
+             # Let base exceptions fall through
+             if not isinstance(exc, Exception):
+                 raise
+         else:
+-            if future.set_running_or_notify_cancel():
++            if not future.cancelled():
+                 future.set_result(retval)
+         finally:
+             scope = None  # type: ignore[assignment]
+diff --git a/src/anyio/streams/file.py b/src/anyio/streams/file.py
+index a30e085..b9d7ca4 100644
+--- a/src/anyio/streams/file.py
++++ b/src/anyio/streams/file.py
+@@ -14,7 +14,6 @@ from typing import IO, Any
+ 
+ from .. import (
+     BrokenResourceError,
+-    CancelScope,
+     ClosedResourceError,
+     EndOfStream,
+     TypedAttributeSet,
+@@ -22,7 +21,6 @@ from .. import (
+     typed_attribute,
+ )
+ from ..abc import ByteReceiveStream, ByteSendStream
+-from ..lowlevel import checkpoint_if_cancelled
+ 
+ 
+ class FileStreamAttribute(TypedAttributeSet):
+@@ -39,10 +37,7 @@ class _BaseFileStream:
+         self._file = file
+ 
+     async def aclose(self) -> None:
+-        with CancelScope(shield=True):
+-            await to_thread.run_sync(self._file.close)
+-
+-        await checkpoint_if_cancelled()
++        await to_thread.run_sync(self._file.close)
+ 
+     @property
+     def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
+diff --git a/src/anyio/streams/tls.py b/src/anyio/streams/tls.py
+index a422c8c..d2a4cb3 100644
+--- a/src/anyio/streams/tls.py
++++ b/src/anyio/streams/tls.py
+@@ -12,7 +12,7 @@ import re
+ import ssl
+ import sys
+ from collections.abc import Callable, Mapping
+-from dataclasses import dataclass, field
++from dataclasses import dataclass
+ from functools import wraps
+ from ssl import SSLContext
+ from typing import Any, TypeAlias, TypeVar, TypeVarTuple, Unpack
+@@ -90,7 +90,6 @@ class TLSStream(ByteStream):
+     _ssl_object: ssl.SSLObject
+     _read_bio: ssl.MemoryBIO
+     _write_bio: ssl.MemoryBIO
+-    _broken: bool = field(default=False, init=False)
+ 
+     @classmethod
+     async def wrap(
+@@ -175,31 +174,17 @@ class TLSStream(ByteStream):
+         await wrapper._call_sslobject_method(ssl_object.do_handshake)
+         return wrapper
+ 
+-    async def _flush_write_bio(self) -> None:
+-        if self._write_bio.pending:
+-            data = self._write_bio.read()
+-            try:
+-                await self.transport_stream.send(data)
+-            except BaseException:
+-                # SSLObject.write() already consumed this record's sequence
+-                # number, so once it is lost the peer can't decrypt anything
+-                # sent after it. Like trio, treat the stream as broken.
+-                self._broken = True
+-                raise
+-
+     async def _call_sslobject_method(
+         self, func: Callable[[Unpack[PosArgsT]], T_Retval], *args: *PosArgsT
+     ) -> T_Retval:
+-        if self._broken:
+-            raise BrokenResourceError
+-
+         while True:
+             try:
+                 result = func(*args)
+             except ssl.SSLWantReadError:
+                 try:
+                     # Flush any pending writes first
+-                    await self._flush_write_bio()
++                    if self._write_bio.pending:
++                        await self.transport_stream.send(self._write_bio.read())
+ 
+                     data = await self.transport_stream.receive()
+                 except EndOfStream:
+@@ -211,7 +196,7 @@ class TLSStream(ByteStream):
+                 else:
+                     self._read_bio.write(data)
+             except ssl.SSLWantWriteError:
+-                await self._flush_write_bio()
++                await self.transport_stream.send(self._write_bio.read())
+             except ssl.SSLSyscallError as exc:
+                 self._read_bio.write_eof()
+                 self._write_bio.write_eof()
+@@ -230,7 +215,8 @@ class TLSStream(ByteStream):
+                 raise
+             else:
+                 # Flush any pending writes first
+-                await self._flush_write_bio()
++                if self._write_bio.pending:
++                    await self.transport_stream.send(self._write_bio.read())
+ 
+                 return result
+ 
+@@ -247,7 +233,7 @@ class TLSStream(ByteStream):
+         return self.transport_stream, self._read_bio.read()
+ 
+     async def aclose(self) -> None:
+-        if self.standard_compatible and not self._broken:
++        if self.standard_compatible:
+             try:
+                 await self.unwrap()
+             except BaseException:
+diff --git a/tests/streams/test_file.py b/tests/streams/test_file.py
+index 1558cb3..a261681 100644
+--- a/tests/streams/test_file.py
++++ b/tests/streams/test_file.py
+@@ -48,19 +48,6 @@ class TestFileReadStream:
+         with pytest.raises(ClosedResourceError):
+             await stream.receive()
+ 
+-    async def test_close_on_cancel(self, file_path: Path) -> None:
+-        stream = await FileReadStream.from_path(file_path)
+-        file = stream.extra(FileStreamAttribute.file)
+-        try:
+-            with CancelScope() as scope:
+-                with pytest.raises(get_cancelled_exc_class()):
+-                    async with stream:
+-                        scope.cancel()
+-
+-            assert file.closed
+-        finally:
+-            file.close()
+-
+     @pytest.mark.parametrize("max_bytes", [0, -1])
+     async def test_receive_invalid_max_bytes(
+         self, file_path: Path, max_bytes: int
+@@ -118,19 +105,6 @@ class TestFileWriteStream:
+         with pytest.raises(ClosedResourceError):
+             await stream.send(b"foo")
+ 
+-    async def test_close_on_cancel(self, file_path: Path) -> None:
+-        stream = await FileWriteStream.from_path(file_path)
+-        file = stream.extra(FileStreamAttribute.file)
+-        try:
+-            with CancelScope() as scope:
+-                with pytest.raises(get_cancelled_exc_class()):
+-                    async with stream:
+-                        scope.cancel()
+-
+-            assert file.closed
+-        finally:
+-            file.close()
+-
+     async def test_extra_attributes(self, file_path: Path) -> None:
+         async with await FileWriteStream.from_path(file_path) as stream:
+             path = stream.extra(FileStreamAttribute.path)
+diff --git a/tests/streams/test_tls.py b/tests/streams/test_tls.py
+index 3c91607..fad0827 100644
+--- a/tests/streams/test_tls.py
++++ b/tests/streams/test_tls.py
+@@ -61,47 +61,6 @@ class TestTLSStream:
+         server_sock.close()
+         assert response == b"olleh"
+ 
+-    async def test_cancelled_send_breaks_stream(
+-        self, server_context: ssl.SSLContext, client_context: ssl.SSLContext
+-    ) -> None:
+-        # Regression test for #1385: a send() cancelled after SSLObject.write()
+-        # loses an encrypted record, so the stream must refuse further use
+-        # instead of sending records the peer can no longer decrypt.
+-        server_send, server_receive = create_memory_object_stream[bytes](1)
+-        client_send, client_receive = create_memory_object_stream[bytes](1)
+-        client_stream = StapledObjectStream(client_send, server_receive)
+-        server_stream = StapledObjectStream(server_send, client_receive)
+-
+-        async def serve() -> None:
+-            tls_stream = await TLSStream.wrap(
+-                server_stream, server_side=True, ssl_context=server_context
+-            )
+-            assert await tls_stream.receive() == b"first"
+-
+-        # Keep the server's transport open, so the client's failures can only come
+-        # from the TLS layer
+-        async with server_stream, create_task_group() as tg:
+-            tg.start_soon(serve)
+-            wrapper = await TLSStream.wrap(
+-                client_stream, hostname="localhost", ssl_context=client_context
+-            )
+-            await wrapper.send(b"first")
+-            # The memory stream's send() checkpoints before enqueuing, so the
+-            # record encrypted by SSLObject.write() is lost here
+-            with CancelScope() as scope:
+-                scope.cancel()
+-                await wrapper.send(b"cancelled")
+-
+-            assert scope.cancelled_caught
+-            with pytest.raises(BrokenResourceError):
+-                await wrapper.send(b"second")
+-
+-            with pytest.raises(BrokenResourceError):
+-                await wrapper.receive()
+-
+-            # Must not attempt the closing handshake on a broken stream
+-            await wrapper.aclose()
+-
+     async def test_unicode_hostname_idna2008(
+         self, ca: CA, client_context: ssl.SSLContext
+     ) -> None:
+diff --git a/tests/test_fileio.py b/tests/test_fileio.py
+index 27f8ee7..6805d1e 100644
+--- a/tests/test_fileio.py
++++ b/tests/test_fileio.py
+@@ -93,14 +93,6 @@ class TestAsyncFile:
+ 
+         assert path.read_text() == "dummydata"
+ 
+-    async def test_shielded_aclose(self, tmp_path: pathlib.Path) -> None:
+-        async with await open_file(tmp_path / "foo", "wb") as f:
+-            with CancelScope() as scope:
+-                scope.cancel()
+-                await f.aclose()
+-
+-            assert f.closed
+-
+ 
+ class TestPath:
+     @pytest.fixture
+diff --git a/tests/test_from_thread.py b/tests/test_from_thread.py
+index bc6530c..5a64830 100644
+--- a/tests/test_from_thread.py
++++ b/tests/test_from_thread.py
+@@ -767,35 +767,6 @@ class TestBlockingPortal:
+ 
+         assert cancelled
+ 
+-    @pytest.mark.parametrize(
+-        "raises", [pytest.param(False, id="result"), pytest.param(True, id="exception")]
+-    )
+-    async def test_cancel_during_completion(
+-        self, monkeypatch: pytest.MonkeyPatch, raises: bool
+-    ) -> None:
+-        class RacingFuture(Future[Any]):
+-            def set_result(self, result: Any) -> None:
+-                self.cancel()
+-                super().set_result(result)
+-
+-            def set_exception(self, exception: BaseException | None) -> None:
+-                self.cancel()
+-                super().set_exception(exception)
+-
+-        async def func() -> str:
+-            if raises:
+-                raise ValueError("foo")
+-
+-            return "foo"
+-
+-        monkeypatch.setattr(from_thread, "Future", RacingFuture)
+-        async with BlockingPortal() as portal:
+-            if raises:
+-                with pytest.raises(ValueError, match="foo"):
+-                    await to_thread.run_sync(portal.call, func)
+-            else:
+-                assert await to_thread.run_sync(portal.call, func) == "foo"
+-
+     def test_start_task_soon_cancel_after_stop(
+         self, anyio_backend_name: str, anyio_backend_options: dict[str, Any]
+     ) -> None:
+diff --git a/tests/test_sockets.py b/tests/test_sockets.py
+index 46c5129..d0cf58f 100644
+--- a/tests/test_sockets.py
++++ b/tests/test_sockets.py
+@@ -261,17 +261,6 @@ class TestTCPStream:
+             assert stream.extra(SocketAttribute.remote_address) == server_addr
+             assert stream.extra(SocketAttribute.remote_port) == server_addr[1]
+ 
+-    @pytest.mark.parametrize("anyio_backend", asyncio_params)
+-    async def test_cancelled_receive_pauses_reading(
+-        self, server_addr: tuple[str, int]
+-    ) -> None:
+-        async with await connect_tcp(*server_addr) as stream:
+-            with CancelScope() as scope:
+-                scope.cancel()
+-                await stream.receive()
+-
+-            assert not stream._transport.is_reading()  # type: ignore[attr-defined]
+-
+     async def test_cancelled_send_does_not_send_the_next_one(
+         self, server_sock: socket.socket, server_addr: tuple[str, int]
+     ) -> None:
+@@ -488,30 +477,6 @@ class TestTCPStream:
+         server_sock.close()
+         assert client_addr[0] == expected_client_addr
+ 
+-    async def test_connect_tcp_closes_winner_on_outer_cancellation(
+-        self, server_addr: tuple[str, int], monkeypatch: MonkeyPatch
+-    ) -> None:
+-        """
+-        A connected stream must be closed if the enclosing cancel scope is cancelled
+-        before the connection attempt task group exits.
+-        """
+-        backend = get_async_backend()
+-        original_connect_tcp = backend.connect_tcp
+-        streams: list[SocketStream] = []
+-
+-        async def connect_and_cancel(*args: Any) -> SocketStream:
+-            streams.append(await original_connect_tcp(*args))
+-            scope.cancel()
+-            return streams[-1]
+-
+-        monkeypatch.setattr(backend, "connect_tcp", connect_and_cancel)
+-        with CancelScope() as scope:
+-            await connect_tcp(*server_addr)
+-
+-        assert scope.cancelled_caught
+-        with pytest.raises(ClosedResourceError):
+-            await streams[0].send(b"x")
+-
+     async def test_connect_tcp_with_local_port(
+         self,
+         server_sock: socket.socket,
+diff --git a/tests/test_synchronization.py b/tests/test_synchronization.py
+index 0d50bf5..84a7d6b 100644
+--- a/tests/test_synchronization.py
++++ b/tests/test_synchronization.py
+@@ -1058,31 +1058,6 @@ class TestCapacityLimiter:
+         with pytest.raises(WouldBlock):
+             limiter.acquire_on_behalf_of_nowait(borrower2)
+ 
+-    @pytest.mark.parametrize("anyio_backend", asyncio_params)
+-    async def test_cancel_during_acquire_on_behalf_of(self) -> None:
+-        """
+-        Regression test: when acquire_on_behalf_of() acquires the limiter
+-        without having to wait and is then cancelled during its
+-        cancel-shielded checkpoint, it must release the borrower it acquired
+-        for, not the current task.
+-
+-        """
+-        borrower = object()
+-        limiter = CapacityLimiter(1)
+-
+-        # Cancel the task once it has acquired the token and parked at its
+-        # cancel-shielded checkpoint, so the cancellation is delivered there.
+-        task = asyncio.create_task(limiter.acquire_on_behalf_of(borrower))
+-        if limiter.borrowed_tokens == 0:
+-            await asyncio.sleep(0)
+-
+-        task.cancel()
+-        with pytest.raises(asyncio.CancelledError):
+-            await task
+-
+-        assert limiter.borrowed_tokens == 0
+-        assert limiter.statistics().borrowers == ()
+-
+     async def test_nowait_acquire_after_release_does_not_oversubscribe(self) -> None:
+         # Regression test for #1170: a non-blocking acquire issued in the window
+         # between releasing a token (which notifies the next waiter) and that
+diff --git a/tests/test_tempfile.py b/tests/test_tempfile.py
+index e221592..bff94bb 100644
+--- a/tests/test_tempfile.py
++++ b/tests/test_tempfile.py
+@@ -62,25 +62,6 @@ class TestNamedTemporaryFile:
+ 
+ 
+ class TestSpooledTemporaryFile:
+-    async def test_cancelled_during_rollover(self) -> None:
+-        original = tempfile.TemporaryFile
+-
+-        def create(**kwargs: Any) -> Any:
+-            from_thread.run_sync(scope.cancel)
+-            return original(**kwargs)
+-
+-        async with SpooledTemporaryFile() as stf:
+-            await stf.write(b"hello world")
+-            await stf.seek(5)
+-            with CancelScope() as scope:
+-                with patch("anyio._core._tempfile.tempfile.TemporaryFile", create):
+-                    await stf.rollover()
+-
+-            assert stf._rolled
+-            assert await stf.tell() == 5
+-            await stf.seek(0)
+-            assert await stf.read() == b"hello world"
+-
+     @pytest.mark.parametrize("use_writelines", [False, True])
+     async def test_default_max_size_no_rollover(self, use_writelines: bool) -> None:
+         data = b"hello world"
+@@ -171,29 +152,6 @@ class TestSpooledTemporaryFile:
+ 
+ 
+ class TestTemporaryDirectory:
+-    async def test_cancellation_during_creation(self) -> None:
+-        original = tempfile.TemporaryDirectory
+-        manager = TemporaryDirectory()
+-        paths: list[pathlib.Path] = []
+-
+-        def create(**kwargs: Any) -> tempfile.TemporaryDirectory[str]:
+-            directory = original(**kwargs)
+-            paths.append(pathlib.Path(directory.name))
+-            from_thread.run_sync(scope.cancel)
+-            return directory
+-
+-        with CancelScope() as scope:
+-            with patch("anyio._core._tempfile.tempfile.TemporaryDirectory", create):
+-                async with manager:
+-                    await checkpoint()
+-
+-        try:
+-            assert scope.cancelled_caught
+-            assert len(paths) == 1
+-            assert not paths[0].exists()
+-        finally:
+-            await manager.cleanup()
+-
+     async def test_context_manager(self) -> None:
+         async with TemporaryDirectory() as td:
+             td_path = pathlib.Path(td)
+@@ -226,41 +184,6 @@ class TestTemporaryDirectory:
+         with pytest.raises(FileNotFoundError):
+             (td_path / "nonexistent.txt").write_text("should fail", encoding="utf-8")
+ 
+-    async def test_exit_with_cancellation(self) -> None:
+-        """
+-        Test that the directory is cleaned up even if the host task is cancelled
+-        while exiting the context manager.
+-
+-        ``__aexit__`` runs the synchronous cleanup in a worker thread via
+-        ``to_thread.run_sync``, which performs a cancellation checkpoint on entry.
+-        Wrapping that call in a shielded cancel scope ensures that a pending
+-        cancellation does not prevent the cleanup from running.
+-        """
+-        with CancelScope() as outer_scope:
+-            async with TemporaryDirectory() as td:
+-                td_path = pathlib.Path(td)
+-                assert td_path.exists() and td_path.is_dir()
+-                outer_scope.cancel()
+-
+-        assert not td_path.exists()
+-
+-    async def test_cleanup_method_with_cancellation(self) -> None:
+-        """
+-        Test that the ``cleanup()`` method removes the directory even if the host
+-        task is already cancelled when it is called, and that the pending
+-        cancellation is still delivered to the caller afterwards.
+-        """
+-        td = TemporaryDirectory()
+-        async with td as td_str:
+-            td_path = pathlib.Path(td_str)
+-            assert td_path.exists() and td_path.is_dir()
+-            with CancelScope() as outer_scope:
+-                outer_scope.cancel()
+-                with pytest.raises(get_cancelled_exc_class()):
+-                    await td.cleanup()
+-
+-            assert not td_path.exists()
+-
+ 
+ @pytest.mark.parametrize(
+     "suffix, prefix, text, content",
