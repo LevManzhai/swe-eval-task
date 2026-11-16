@@ -1,0 +1,1216 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index e80c665..796eabb 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -220,14 +220,6 @@ Bug fixes
+ 
+ 
+ 
+-- Fixed some edge case handling in multipart parts using base 64 encoding -- by :user:`Dreamsorcerer`.
+-
+-
+-  *Related issues and pull requests on GitHub:*
+-  :issue:`13509`.
+-
+-
+-
+ - Fixed Cython 3.3.0 failing to compile the WebSocket reader: dropped the
+   ``Final[...]`` annotation from ``ALLOWED_CLOSE_CODES`` and the ``int``
+   annotation from the local ``start_pos`` in ``WebSocketReader._feed_data``,
+@@ -293,14 +285,6 @@ Bug fixes
+ 
+ 
+ 
+-- Fixed pure-Python request parser not reading a body in a ``HEAD`` request -- by :user:`Dreamsorcerer`.
+-
+-
+-  *Related issues and pull requests on GitHub:*
+-  :issue:`13671`.
+-
+-
+-
+ - Fixed host-only cookie state being lost on expiration -- by :user:`Dreamsorcerer`.
+ 
+ 
+@@ -317,22 +301,6 @@ Bug fixes
+ 
+ 
+ 
+-- The first-request deadline now also closes connections whose first request body stalls, while a body that is still arriving extends the deadline instead of being interrupted -- by :user:`Dreamsorcerer`.
+-
+-
+-  *Related issues and pull requests on GitHub:*
+-  :issue:`13681`.
+-
+-
+-
+-- Fixed idle connections not being closed if no request was received -- by :user:`Dreamsorcerer`.
+-
+-
+-  *Related issues and pull requests on GitHub:*
+-  :issue:`13681`.
+-
+-
+-
+ - Fixed :meth:`~aiohttp.web.Application.add_domain` not routing a request to
+   its domain application when the ``Host`` header carried a port and the
+   domain was registered without one, or, for a wildcard domain, uppercase
+@@ -353,27 +321,6 @@ Bug fixes
+ 
+ 
+ 
+-- Fixed ``BaseConnector(keepalive_timeout=None)`` crashing on the second request to the same host with ``TypeError: '<=' not supported between instances of 'float' and 'NoneType'`` -- by :user:`ishan-1010`.
+-
+-
+-  *Related issues and pull requests on GitHub:*
+-  :issue:`13756`, :issue:`13757`.
+-
+-
+-
+-- Fixed a crash in :meth:`~aiohttp.BodyPartReader.read_chunk` on a body part
+-  with an explicit ``Content-Length: 0``: the part fell through to the
+-  streaming read strategy, whose minimum chunk size assertion then failed for
+-  chunk sizes below the boundary length. Such parts now yield an immediate
+-  empty chunk, like any other part with a known length
+-  -- by :user:`istoolsfox`.
+-
+-
+-  *Related issues and pull requests on GitHub:*
+-  :issue:`13758`, :issue:`13760`.
+-
+-
+-
+ - Fixed ``Set-Cookie`` parsing treating unrecognized attributes as additional
+   cookies. Each ``Set-Cookie`` header now sets exactly one cookie and
+   unrecognized attributes are ignored, per :rfc:`6265#section-5.2`, preventing
+@@ -413,14 +360,6 @@ Bug fixes
+ 
+ 
+ 
+-- Fixed the connection to an HTTP proxy staying open until garbage collection, and being reported as ``Unclosed connection``, when sending the ``CONNECT`` request for an HTTPS tunnel failed -- by :user:`Garbsener`.
+-
+-
+-  *Related issues and pull requests on GitHub:*
+-  :issue:`13841`.
+-
+-
+-
+ - Resolved a redirect ``Location`` with the scheme of the current URL but
+   without ``//``, such as ``http:/path`` or ``http:path``, against the
+   current URL, as browsers do, instead of treating it as an absolute URL
+@@ -447,16 +386,6 @@ Bug fixes
+ 
+ 
+ 
+-- Fixed :py:meth:`~aiohttp.StreamReader.readuntil` not finding a multi-byte
+-  separator whose bytes arrived in different chunks, which made it return data
+-  past the separator -- by :user:`andrewstellman`.
+-
+-
+-  *Related issues and pull requests on GitHub:*
+-  :issue:`13870`.
+-
+-
+-
+ - Fixed mixed-case ``Content-Encoding`` values (for example ``Gzip``)
+   being accepted by the parser but failing decompression, a regression
+   from the CVE-2025-69224 hardening -- by :user:`muhammad-a-dev`.
+diff --git a/CHANGES/13229.bugfix.rst b/CHANGES/13229.bugfix.rst
+deleted file mode 100644
+index 1eeda8a..0000000
+--- a/CHANGES/13229.bugfix.rst
++++ /dev/null
+@@ -1,3 +0,0 @@
+-Fixed an infinite loop in :attr:`aiohttp.web.BaseRequest.forwarded` that let a
+-single malformed ``Forwarded`` request header (e.g. ``Forwarded: a``) spin the
+-event loop at 100% CPU and hang the worker -- by :user:`arshsmith1`.
+diff --git a/CHANGES/13983.bugfix.rst b/CHANGES/13983.bugfix.rst
+deleted file mode 100644
+index f376174..0000000
+--- a/CHANGES/13983.bugfix.rst
++++ /dev/null
+@@ -1 +0,0 @@
+-Fixed handling of requests with an absolute-form target -- by :user:`Dreamsorcerer`.
+diff --git a/aiohttp/connector.py b/aiohttp/connector.py
+index ff94354..6848f66 100644
+--- a/aiohttp/connector.py
++++ b/aiohttp/connector.py
+@@ -288,11 +288,7 @@ class _TransportPlaceholder:
+ class BaseConnector:
+     """Base connector class.
+ 
+-    keepalive_timeout - (optional) Keep-alive timeout. None means a
+-        reusable connection never expires from idling alone (a
+-        disconnected one is discarded the next time the pool is
+-        consulted for that host, not proactively). This is different
+-        from force_close=True, which disables reuse entirely.
++    keepalive_timeout - (optional) Keep-alive timeout.
+     force_close - Set to True to force close and do reconnect
+         after each request (and between redirects).
+     limit - The total number of simultaneous connections.
+@@ -327,7 +323,6 @@ class BaseConnector:
+                 raise ValueError(
+                     "keepalive_timeout cannot be set if force_close is True"
+                 )
+-            keepalive_timeout = None
+         else:
+             if keepalive_timeout is sentinel:
+                 keepalive_timeout = 15.0
+@@ -352,7 +347,7 @@ class BaseConnector:
+         self._acquired_per_host: defaultdict[ConnectionKey, set[ResponseHandler]] = (
+             defaultdict(set)
+         )
+-        self._keepalive_timeout = keepalive_timeout
++        self._keepalive_timeout = cast(float, keepalive_timeout)
+         self._force_close = force_close
+ 
+         # {host_key: FIFO list of waiters}
+@@ -454,8 +449,6 @@ class BaseConnector:
+ 
+         now = monotonic()
+         timeout = self._keepalive_timeout
+-        # weakref_handle() never schedules this method for a None timeout
+-        assert timeout is not None
+ 
+         if self._conns:
+             connections = defaultdict(deque)
+@@ -759,9 +752,7 @@ class BaseConnector:
+             proto, t0 = conns.popleft()
+             # We will we reuse the connection if its connected and
+             # the keepalive timeout has not been exceeded
+-            if proto.is_connected() and (
+-                self._keepalive_timeout is None or t1 - t0 <= self._keepalive_timeout
+-            ):
++            if proto.is_connected() and t1 - t0 <= self._keepalive_timeout:
+                 if not conns:
+                     # The very last connection was reclaimed: drop the key
+                     del self._conns[key]
+@@ -958,11 +949,7 @@ class TCPConnector(BaseConnector):
+     family - socket address family
+     local_addr - local tuple of (host, port) to bind socket to
+ 
+-    keepalive_timeout - (optional) Keep-alive timeout. None means a
+-        reusable connection never expires from idling alone (a
+-        disconnected one is discarded the next time the pool is
+-        consulted for that host, not proactively). This is different
+-        from force_close=True, which disables reuse entirely.
++    keepalive_timeout - (optional) Keep-alive timeout.
+     force_close - Set to True to force close and do reconnect
+         after each request (and between redirects).
+     limit - The total number of simultaneous connections.
+@@ -1555,11 +1542,7 @@ class TCPConnector(BaseConnector):
+             proxy_req.url = req.url
+             key = req.connection_key._replace(proxy=None, proxy_headers_hash=None)
+             conn = _ConnectTunnelConnection(self, key, proto, self._loop)
+-            try:
+-                proxy_resp = await proxy_req._send(conn)
+-            except BaseException:
+-                conn.close()
+-                raise
++            proxy_resp = await proxy_req._send(conn)
+             try:
+                 protocol = conn._protocol
+                 assert protocol is not None
+@@ -1614,11 +1597,7 @@ class UnixConnector(BaseConnector):
+     """Unix socket connector.
+ 
+     path - Unix socket path.
+-    keepalive_timeout - (optional) Keep-alive timeout. None means a
+-        reusable connection never expires from idling alone (a
+-        disconnected one is discarded the next time the pool is
+-        consulted for that host, not proactively). This is different
+-        from force_close=True, which disables reuse entirely.
++    keepalive_timeout - (optional) Keep-alive timeout.
+     force_close - Set to True to force close and do reconnect
+         after each request (and between redirects).
+     limit - The total number of simultaneous connections.
+@@ -1674,11 +1653,7 @@ class NamedPipeConnector(BaseConnector):
+     See also: https://docs.python.org/3/library/asyncio-eventloop.html
+ 
+     path - Windows named pipe path.
+-    keepalive_timeout - (optional) Keep-alive timeout. None means a
+-        reusable connection never expires from idling alone (a
+-        disconnected one is discarded the next time the pool is
+-        consulted for that host, not proactively). This is different
+-        from force_close=True, which disables reuse entirely.
++    keepalive_timeout - (optional) Keep-alive timeout.
+     force_close - Set to True to force close and do reconnect
+         after each request (and between redirects).
+     limit - The total number of simultaneous connections.
+diff --git a/aiohttp/http_parser.py b/aiohttp/http_parser.py
+index 8ad9128..b4d9190 100644
+--- a/aiohttp/http_parser.py
++++ b/aiohttp/http_parser.py
+@@ -476,12 +476,8 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
+ 
+                         assert self.protocol is not None
+                         # calculate payload
+-                        # https://www.rfc-editor.org/info/rfc9112/#name-message-body-length
+-                        # https://www.rfc-editor.org/info/rfc9110/#section-9.3.1-6
+-                        # EMPTY_BODY_METHODS should only apply to responses.
+-                        # self.method is None on request parser.
+                         empty_body = code in EMPTY_BODY_STATUS_CODES or bool(
+-                            self.method and self.method in EMPTY_BODY_METHODS
++                            method and method in EMPTY_BODY_METHODS
+                         )
+                         if not empty_body and (
+                             (length is not None and length > 0) or msg.chunked
+diff --git a/aiohttp/multipart.py b/aiohttp/multipart.py
+index afef5dd..c25c98e 100644
+--- a/aiohttp/multipart.py
++++ b/aiohttp/multipart.py
+@@ -56,13 +56,6 @@ __all__ = (
+ )
+ 
+ 
+-# The base64 alphabet plus the padding character.
+-_BASE64_CHARS = frozenset(
+-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+-)
+-_NON_BASE64_BYTES = bytes(b for b in range(256) if b not in _BASE64_CHARS)
+-
+-
+ if TYPE_CHECKING:
+     from .client_reqrep import ClientResponse
+ 
+@@ -319,7 +312,6 @@ class BodyPartReader:
+             raise ValueError(f"invalid Content-Length: {length!r}")
+         self._length = int(length) if length is not None else None
+         self._read_bytes = 0
+-        self._b64_carry = b""
+         self._unread: deque[bytes] = deque()
+         self._prev_chunk: bytes | None = None
+         self._content_eof = 0
+@@ -374,59 +366,43 @@ class BodyPartReader:
+         """
+         if self._at_eof:
+             return b""
+-        carry = self._b64_carry
+-        want = size - len(carry)
+-        if carry:
+-            self._b64_carry = b""
+-            want = max(want, self._boundary_len)
+-        if self._length is not None:
+-            fresh = await self._read_chunk_from_length(want)
++        if self._length:
++            chunk = await self._read_chunk_from_length(size)
+         else:
+-            fresh = await self._read_chunk_from_stream(want)
+-        chunk = carry + fresh
+-        self._read_bytes += len(fresh)
++            chunk = await self._read_chunk_from_stream(size)
+ 
+-        # base64 decodes in quartets and every chunk is decoded on its own, so
+-        # a chunk should not end mid-quartet.
++        # For the case of base64 data, we must read a fragment of size with a
++        # remainder of 0 by dividing by 4 for string without symbols \n or \r
+         encoding = self.headers.get(CONTENT_TRANSFER_ENCODING)
+         if encoding and encoding.lower() == "base64":
+-            chunk = self._align_base64_chunk(chunk, len(carry) + want)
++            stripped_chunk = b"".join(chunk.split())
++            remainder = len(stripped_chunk) % 4
++
++            while remainder != 0 and not self.at_eof():
++                over_chunk_size = 4 - remainder
++                over_chunk = b""
++
++                if self._prev_chunk:
++                    over_chunk = self._prev_chunk[:over_chunk_size]
++                    self._prev_chunk = self._prev_chunk[len(over_chunk) :]
++
++                if len(over_chunk) != over_chunk_size:
++                    over_chunk += await self._content.read(4 - len(over_chunk))
+ 
++                if not over_chunk:
++                    self._at_eof = True
++
++                stripped_chunk += b"".join(over_chunk.split())
++                chunk += over_chunk
++                remainder = len(stripped_chunk) % 4
++
++        self._read_bytes += len(chunk)
+         if self._read_bytes == self._length:
+             self._at_eof = True
+         if self._at_eof and await self._content.readline() != b"\r\n":
+             raise ValueError("Reader did not read all the data or it is malformed")
+         return chunk
+ 
+-    def _align_base64_chunk(self, chunk: bytes, size: int) -> bytes:
+-        at_end = self._at_eof or (
+-            self._length is not None and self._read_bytes >= self._length
+-        )
+-        if not at_end and len(chunk) > size:
+-            self._b64_carry = chunk[size:]
+-            chunk = chunk[:size]
+-
+-        remainder = len(chunk.translate(None, _NON_BASE64_BYTES)) % 4
+-        if not remainder or at_end:
+-            return chunk
+-
+-        # Walk back over the trailing partial quartet and carry it into the
+-        # next chunk.
+-        cut = len(chunk)
+-        left = remainder
+-        while left:
+-            cut -= 1
+-            if chunk[cut] in _BASE64_CHARS:
+-                left -= 1
+-        if not cut:
+-            # No whole quartet to hand back, and carrying the lot would make
+-            # no progress: the caller asked for this many bytes, and a part
+-            # that holds no quartet within them holds none to give.
+-            return chunk
+-
+-        self._b64_carry = chunk[cut:] + self._b64_carry
+-        return chunk[:cut]
+-
+     async def _read_chunk_from_length(self, size: int) -> bytes:
+         # Reads body part content chunk of the specified size.
+         # The body part must has Content-Length header with proper value.
+diff --git a/aiohttp/streams.py b/aiohttp/streams.py
+index db3073c..d0efcfc 100644
+--- a/aiohttp/streams.py
++++ b/aiohttp/streams.py
+@@ -396,25 +396,14 @@ class StreamReader:
+         while not_enough:
+             while self._buffer and not_enough:
+                 offset = self._buffer_offset
+-                n = -1
+-                if chunk and seplen > 1:
+-                    # The separator may straddle data already read and this chunk.
+-                    # tail and head are each shorter than the separator, so a match
+-                    # in tail + head must span both; n counts its bytes in head.
+-                    tail = chunk[1 - seplen :]
+-                    head = self._buffer[0][offset : offset + seplen - 1]
+-                    ichar = (tail + head).find(separator)
+-                    if ichar != -1:
+-                        n = ichar + seplen - len(tail)
+-                if n == -1:
+-                    ichar = self._buffer[0].find(separator, offset)
+-                    if ichar != -1:
+-                        n = ichar - offset + seplen
++                ichar = self._buffer[0].find(separator, offset) + 1
+                 # Read from current offset to found separator or to the end.
+-                data = self._read_nowait_chunk(n)
++                data = self._read_nowait_chunk(
++                    ichar - offset + seplen - 1 if ichar else -1
++                )
+                 chunk += data
+                 chunk_size += len(data)
+-                if n != -1:
++                if ichar:
+                     not_enough = False
+ 
+                 if chunk_size > max_size:
+diff --git a/aiohttp/web_protocol.py b/aiohttp/web_protocol.py
+index 2bfede2..0446206 100644
+--- a/aiohttp/web_protocol.py
++++ b/aiohttp/web_protocol.py
+@@ -157,7 +157,8 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+     status line, bad headers or incomplete payload. If any error occurs,
+     connection gets closed.
+ 
+-    keepalive_timeout -- number of seconds before closing an idle connection.
++    keepalive_timeout -- number of seconds before closing
++                         keep-alive connection
+ 
+     tcp_keepalive -- TCP keep-alive is on, default is on
+ 
+@@ -256,9 +257,7 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+         super().__init__(loop, parser)
+ 
+         self._request_count = 0
+-        # True from the start so the deadline armed in connection_made()
+-        # closes connections that never deliver a complete first request.
+-        self._keepalive = True
++        self._keepalive = False
+         self._current_request: _Request | None = None
+         self._manager: Server[_Request] | None = manager
+         self._request_handler: _RequestHandler[_Request] | None = (
+@@ -411,13 +410,6 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+         self._manager.connection_made(self, real_transport)
+ 
+         loop = self._loop
+-        # Need to enable keepalive timeout at start of connection, as there's no other
+-        # protection against a dead connection that doesn't send a request at all.
+-        if self._keepalive_timeout > 0:
+-            close_time = loop.time() + self._keepalive_timeout
+-            self._next_keepalive_close_time = close_time
+-            self._keepalive_handle = loop.call_at(close_time, self._process_keepalive)
+-
+         if sys.version_info >= (3, 14):
+             if isinstance(loop, BaseEventLoop):
+                 task = asyncio.create_task(self.start(), eager_start=True)
+diff --git a/aiohttp/web_request.py b/aiohttp/web_request.py
+index e1f1cb1..4f6649c 100644
+--- a/aiohttp/web_request.py
++++ b/aiohttp/web_request.py
+@@ -180,7 +180,7 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+             # override auto-calculating url, host, and scheme
+             # all other properties should be good
+             self._cache["url"] = url
+-            self._cache["host"] = url.host_port_subcomponent
++            self._cache["host"] = url.host
+             self._rel_url = url.relative()
+         else:
+             self._rel_url = url
+@@ -370,13 +370,9 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+                         value += port
+                     elem[name.lower()] = value
+                     pos += len(match.group(0))
+-                elif (semi := field_value.find(";", pos)) == -1:
+-                    # No further pair to parse; a trailing empty or malformed
+-                    # value ends this field-value.
+-                    break
+-                elif not field_value[pos:semi].strip(" \t"):
++                elif not field_value[pos : field_value.find(";", pos)].strip(" \t"):
+                     # Empty value
+-                    pos = semi + 1
++                    pos = field_value.find(";", pos) + 1
+                 else:
+                     # bad syntax here, skip to next field value
+                     break
+@@ -421,9 +417,6 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+         Hostname is resolved in this order:
+ 
+         - overridden value by .clone(host=new_host) call.
+-        - host of the request-target, if the target is in absolute or
+-          authority form (the Host header is ignored then, per
+-          :rfc:`9112#section-3.2.2-8`); a non-default port is included.
+         - HOST HTTP header
+         - local socket address the request arrived on
+           (transport ``sockname``)
+diff --git a/aiohttp/web_urldispatcher.py b/aiohttp/web_urldispatcher.py
+index 18d1145..ff0e286 100644
+--- a/aiohttp/web_urldispatcher.py
++++ b/aiohttp/web_urldispatcher.py
+@@ -800,9 +800,7 @@ class Domain(AbstractRuleMatching):
+         return f"{url.raw_host}:{url.port}"
+ 
+     async def match(self, request: Request) -> bool:
+-        # https://www.rfc-editor.org/info/rfc9112/#section-3.2.2-8
+-        is_absolute = request._message.url.absolute
+-        host = request.host if is_absolute else request.headers.get(hdrs.HOST)
++        host = request.headers.get(hdrs.HOST)
+         if not host:
+             return False
+         return self.match_domain(host)
+diff --git a/tests/test_connector.py b/tests/test_connector.py
+index da4f84a..6b848f5 100644
+--- a/tests/test_connector.py
++++ b/tests/test_connector.py
+@@ -463,39 +463,6 @@ async def test_get_expired_ssl() -> None:
+         await conn.close()
+ 
+ 
+-async def test_get_never_expires_with_keepalive_timeout_none() -> None:
+-    loop = asyncio.get_running_loop()
+-    conn = aiohttp.BaseConnector(keepalive_timeout=None)
+-    key = ConnectionKey("localhost", 80, False, False, None, None)
+-    try:
+-        proto = create_mocked_conn(loop)
+-        conn._conns[key] = deque([(proto, loop.time() - 1000)])
+-        connection = await conn._get(key, [])
+-        assert connection is not None
+-        assert connection.protocol == proto
+-        connection.close()
+-    finally:
+-        await conn.close()
+-
+-
+-async def test_release_with_keepalive_timeout_none_schedules_no_cleanup(
+-    key: ConnectionKey,
+-) -> None:
+-    """_cleanup() asserts a non-None timeout, so nothing may schedule it for None."""
+-    loop = asyncio.get_running_loop()
+-    conn = aiohttp.BaseConnector(keepalive_timeout=None)
+-    with mock.patch.object(conn, "_release_waiter", autospec=True, spec_set=True):
+-        proto = create_mocked_conn(loop, should_close=False)
+-
+-        conn._acquired.add(proto)
+-        conn._acquired_per_host[key].add(proto)
+-
+-        conn._release(key, proto)
+-        assert conn._cleanup_handle is None
+-        assert conn._conns[key][0][0] == proto
+-        await conn.close()
+-
+-
+ async def test_release_acquired(key: ConnectionKey) -> None:
+     proto = create_mocked_conn()
+     conn = aiohttp.BaseConnector(limit=5, limit_per_host=10)
+diff --git a/tests/test_http_parser.py b/tests/test_http_parser.py
+index 60dc1b4..3b65b3d 100644
+--- a/tests/test_http_parser.py
++++ b/tests/test_http_parser.py
+@@ -2848,31 +2848,6 @@ def test_http_request_chunked_payload_and_next_message(
+     assert not payload2.is_eof()
+ 
+ 
+-def test_http_request_parser_head_with_content_length_payload(
+-    parser: HttpRequestParser,
+-) -> None:
+-    smuggled = b"GET /smuggled HTTP/1.1\r\nHost: a\r\n\r\n"
+-    text = (
+-        b"HEAD /test HTTP/1.1\r\nHost: a\r\nContent-Length: %d\r\n\r\n" % len(smuggled)
+-        + smuggled
+-        + b"POST /next HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\n\r\n"
+-    )
+-    messages, upgraded, tail = parser.feed_data(text)
+-
+-    assert len(messages) == 2
+-    msg, payload = messages[0]
+-    assert msg.method == "HEAD"
+-    assert b"".join(payload._buffer) == smuggled
+-    assert payload.is_eof()
+-
+-    msg2, payload2 = messages[1]
+-    assert msg2.method == "POST"
+-    assert msg2.path == "/next"
+-    assert payload2.is_eof()
+-    assert not upgraded
+-    assert not tail
+-
+-
+ def test_http_request_chunked_payload_chunks(parser: HttpRequestParser) -> None:
+     text = b"GET /test HTTP/1.1\r\nHost: a\r\ntransfer-encoding: chunked\r\n\r\n"
+     msg, payload = parser.feed_data(text)[0][0]
+diff --git a/tests/test_multipart.py b/tests/test_multipart.py
+index 102b62a..bb7d610 100644
+--- a/tests/test_multipart.py
++++ b/tests/test_multipart.py
+@@ -1,5 +1,4 @@
+ import asyncio
+-import base64
+ import gzip
+ import io
+ import json
+@@ -200,14 +199,6 @@ class TestPartReader:
+         assert c1 + c2 == b"Hello, world!"
+         assert c3 == b""
+ 
+-    async def test_read_chunk_with_zero_content_length(self) -> None:
+-        with Stream(b"\r\n--:--\r\n") as stream:
+-            d = HeadersDictProxy(CIMultiDict({"Content-Length": "0"}))
+-            obj = aiohttp.BodyPartReader(BOUNDARY, d, stream)
+-            result = await obj.read_chunk(4)
+-            assert obj.at_eof()
+-        assert b"" == result
+-
+     async def test_read_incomplete_chunk(self) -> None:
+         with Stream(b"") as stream:
+ 
+@@ -421,142 +412,7 @@ class TestPartReader:
+             result = await obj.read(decode=True)
+         assert b"Time to Relax!" == result
+ 
+-    async def test_decode_with_content_transfer_encoding_base64(self) -> None:
+-        h = HeadersDictProxy(CIMultiDict({CONTENT_TRANSFER_ENCODING: "base64"}))
+-        with Stream(b"VG\r\r\nltZSB0byBSZ\r\nWxheCE=\r\n--:--") as stream:
+-            obj = aiohttp.BodyPartReader(BOUNDARY, h, stream)
+-            result = b""
+-            while not obj.at_eof():
+-                chunk = await obj.read_chunk(size=8)
+-                result += obj.decode(chunk)
+-        assert b"Time to Relax!" == result
+ 
+-    async def test_decode_iter_with_content_transfer_encoding_base64(self) -> None:
+-        h = HeadersDictProxy(CIMultiDict({CONTENT_TRANSFER_ENCODING: "base64"}))
+-        with Stream(b"VG\r\r\nltZSB0byBSZ\r\nWxheCE=\r\n--:--") as stream:
+-            obj = aiohttp.BodyPartReader(BOUNDARY, h, stream)
+-            result = b""
+-            while not obj.at_eof():
+-                chunk = await obj.read_chunk(size=8)
+-                async for decoded_chunk in obj.decode_iter(chunk):
+-                    result += decoded_chunk
+-        assert b"Time to Relax!" == result
+-
+-    async def test_read_chunk_base64_content_length_no_overread(self) -> None:
+-        # A base64 part whose Content-Length is not a multiple of 4 must not
+-        # let the base64 realignment loop read past the declared length into
+-        # the boundary and the parts that follow (regression for a negative
+-        # `_read_chunk_from_length` chunk_size / StreamReader.read(-1) bypass
+-        # of client_max_size).
+-        b64 = b"VGltZSB0byBSZWxheCE"  # 19 chars, 19 % 4 == 3 (unpadded)
+-        secret = b"secret-from-next-part"
+-        rest = b"\r\n--:\r\nContent-Length: %d\r\n\r\n%s\r\n--:--\r\n" % (
+-            len(secret),
+-            secret,
+-        )
+-        h = HeadersDictProxy(
+-            CIMultiDict(
+-                {"CONTENT-LENGTH": str(len(b64)), CONTENT_TRANSFER_ENCODING: "base64"}
+-            )
+-        )
+-        with Stream(b64 + rest) as stream:
+-            obj = aiohttp.BodyPartReader(BOUNDARY, h, stream)
+-            chunk = await obj.read_chunk(8192)
+-            assert chunk == b64
+-            assert obj.at_eof()
+-            assert secret not in chunk
+-            # The following part is left intact on the stream.
+-            assert secret in await stream.read()
+-
+-    async def test_read_chunk_base64_bounded_by_requested_size(self) -> None:
+-        # Whole quartets are handed back and the trailing partial quartet is
+-        # carried into the next read, so size acts as a cap rather than a
+-        # starting point. The carry is subtracted from the next read instead
+-        # of being pushed back, so nothing accumulates over a long part: the
+-        # lookahead would otherwise gain a couple of bytes on every call.
+-        payload = b"x" * 8192
+-        h = HeadersDictProxy(CIMultiDict({CONTENT_TRANSFER_ENCODING: "base64"}))
+-        body = base64.encodebytes(payload).replace(b"\n", b"\r\n")
+-        with Stream(body + b"\r\n--:--") as stream:
+-            obj = aiohttp.BodyPartReader(BOUNDARY, h, stream)
+-            decoded = b""
+-            chunks = []
+-            carried = 0
+-            while not obj.at_eof():
+-                chunks.append(await obj.read_chunk(64))
+-                decoded += obj.decode(chunks[-1])
+-                carried += bool(obj._b64_carry)
+-                assert len(obj._prev_chunk or b"") <= 64
+-                assert len(obj._b64_carry) < 64
+-        assert decoded == payload
+-        assert all(len(c) <= 64 for c in chunks[:-1])
+-        # The bound above is only meaningful if the carry is exercised, and
+-        # over enough calls for a per-call drift to become visible.
+-        assert len(chunks) > 100
+-        assert carried > len(chunks) // 2
+-
+-    async def test_read_chunk_base64_padding_run_does_not_amplify(self) -> None:
+-        # A part padded with a long run of insignificant bytes used to make a
+-        # single call swallow the whole run. Such a run holds no whole quartet,
+-        # so this covers the branch that hands the chunk straight back: it must
+-        # still cap the chunk at the size asked for, and must hand back
+-        # something every time so callers looping on a truthy chunk make
+-        # progress. Nothing is carried here, so this says nothing about the
+-        # deferral path -- that is bounded by
+-        # test_read_chunk_base64_bounded_by_requested_size.
+-        h = HeadersDictProxy(CIMultiDict({CONTENT_TRANSFER_ENCODING: "base64"}))
+-        body = b"A" + b" " * (64 * 1024) + b"BBB\r\n--:--"
+-        with Stream(body) as stream:
+-            obj = aiohttp.BodyPartReader(BOUNDARY, h, stream)
+-            while not obj.at_eof():
+-                chunk = await obj.read_chunk(8192)
+-                assert chunk
+-                assert len(chunk) <= 8192
+-
+-    async def test_read_chunk_base64_length_delimited_carries_quartet(self) -> None:
+-        # A length-delimited part has no lookahead (_prev_chunk stays None), so
+-        # this covers carrying a partial quartet on that path. The carry is
+-        # subtracted from the next read, which the Content-Length accounting
+-        # has to agree with, or the part overruns its declared length and the
+-        # trailing CRLF check rejects it. Sizes are chosen to land mid-quartet.
+-        payload = b"z" * 300
+-        b64 = base64.b64encode(payload)
+-        h = HeadersDictProxy(
+-            CIMultiDict(
+-                {"CONTENT-LENGTH": str(len(b64)), CONTENT_TRANSFER_ENCODING: "base64"}
+-            )
+-        )
+-        for size in (6, 7, 9, 13):
+-            with Stream(b64 + b"\r\n--:--") as stream:
+-                obj = aiohttp.BodyPartReader(BOUNDARY, h, stream)
+-                assert obj._prev_chunk is None
+-                decoded = b""
+-                carried = 0
+-                while not obj.at_eof():
+-                    decoded += obj.decode(await obj.read_chunk(size))
+-                    carried += bool(obj._b64_carry)
+-                assert decoded == payload, size
+-                # Guard against this quietly becoming a no-op: the point is
+-                # that the carry is exercised, not merely that reading works.
+-                assert carried > 10, (size, carried)
+-
+-    @pytest.mark.parametrize("size", (5, 6, 7, 8))
+-    async def test_read_chunk_base64_small_size_carry_drains(self, size: int) -> None:
+-        # _read_chunk_from_stream refuses to read fewer than boundary_len
+-        # bytes, so for a size this small the carry cannot always be
+-        # subtracted from the next read. The chunk then has to be allowed over
+-        # size: capping it back would read more than it hands back on every
+-        # call, and the carry would climb without ever draining.
+-        payload = b"q" * 600
+-        h = HeadersDictProxy(CIMultiDict({CONTENT_TRANSFER_ENCODING: "base64"}))
+-        body = base64.encodebytes(payload).replace(b"\n", b"\r\n")
+-        with Stream(body + b"\r\n--:--") as stream:
+-            obj = aiohttp.BodyPartReader(BOUNDARY, h, stream)
+-            decoded = b""
+-            while not obj.at_eof():
+-                decoded += obj.decode(await obj.read_chunk(size))
+-                assert len(obj._b64_carry) <= size + obj._boundary_len
+-        assert decoded == payload
+ 
+     async def test_decode_with_content_encoding_deflate(self) -> None:
+         h = HeadersDictProxy(CIMultiDict({CONTENT_ENCODING: "deflate"}))
+diff --git a/tests/test_proxy.py b/tests/test_proxy.py
+index 7e3eb67..8ba38e6 100644
+--- a/tests/test_proxy.py
++++ b/tests/test_proxy.py
+@@ -921,75 +921,6 @@ async def test_https_connect_resp_start_error(  # type: ignore[misc]
+             await connector.close()
+ 
+ 
+-@mock.patch("aiohttp.connector.ClientRequestBase")
+-@mock.patch(
+-    "aiohttp.connector.aiohappyeyeballs.start_connection",
+-    autospec=True,
+-    spec_set=True,
+-)
+-async def test_https_connect_send_error(  # type: ignore[misc]
+-    start_connection: mock.Mock,
+-    ClientRequestMock: mock.Mock,
+-    make_client_request: _RequestMaker,
+-) -> None:
+-    event_loop = asyncio.get_running_loop()
+-    proxy_req = ClientRequestBase(
+-        "GET",
+-        URL("http://proxy.example"),
+-        loop=event_loop,
+-        ssl=True,
+-        headers=CIMultiDict({}),
+-    )
+-    ClientRequestMock.return_value = proxy_req
+-
+-    with mock.patch.object(
+-        proxy_req,
+-        "_send",
+-        autospec=True,
+-        side_effect=aiohttp.ClientConnectionResetError(
+-            "Cannot write to closing transport"
+-        ),
+-    ):
+-        connector = aiohttp.TCPConnector()
+-        r = {
+-            "hostname": "hostname",
+-            "host": "127.0.0.1",
+-            "port": 80,
+-            "family": socket.AF_INET,
+-            "proto": 0,
+-            "flags": 0,
+-        }
+-        with mock.patch.object(
+-            connector, "_resolve_host", autospec=True, return_value=[r]
+-        ):
+-            tr, proto = mock.Mock(), mock.Mock()
+-            tr.get_extra_info.return_value = None
+-            # Called on connection to http://proxy.example.com
+-            with mock.patch.object(
+-                connector_module,
+-                "create_connection",
+-                autospec=True,
+-                return_value=(tr, proto),
+-            ):
+-                req = make_client_request(
+-                    "GET",
+-                    URL("https://www.python.org"),
+-                    proxy=URL("http://proxy.example"),
+-                    loop=event_loop,
+-                )
+-                with pytest.raises(
+-                    aiohttp.ClientConnectionResetError,
+-                    match="Cannot write to closing transport",
+-                ) as exc_info:
+-                    await connector._create_connection(req, [], aiohttp.ClientTimeout())
+-                # The tunnel connection is still referenced from the traceback,
+-                # so the proxy connection must have been closed explicitly
+-                # rather than by the garbage collector.
+-                assert exc_info.value.__traceback__ is not None
+-                proto.close.assert_called_once_with()
+-        await connector.close()
+-
+-
+ @mock.patch("aiohttp.connector.ClientRequest")
+ @mock.patch(
+     "aiohttp.connector.aiohappyeyeballs.start_connection",
+diff --git a/tests/test_proxy_functional.py b/tests/test_proxy_functional.py
+index 818fa24..d265237 100644
+--- a/tests/test_proxy_functional.py
++++ b/tests/test_proxy_functional.py
+@@ -265,29 +265,6 @@ async def test_proxy_http_absolute_path(
+     assert proxy.request.path_qs == "/path?query=yes"
+ 
+ 
+-async def test_proxy_http_raw_path(
+-    proxy_test_server: Callable[[], Awaitable[mock.Mock]],
+-) -> None:
+-    url = "http://aiohttp.io:2561/space sheep?q=can:fly"
+-    raw_url = "/space%20sheep?q=can:fly"
+-    proxy = await proxy_test_server()
+-
+-    await get_request(url=url, proxy=proxy.url)
+-
+-    assert proxy.request.host == "aiohttp.io:2561"
+-    assert proxy.request.path_qs == raw_url
+-
+-
+-async def test_proxy_http_idna_support(
+-    proxy_test_server: Callable[[], Awaitable[mock.Mock]],
+-) -> None:
+-    url = "http://éé.com/"
+-    proxy = await proxy_test_server()
+-
+-    await get_request(url=url, proxy=proxy.url)
+-
+-    assert proxy.request.host == "xn--9caa.com"
+-    assert proxy.request.path_qs == "/"
+ 
+ 
+ async def test_proxy_http_connection_error() -> None:
+diff --git a/tests/test_streams.py b/tests/test_streams.py
+index 5a14ea6..eef6dfe 100644
+--- a/tests/test_streams.py
++++ b/tests/test_streams.py
+@@ -504,39 +504,6 @@ class TestStreamReader:
+         with pytest.raises(ValueError, match="Another exception"):
+             await stream.readuntil(separator)
+ 
+-    @pytest.mark.parametrize(
+-        ("separator", "split"),
+-        [
+-            (separator, split)
+-            for separator in (b"\r\n", b"\r\n\r\n", b"--xyz")
+-            for split in range(1, len(separator))
+-        ],
+-    )
+-    async def test_readuntil_separator_split_between_chunks(
+-        self, separator: bytes, split: int
+-    ) -> None:
+-        stream = self._make_one()
+-        stream.feed_data(b"line1" + separator[:split])
+-        stream.feed_data(separator[split:] + b"line2")
+-        stream.feed_eof()
+-
+-        line = await stream.readuntil(separator)
+-        assert b"line1" + separator == line
+-        assert b"line2" == await stream.read()
+-
+-    @pytest.mark.parametrize("separator", (b"\r\n\r\n", b"--xyz"))
+-    async def test_readuntil_separator_split_one_byte_per_chunk(
+-        self, separator: bytes
+-    ) -> None:
+-        stream = self._make_one()
+-        for byte in b"line1" + separator + b"line2":
+-            stream.feed_data(bytes([byte]))
+-        stream.feed_eof()
+-
+-        line = await stream.readuntil(separator)
+-        assert b"line1" + separator == line
+-        assert b"line2" == await stream.read()
+-
+     async def test_readexactly_zero_or_less(self) -> None:
+         # Read exact number of bytes (zero or less).
+         stream = self._make_one()
+diff --git a/tests/test_urldispatch.py b/tests/test_urldispatch.py
+index 1714700..e0d0ed9 100644
+--- a/tests/test_urldispatch.py
++++ b/tests/test_urldispatch.py
+@@ -1295,42 +1295,6 @@ async def test_add_domain_matches_host_with_port(
+     assert match_info.route.handler is domain_handler
+ 
+ 
+-async def test_add_domain_absolute_form_ignores_host_header(
+-    app: web.Application,
+-) -> None:
+-    """An absolute-form target overrides the Host header for domain matching.
+-
+-    https://www.rfc-editor.org/rfc/rfc9112#section-3.2.2-8
+-    """
+-    parent_handler = make_handler()
+-    app.router.add_get("/", parent_handler)
+-
+-    subapp = web.Application()
+-    domain_handler = make_handler()
+-    subapp.router.add_get("/", domain_handler)
+-    app.add_domain("example.com", subapp)
+-
+-    # The Host header names the domain, but the target's authority wins.
+-    request = make_mocked_request(
+-        "GET", "http://other.example/", {"host": "example.com"}
+-    )
+-    match_info = await app.router.resolve(request)
+-    assert match_info.route.handler is parent_handler
+-
+-    request = make_mocked_request(
+-        "GET", "http://example.com/", {"host": "other.example"}
+-    )
+-    match_info = await app.router.resolve(request)
+-    assert match_info.route.handler is domain_handler
+-
+-    # A non-default target port matches like a Host header port would.
+-    request = make_mocked_request(
+-        "GET", "http://example.com:8080/", {"host": "other.example"}
+-    )
+-    match_info = await app.router.resolve(request)
+-    assert match_info.route.handler is domain_handler
+-
+-
+ def test_subapp_url_for(app: web.Application) -> None:
+     subapp = web.Application()
+     resource = app.add_subapp("/pre", subapp)
+diff --git a/tests/test_web_request.py b/tests/test_web_request.py
+index d92b7c7..72f103e 100644
+--- a/tests/test_web_request.py
++++ b/tests/test_web_request.py
+@@ -248,31 +248,6 @@ def test_absolute_url_with_tls_transport() -> None:
+     assert req.host == "example.com"
+ 
+ 
+-def test_absolute_url_host_ignores_host_header() -> None:
+-    # https://www.rfc-editor.org/rfc/rfc9112#section-3.2.2-8
+-    req = make_mocked_request(
+-        "GET", "http://example.com/path", {"Host": "other.example"}
+-    )
+-    assert req.host == "example.com"
+-    assert req.url.host == "example.com"
+-
+-
+-def test_absolute_url_host_port() -> None:
+-    # The host of an absolute-form target keeps a non-default port,
+-    # matching the shape of a Host header.
+-    req = make_mocked_request("GET", "http://example.com:8080/path")
+-    assert req.host == "example.com:8080"
+-    # ...while a default port is elided.
+-    req = make_mocked_request("GET", "http://example.com:80/path")
+-    assert req.host == "example.com"
+-
+-
+-def test_absolute_url_host_ipv6() -> None:
+-    # An IPv6 host stays bracketed, as it would appear in a Host header.
+-    req = make_mocked_request("GET", "http://[::1]:8080/path")
+-    assert req.host == "[::1]:8080"
+-
+-
+ def test_absolute_form_raw_path() -> None:
+     # An absolute-form target (RFC 9112 3.2.2) must not leak the scheme/host
+     # into raw_path. The path, query and fragment are kept byte-for-byte, the
+@@ -306,37 +281,6 @@ def test_connect_authority_form_raw_path() -> None:
+     assert req.raw_path == "example.com:443"
+ 
+ 
+-@pytest.mark.parametrize("secure", (False, True))
+-def test_connect_authority_form_url_untouched(secure: bool) -> None:
+-    # A CONNECT target has no scheme; the transport scheme must not be glued
+-    # onto request.url (yarl would also elide a default port, e.g.
+-    # "https://example.com:443" serializes without the ":443").
+-    message = RawRequestMessage(
+-        "CONNECT",
+-        "example.com:443",
+-        HttpVersion(1, 1),
+-        HeadersDictProxy(CIMultiDict()),
+-        (),
+-        False,
+-        None,
+-        False,
+-        False,
+-        URL.build(authority="example.com:443", encoded=True),
+-    )
+-    protocol = mock.create_autospec(RequestHandler, spec_set=True, instance=True)
+-    protocol.ssl_context = ssl.create_default_context() if secure else None
+-    protocol.peername = None
+-    protocol.sockname = ("127.0.0.1", 8080)
+-    req = make_base_request(message, protocol)
+-    assert str(req.url) == "//example.com:443"
+-    assert req.url.scheme == ""
+-    assert req.url.port == 443
+-    # The schemeless target has no default port to elide, so the port is
+-    # kept, matching the Host header a client sends alongside CONNECT.
+-    assert req.host == "example.com:443"
+-    assert req.scheme == ("https" if secure else "http")
+-    assert req.secure is secure
+-
+ 
+ def test_clone_absolute_scheme() -> None:
+     req = make_mocked_request("GET", "https://example.com/path/to?a=1")
+@@ -876,23 +820,6 @@ def test_single_forwarded_header_injection2() -> None:
+     assert req.forwarded[1]["for"] == "_real"
+ 
+ 
+-@pytest.mark.parametrize(
+-    "header, expected",
+-    [
+-        ("a", {}),
+-        ("; a", {}),
+-        ("for=1.2.3.4; a", {"for": "1.2.3.4"}),
+-        ("for=_real; x", {"for": "_real"}),
+-        ("bad; for=_real", {}),
+-    ],
+-)
+-def test_single_forwarded_header_trailing_bad_value(
+-    header: str, expected: dict[str, str]
+-) -> None:
+-    req = make_mocked_request("GET", "/", headers=CIMultiDict({"Forwarded": header}))
+-    assert dict(req.forwarded[0]) == expected
+-
+-
+ def test_single_forwarded_header_long_quoted_string() -> None:
+     header = 'for="' + "\\\\" * 5000 + '"'
+     req = make_mocked_request("GET", "/", headers=CIMultiDict({"Forwarded": header}))
+diff --git a/tests/test_web_server.py b/tests/test_web_server.py
+index 06efc6e..b048155 100644
+--- a/tests/test_web_server.py
++++ b/tests/test_web_server.py
+@@ -419,122 +419,3 @@ async def test_no_future_warning_on_disconnect_during_backpressure(
+         loop.set_exception_handler(original_handler)
+ 
+     assert not exc_handler_calls
+-
+-
+-async def test_idle_connection_closed_before_first_request(
+-    aiohttp_raw_server: AiohttpRawServer,
+-) -> None:
+-    """A connection that never sends a request must not be held open forever."""
+-
+-    async def handler(request: web.BaseRequest) -> web.Response:
+-        assert False
+-
+-    server = await aiohttp_raw_server(handler, keepalive_timeout=0.2)
+-
+-    reader, writer = await asyncio.open_connection(server.host, server.port)
+-    try:
+-        # The server must close the connection once keepalive_timeout
+-        # expires without a complete request having arrived.
+-        assert await asyncio.wait_for(reader.read(), timeout=5) == b""
+-    finally:
+-        writer.close()
+-        await writer.wait_closed()
+-
+-
+-# uvloop closes the socket before running connection_lost, the reverse of the
+-# default loop's ordering, so run under both to cover the disconnect race.
+-@pytest.mark.asyncio(loop_factories=("uvloop", "selector"))
+-async def test_trickled_headers_closed_at_first_request_deadline(
+-    aiohttp_raw_server: AiohttpRawServer, monkeypatch: pytest.MonkeyPatch
+-) -> None:
+-    """Partial header bytes must not extend the first-request deadline."""
+-
+-    async def handler(request: web.BaseRequest) -> web.Response:
+-        assert False
+-
+-    server = await aiohttp_raw_server(handler, keepalive_timeout=0.4)
+-    runner = server.runner
+-    assert runner is not None
+-    server_impl = runner.server
+-    assert server_impl is not None
+-
+-    disconnected = asyncio.Event()
+-    original_connection_lost = server_impl.connection_lost
+-
+-    def connection_lost(protocol: Any, exc: BaseException | None = None) -> None:
+-        original_connection_lost(protocol, exc)
+-        disconnected.set()
+-
+-    monkeypatch.setattr(server_impl, "connection_lost", connection_lost)
+-
+-    _, writer = await asyncio.open_connection(server.host, server.port)
+-
+-    async def trickle_until_closed() -> None:
+-        writer.write(b"GET / HTTP/1.1\r\nHost: example.com\r\nX-Slow: ")
+-        # asyncio's drain() raises a ConnectionError once the connection is
+-        # lost; uvloop's write() raises RuntimeError on the closed transport.
+-        with pytest.raises((ConnectionError, RuntimeError)):
+-            while True:
+-                await writer.drain()
+-                await asyncio.sleep(0.05)
+-                writer.write(b"a")
+-
+-    try:
+-        # The deadline must fire despite the steady trickle of bytes.
+-        await asyncio.wait_for(trickle_until_closed(), timeout=5)
+-        await asyncio.wait_for(disconnected.wait(), timeout=5)
+-        assert not server_impl.connections
+-        assert server_impl.requests_count == 0
+-    finally:
+-        writer.close()
+-        with suppress(ConnectionError, RuntimeError):
+-            await writer.wait_closed()
+-
+-
+-async def test_keepalive_timeout_zero_no_first_request_deadline(
+-    aiohttp_raw_server: AiohttpRawServer,
+-) -> None:
+-    """keepalive_timeout=0 must not impose a deadline on the first request."""
+-
+-    async def handler(request: web.BaseRequest) -> web.Response:
+-        return web.Response(text="ok")
+-
+-    server = await aiohttp_raw_server(handler, keepalive_timeout=0)
+-
+-    reader, writer = await asyncio.open_connection(server.host, server.port)
+-    try:
+-        # A zero timeout must not arm a deadline that fires at accept time:
+-        # the connection has to survive an idle pause and serve the request.
+-        await asyncio.sleep(0.1)
+-        writer.write(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+-        await writer.drain()
+-        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+-        assert head.startswith(b"HTTP/1.1 200 ")
+-        # Between requests a zero timeout still closes the idle connection
+-        # right after the response, so the body is followed by EOF.
+-        assert await asyncio.wait_for(reader.read(), timeout=5) == b"ok"
+-    finally:
+-        writer.close()
+-        await writer.wait_closed()
+-
+-
+-async def test_handler_slower_than_first_request_deadline(
+-    aiohttp_raw_server: AiohttpRawServer,
+-) -> None:
+-    """A parsed request being handled is not subject to the idle deadline."""
+-
+-    async def handler(request: web.BaseRequest) -> web.Response:
+-        await asyncio.sleep(0.4)  # Longer than keepalive_timeout.
+-        return web.Response(text="ok")
+-
+-    server = await aiohttp_raw_server(handler, keepalive_timeout=0.2)
+-
+-    reader, writer = await asyncio.open_connection(server.host, server.port)
+-    try:
+-        writer.write(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+-        await writer.drain()
+-        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+-        assert head.startswith(b"HTTP/1.1 200 ")
+-    finally:
+-        writer.close()
+-        await writer.wait_closed()
+diff --git a/tests/test_web_websocket_functional.py b/tests/test_web_websocket_functional.py
+index f3596ab..1114073 100644
+--- a/tests/test_web_websocket_functional.py
++++ b/tests/test_web_websocket_functional.py
+@@ -1364,36 +1364,6 @@ async def test_websocket_disable_keepalive(aiohttp_client: AiohttpClient) -> Non
+     await ws.receive()  # Handle close
+ 
+ 
+-async def test_websocket_disable_keepalive_no_armed_handle(
+-    aiohttp_server: AiohttpServer, aiohttp_client: AiohttpClient
+-) -> None:
+-    """keep_alive(False) when no keepalive timer was armed (keepalive_timeout=0)."""
+-
+-    async def handler(request: web.Request) -> web.StreamResponse:
+-        ws = web.WebSocketResponse()
+-        assert ws.can_prepare(request)
+-        # A zero timeout arms no deadline at connection_made().
+-        assert request.protocol._keepalive_handle is None
+-        await ws.prepare(request)
+-        assert not request.protocol._keepalive
+-        assert request.protocol._keepalive_handle is None
+-
+-        await ws.send_str("OK")
+-        await ws.close()
+-        return ws
+-
+-    app = web.Application()
+-    app.router.add_route("GET", "/", handler)
+-    server = await aiohttp_server(app, keepalive_timeout=0)
+-    client = await aiohttp_client(server)  # type: ignore[var-annotated]
+-
+-    ws = await client.ws_connect("/")
+-    data = await ws.receive_str()
+-    assert data == "OK"
+-
+-    await ws.receive()  # Handle close
+-
+-
+ async def test_receive_str_nonstring(aiohttp_client: AiohttpClient) -> None:
+     async def handler(request: web.Request) -> web.WebSocketResponse:
+         ws = web.WebSocketResponse()

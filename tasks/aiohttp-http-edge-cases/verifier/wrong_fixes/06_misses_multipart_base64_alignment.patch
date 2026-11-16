@@ -1,0 +1,265 @@
+diff --git a/aiohttp/connector.py b/aiohttp/connector.py
+index 6848f66..ff94354 100644
+--- a/aiohttp/connector.py
++++ b/aiohttp/connector.py
+@@ -288,7 +288,11 @@ class _TransportPlaceholder:
+ class BaseConnector:
+     """Base connector class.
+ 
+-    keepalive_timeout - (optional) Keep-alive timeout.
++    keepalive_timeout - (optional) Keep-alive timeout. None means a
++        reusable connection never expires from idling alone (a
++        disconnected one is discarded the next time the pool is
++        consulted for that host, not proactively). This is different
++        from force_close=True, which disables reuse entirely.
+     force_close - Set to True to force close and do reconnect
+         after each request (and between redirects).
+     limit - The total number of simultaneous connections.
+@@ -323,6 +327,7 @@ class BaseConnector:
+                 raise ValueError(
+                     "keepalive_timeout cannot be set if force_close is True"
+                 )
++            keepalive_timeout = None
+         else:
+             if keepalive_timeout is sentinel:
+                 keepalive_timeout = 15.0
+@@ -347,7 +352,7 @@ class BaseConnector:
+         self._acquired_per_host: defaultdict[ConnectionKey, set[ResponseHandler]] = (
+             defaultdict(set)
+         )
+-        self._keepalive_timeout = cast(float, keepalive_timeout)
++        self._keepalive_timeout = keepalive_timeout
+         self._force_close = force_close
+ 
+         # {host_key: FIFO list of waiters}
+@@ -449,6 +454,8 @@ class BaseConnector:
+ 
+         now = monotonic()
+         timeout = self._keepalive_timeout
++        # weakref_handle() never schedules this method for a None timeout
++        assert timeout is not None
+ 
+         if self._conns:
+             connections = defaultdict(deque)
+@@ -752,7 +759,9 @@ class BaseConnector:
+             proto, t0 = conns.popleft()
+             # We will we reuse the connection if its connected and
+             # the keepalive timeout has not been exceeded
+-            if proto.is_connected() and t1 - t0 <= self._keepalive_timeout:
++            if proto.is_connected() and (
++                self._keepalive_timeout is None or t1 - t0 <= self._keepalive_timeout
++            ):
+                 if not conns:
+                     # The very last connection was reclaimed: drop the key
+                     del self._conns[key]
+@@ -949,7 +958,11 @@ class TCPConnector(BaseConnector):
+     family - socket address family
+     local_addr - local tuple of (host, port) to bind socket to
+ 
+-    keepalive_timeout - (optional) Keep-alive timeout.
++    keepalive_timeout - (optional) Keep-alive timeout. None means a
++        reusable connection never expires from idling alone (a
++        disconnected one is discarded the next time the pool is
++        consulted for that host, not proactively). This is different
++        from force_close=True, which disables reuse entirely.
+     force_close - Set to True to force close and do reconnect
+         after each request (and between redirects).
+     limit - The total number of simultaneous connections.
+@@ -1542,7 +1555,11 @@ class TCPConnector(BaseConnector):
+             proxy_req.url = req.url
+             key = req.connection_key._replace(proxy=None, proxy_headers_hash=None)
+             conn = _ConnectTunnelConnection(self, key, proto, self._loop)
+-            proxy_resp = await proxy_req._send(conn)
++            try:
++                proxy_resp = await proxy_req._send(conn)
++            except BaseException:
++                conn.close()
++                raise
+             try:
+                 protocol = conn._protocol
+                 assert protocol is not None
+@@ -1597,7 +1614,11 @@ class UnixConnector(BaseConnector):
+     """Unix socket connector.
+ 
+     path - Unix socket path.
+-    keepalive_timeout - (optional) Keep-alive timeout.
++    keepalive_timeout - (optional) Keep-alive timeout. None means a
++        reusable connection never expires from idling alone (a
++        disconnected one is discarded the next time the pool is
++        consulted for that host, not proactively). This is different
++        from force_close=True, which disables reuse entirely.
+     force_close - Set to True to force close and do reconnect
+         after each request (and between redirects).
+     limit - The total number of simultaneous connections.
+@@ -1653,7 +1674,11 @@ class NamedPipeConnector(BaseConnector):
+     See also: https://docs.python.org/3/library/asyncio-eventloop.html
+ 
+     path - Windows named pipe path.
+-    keepalive_timeout - (optional) Keep-alive timeout.
++    keepalive_timeout - (optional) Keep-alive timeout. None means a
++        reusable connection never expires from idling alone (a
++        disconnected one is discarded the next time the pool is
++        consulted for that host, not proactively). This is different
++        from force_close=True, which disables reuse entirely.
+     force_close - Set to True to force close and do reconnect
+         after each request (and between redirects).
+     limit - The total number of simultaneous connections.
+diff --git a/aiohttp/http_parser.py b/aiohttp/http_parser.py
+index b4d9190..8ad9128 100644
+--- a/aiohttp/http_parser.py
++++ b/aiohttp/http_parser.py
+@@ -476,8 +476,12 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
+ 
+                         assert self.protocol is not None
+                         # calculate payload
++                        # https://www.rfc-editor.org/info/rfc9112/#name-message-body-length
++                        # https://www.rfc-editor.org/info/rfc9110/#section-9.3.1-6
++                        # EMPTY_BODY_METHODS should only apply to responses.
++                        # self.method is None on request parser.
+                         empty_body = code in EMPTY_BODY_STATUS_CODES or bool(
+-                            method and method in EMPTY_BODY_METHODS
++                            self.method and self.method in EMPTY_BODY_METHODS
+                         )
+                         if not empty_body and (
+                             (length is not None and length > 0) or msg.chunked
+diff --git a/aiohttp/multipart.py b/aiohttp/multipart.py
+index c25c98e..6524958 100644
+--- a/aiohttp/multipart.py
++++ b/aiohttp/multipart.py
+@@ -366,7 +366,7 @@ class BodyPartReader:
+         """
+         if self._at_eof:
+             return b""
+-        if self._length:
++        if self._length is not None:
+             chunk = await self._read_chunk_from_length(size)
+         else:
+             chunk = await self._read_chunk_from_stream(size)
+diff --git a/aiohttp/streams.py b/aiohttp/streams.py
+index d0efcfc..db3073c 100644
+--- a/aiohttp/streams.py
++++ b/aiohttp/streams.py
+@@ -396,14 +396,25 @@ class StreamReader:
+         while not_enough:
+             while self._buffer and not_enough:
+                 offset = self._buffer_offset
+-                ichar = self._buffer[0].find(separator, offset) + 1
++                n = -1
++                if chunk and seplen > 1:
++                    # The separator may straddle data already read and this chunk.
++                    # tail and head are each shorter than the separator, so a match
++                    # in tail + head must span both; n counts its bytes in head.
++                    tail = chunk[1 - seplen :]
++                    head = self._buffer[0][offset : offset + seplen - 1]
++                    ichar = (tail + head).find(separator)
++                    if ichar != -1:
++                        n = ichar + seplen - len(tail)
++                if n == -1:
++                    ichar = self._buffer[0].find(separator, offset)
++                    if ichar != -1:
++                        n = ichar - offset + seplen
+                 # Read from current offset to found separator or to the end.
+-                data = self._read_nowait_chunk(
+-                    ichar - offset + seplen - 1 if ichar else -1
+-                )
++                data = self._read_nowait_chunk(n)
+                 chunk += data
+                 chunk_size += len(data)
+-                if ichar:
++                if n != -1:
+                     not_enough = False
+ 
+                 if chunk_size > max_size:
+diff --git a/aiohttp/web_protocol.py b/aiohttp/web_protocol.py
+index 0446206..2bfede2 100644
+--- a/aiohttp/web_protocol.py
++++ b/aiohttp/web_protocol.py
+@@ -157,8 +157,7 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+     status line, bad headers or incomplete payload. If any error occurs,
+     connection gets closed.
+ 
+-    keepalive_timeout -- number of seconds before closing
+-                         keep-alive connection
++    keepalive_timeout -- number of seconds before closing an idle connection.
+ 
+     tcp_keepalive -- TCP keep-alive is on, default is on
+ 
+@@ -257,7 +256,9 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+         super().__init__(loop, parser)
+ 
+         self._request_count = 0
+-        self._keepalive = False
++        # True from the start so the deadline armed in connection_made()
++        # closes connections that never deliver a complete first request.
++        self._keepalive = True
+         self._current_request: _Request | None = None
+         self._manager: Server[_Request] | None = manager
+         self._request_handler: _RequestHandler[_Request] | None = (
+@@ -410,6 +411,13 @@ class RequestHandler(BaseProtocol, Generic[_Request]):
+         self._manager.connection_made(self, real_transport)
+ 
+         loop = self._loop
++        # Need to enable keepalive timeout at start of connection, as there's no other
++        # protection against a dead connection that doesn't send a request at all.
++        if self._keepalive_timeout > 0:
++            close_time = loop.time() + self._keepalive_timeout
++            self._next_keepalive_close_time = close_time
++            self._keepalive_handle = loop.call_at(close_time, self._process_keepalive)
++
+         if sys.version_info >= (3, 14):
+             if isinstance(loop, BaseEventLoop):
+                 task = asyncio.create_task(self.start(), eager_start=True)
+diff --git a/aiohttp/web_request.py b/aiohttp/web_request.py
+index 4f6649c..e1f1cb1 100644
+--- a/aiohttp/web_request.py
++++ b/aiohttp/web_request.py
+@@ -180,7 +180,7 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+             # override auto-calculating url, host, and scheme
+             # all other properties should be good
+             self._cache["url"] = url
+-            self._cache["host"] = url.host
++            self._cache["host"] = url.host_port_subcomponent
+             self._rel_url = url.relative()
+         else:
+             self._rel_url = url
+@@ -370,9 +370,13 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+                         value += port
+                     elem[name.lower()] = value
+                     pos += len(match.group(0))
+-                elif not field_value[pos : field_value.find(";", pos)].strip(" \t"):
++                elif (semi := field_value.find(";", pos)) == -1:
++                    # No further pair to parse; a trailing empty or malformed
++                    # value ends this field-value.
++                    break
++                elif not field_value[pos:semi].strip(" \t"):
+                     # Empty value
+-                    pos = field_value.find(";", pos) + 1
++                    pos = semi + 1
+                 else:
+                     # bad syntax here, skip to next field value
+                     break
+@@ -417,6 +421,9 @@ class BaseRequest(MutableMapping[str | RequestKey[Any], Any], HeadersMixin):
+         Hostname is resolved in this order:
+ 
+         - overridden value by .clone(host=new_host) call.
++        - host of the request-target, if the target is in absolute or
++          authority form (the Host header is ignored then, per
++          :rfc:`9112#section-3.2.2-8`); a non-default port is included.
+         - HOST HTTP header
+         - local socket address the request arrived on
+           (transport ``sockname``)
+diff --git a/aiohttp/web_urldispatcher.py b/aiohttp/web_urldispatcher.py
+index ff0e286..18d1145 100644
+--- a/aiohttp/web_urldispatcher.py
++++ b/aiohttp/web_urldispatcher.py
+@@ -800,7 +800,9 @@ class Domain(AbstractRuleMatching):
+         return f"{url.raw_host}:{url.port}"
+ 
+     async def match(self, request: Request) -> bool:
+-        host = request.headers.get(hdrs.HOST)
++        # https://www.rfc-editor.org/info/rfc9112/#section-3.2.2-8
++        is_absolute = request._message.url.absolute
++        host = request.host if is_absolute else request.headers.get(hdrs.HOST)
+         if not host:
+             return False
+         return self.match_domain(host)

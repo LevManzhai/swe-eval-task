@@ -14,6 +14,7 @@ because those notes are where most of what I learned ended up.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
+| [`tasks/aiohttp-http-edge-cases`](tasks/aiohttp-http-edge-cases) | [aiohttp](https://github.com/aio-libs/aiohttp) | Bug hunt: nine HTTP edge cases with unusual triggers, client and server, no oracle | In progress |
 | [`tasks/redis-py-connection-lifecycle`](tasks/redis-py-connection-lifecycle) | [redis-py](https://github.com/redis/redis-py) | Bug hunt: seven connection life-cycle bugs, sync and asyncio, no oracle | In progress: attempt 1 passed (22 / 22) |
 | [`tasks/anyio-cancellation-safety`](tasks/anyio-cancellation-safety) | [anyio](https://github.com/agronholm/anyio) | Bug hunt: eleven cancellation-safety bugs in seven files, no oracle | **Accepted**: 0 of 2 attempts passed (34 / 36 each) |
 | [`tasks/croniter-expand-from-start-time`](tasks/croniter-expand-from-start-time) | [croniter](https://github.com/pallets-eco/croniter) | Implement documented behaviour | Easy (first attempt solved it in ~2 minutes) |
