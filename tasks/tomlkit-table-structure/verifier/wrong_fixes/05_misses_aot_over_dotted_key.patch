@@ -1,0 +1,113 @@
+diff --git a/tomlkit/container.py b/tomlkit/container.py
+index 28432ee..81ac8f6 100644
+--- a/tomlkit/container.py
++++ b/tomlkit/container.py
+@@ -500,7 +500,9 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+                 existing = current.value.item(k)
+                 if isinstance(existing, (Table, AoT)) != isinstance(v, (Table, AoT)):
+                     raise KeyAlreadyPresent(k)
+-                if k.is_dotted():
++                if k.is_dotted() and not (
++                    isinstance(existing, Table) and existing.is_super_table()
++                ):
+                     raise TOMLKitError("Redefinition of an existing table")
+                 if isinstance(existing, Table) and isinstance(v, Table):
+                     if not existing.is_super_table() and not v.is_super_table():
+@@ -541,7 +543,7 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             self._map[key] = len(self._body)
+ 
+         self._body.append((key, item))
+-        if item.is_table() and key is not None:
++        if isinstance(item, (Table, AoT)) and key is not None:
+             self._table_keys.append(key)
+ 
+         if key is not None:
+@@ -1219,11 +1221,13 @@ class OutOfOrderTableProxy(_CustomDict):  # type: ignore[type-arg]
+         _key: Key = key if isinstance(key, Key) else SingleKey(key)
+ 
+         if _key in self._tables_map:
+-            # Overwrite the first table and remove others
++            # Overwrite the first occurrence and remove this key from later parts.
+             map_indices = self._tables_map[_key]
+             while len(map_indices) > 1:
+                 table = self._tables[map_indices.pop()]
+-                self._remove_table(table)
++                del table[key]
++                if not table:
++                    self._remove_table(table)
+             old_value = self._tables[map_indices[0]][key]
+             if _is_table_or_aot(old_value) and not _is_table_or_aot(value):
+                 # Remove the entry from the map and set value again.
+@@ -1233,11 +1237,12 @@ class OutOfOrderTableProxy(_CustomDict):  # type: ignore[type-arg]
+                 return
+             self._tables[map_indices[0]][key] = value
+         elif self._tables:
++            table_index = 0
+             if not _is_table_or_aot(value):  # if the value is a plain value
+-                for table in self._tables:
++                for i, table in enumerate(self._tables):
+                     # find the first table that allows plain values
+                     if any(not _is_table_or_aot(v) for _, v in table.items()):
+-                        table[key] = value
++                        table_index = i
+                         break
+                 else:
+                     # No part holds a plain value yet, so the chosen part must
+@@ -1246,14 +1251,12 @@ class OutOfOrderTableProxy(_CustomDict):  # type: ignore[type-arg]
+                     # turning a header-less super part concrete here would emit a
+                     # second, duplicate header next to an existing concrete part
+                     # and produce TOML that no longer parses.
+-                    for table in self._tables:
++                    for i, table in enumerate(self._tables):
+                         if not table.is_super_table():
+-                            table[key] = value
++                            table_index = i
+                             break
+-                    else:
+-                        self._tables[0][key] = value
+-            else:
+-                self._tables[0][key] = value
++            self._tables[table_index][key] = value
++            self._tables_map[_key] = [table_index]
+         else:
+             self._container[key] = value
+ 
+diff --git a/tomlkit/items.py b/tomlkit/items.py
+index a641f14..07a267d 100644
+--- a/tomlkit/items.py
++++ b/tomlkit/items.py
+@@ -2034,7 +2034,9 @@ class Table(AbstractTable):
+ 
+         indent = m.group(1)
+ 
+-        if not isinstance(_item, Whitespace):
++        # A table split out of order is looked up as an OutOfOrderTableProxy,
++        # which has no trivia; its parts keep their own indentation.
++        if isinstance(_item, Item) and not isinstance(_item, Whitespace):
+             m = re.match("(?s)^([^ ]*)(.*)$", _item.trivia.indent)
+             if not m:
+                 _item.trivia.indent = indent
+@@ -2299,6 +2301,9 @@ class InlineTable(AbstractTable):
+                     f"{prefix}{v.trivia.indent}{k.as_string()}{k.sep}{v.as_string()}"
+                     f"{v.trivia.comment_ws}{v.trivia.comment}{trail}"
+                 )
++        if not parts:
++            # every key under the prefix was removed, keep it as an empty table
++            return [f"{key.as_string()} = {{}}"]
+         return parts
+ 
+     def __setitem__(self, key: Key | str, value: Any) -> None:
+@@ -2446,7 +2451,12 @@ class AoT(Item, _CustomList):  # type: ignore[type-arg]
+         return self._body[key]
+ 
+     def __setitem__(self, key: slice | int, value: Any) -> None:  # type: ignore[override]
+-        self._body[key] = item(value, _parent=self)
++        if isinstance(key, slice):
++            value = [item(v, _parent=self) for v in value]
++        else:
++            value = item(value, _parent=self)
++        self._body[key] = value
++        list.__setitem__(self, key, value)
+ 
+     def __delitem__(self, key: slice | int) -> None:  # type: ignore[override]
+         del self._body[key]

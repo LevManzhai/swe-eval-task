@@ -1,0 +1,13 @@
+diff --git a/tomlkit/container.py b/tomlkit/container.py
+index 28432ee..a6c1938 100644
+--- a/tomlkit/container.py
++++ b/tomlkit/container.py
+@@ -541,7 +541,7 @@ class Container(_CustomDict):  # type: ignore[type-arg]
+             self._map[key] = len(self._body)
+ 
+         self._body.append((key, item))
+-        if item.is_table() and key is not None:
++        if isinstance(item, (Table, AoT)) and key is not None:
+             self._table_keys.append(key)
+ 
+         if key is not None:
