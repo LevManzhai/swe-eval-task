@@ -1,4 +1,4 @@
-# Starting environment for the "croniter expand_from_start_time" task.
+# Starting environment for the "tomlkit conformance" task.
 #
 # Base image, upstream commit and every Python package are pinned. Network is
 # only needed while building the image; the task and the verifier run offline.
@@ -13,17 +13,19 @@ WORKDIR /workspace
 COPY requirements.txt /workspace/requirements.txt
 RUN pip install --no-cache-dir -r /workspace/requirements.txt
 
-ARG CRONITER_COMMIT=ddb3495cf4eb1e7b0cc33b6baa0e9c4f36fb0c60
-RUN git clone https://github.com/pallets-eco/croniter.git /workspace/repo \
+# tomlkit at a pinned commit, with the toml-test suite its tests depend on.
+ARG TOMLKIT_COMMIT=7bf7284dbd622557d9909f8fee017a4cb169a139
+RUN git clone https://github.com/python-poetry/tomlkit.git /workspace/repo \
     && cd /workspace/repo \
-    && git reset --hard "$CRONITER_COMMIT"
+    && git reset --hard "$TOMLKIT_COMMIT" \
+    && git submodule update --init --depth 1
 
 # Bring the repository to the starting state, then drop its git history so the
-# solver cannot read the upstream commits that implemented this behaviour.
+# solver cannot read the upstream commits that fixed these bugs.
 COPY starting_state.patch /workspace/starting_state.patch
 RUN cd /workspace/repo \
     && git apply /workspace/starting_state.patch \
-    && rm -rf .git /workspace/starting_state.patch \
+    && rm -rf .git tests/toml-test/.git .gitmodules /workspace/starting_state.patch \
     && git init -q \
     && git -c user.name=task -c user.email=task@localhost add -A \
     && git -c user.name=task -c user.email=task@localhost commit -q -m "starting state"

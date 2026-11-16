@@ -9,7 +9,7 @@
 set -u -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE_TAG="${IMAGE_TAG:-croniter-efst-task:selfcheck}"
+IMAGE_TAG="${IMAGE_TAG:-tomlkit-conformance-task:selfcheck}"
 FAILED=0
 
 pass() { echo "PASS: $1"; }
@@ -34,8 +34,8 @@ run_in_container() {
     return "${PIPESTATUS[0]}"
 }
 
-HIDDEN="cp /workspace/verifier/test_task.py /workspace/repo/src/croniter/tests/test_hidden_task.py && cd /workspace/repo && python -m pytest -q -p no:cacheprovider src/croniter/tests/test_hidden_task.py"
-UPSTREAM="cd /workspace/repo && python -m pytest -q -p no:cacheprovider src"
+HIDDEN="cd /workspace/verifier && python -m pytest test_task.py -q -p no:cacheprovider"
+UPSTREAM="cd /workspace/repo && python -m pytest -q -p no:cacheprovider tests"
 
 expect() {
     local expected="$1" label="$2" patch_file="$3" command="$4"

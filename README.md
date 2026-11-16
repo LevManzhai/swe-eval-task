@@ -1,5 +1,8 @@
 # swe-eval-task
 
+[![Self-check](https://github.com/LevManzhai/swe-eval-task/actions/workflows/selfcheck.yml/badge.svg)](https://github.com/LevManzhai/swe-eval-task/actions/workflows/selfcheck.yml)
+**[▶ Run a task's self-check](https://github.com/LevManzhai/swe-eval-task/actions/workflows/selfcheck.yml)**: open the page and press *Run workflow* (repository owner only; anyone can open past runs and their logs).
+
 I build coding tasks for evaluating AI agents. Each one comes from a real
 open-source repository and has the same pieces: a problem statement, a
 Docker environment, a reference solution, and a hidden test suite that
@@ -12,12 +15,21 @@ because those notes are where most of what I learned ended up.
 
 ## What's here
 
+Two tasks passed:
+
+- [`tasks/tomlkit-conformance`](tasks/tomlkit-conformance): two independent
+  attempts each fixed 14 of its 15 bugs and missed a different one.
+- [`tasks/anyio-cancellation-safety`](tasks/anyio-cancellation-safety).
+
+The rest are earlier candidates that turned out easy, kept with notes on why,
+because that's how I got to the ones that work.
+
 | Task | Repo | Type | Result |
 |---|---|---|---|
 | [`tasks/aiohttp-http-edge-cases`](tasks/aiohttp-http-edge-cases) | [aiohttp](https://github.com/aio-libs/aiohttp) | Bug hunt: nine HTTP edge cases with unusual triggers, client and server, no oracle | In progress |
-| [`tasks/redis-py-connection-lifecycle`](tasks/redis-py-connection-lifecycle) | [redis-py](https://github.com/redis/redis-py) | Bug hunt: seven connection life-cycle bugs, sync and asyncio, no oracle | In progress: attempt 1 passed (22 / 22) |
+| [`tasks/tomlkit-conformance`](tasks/tomlkit-conformance) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v3: fifteen bugs with rare triggers, one symptom in the report | **Accepted: 0 of 2 attempts solved it** |
 | [`tasks/anyio-cancellation-safety`](tasks/anyio-cancellation-safety) | [anyio](https://github.com/agronholm/anyio) | Bug hunt: eleven cancellation-safety bugs in seven files, no oracle | **Accepted**: 0 of 2 attempts passed (34 / 36 each) |
-| [`tasks/croniter-expand-from-start-time`](tasks/croniter-expand-from-start-time) | [croniter](https://github.com/pallets-eco/croniter) | Implement documented behaviour | Easy (first attempt solved it in ~2 minutes) |
+| [`tasks/redis-py-connection-lifecycle`](tasks/redis-py-connection-lifecycle) | [redis-py](https://github.com/redis/redis-py) | Bug hunt: seven connection life-cycle bugs, sync and asyncio, no oracle | In progress: attempt 1 passed (22 / 22) |
 | [`tasks/tomlkit-table-structure`](tasks/tomlkit-table-structure) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v2: eight bugs, one symptom in the report | Easy (first attempt solved it, 100 / 100) |
 | [`tasks/tomlkit-out-of-order-tables`](tasks/tomlkit-out-of-order-tables) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt: five bugs, one symptom in the report | Rejected, but close: 2 of 3 solved it, each with a ~1,000-line rewrite |
 | [`tasks/portion-intervaldict`](tasks/portion-intervaldict) | [portion](https://github.com/AlexandreDecan/portion) | Performance, behaviour must not change | Easy (2 of 2 attempts solved it) |
@@ -25,6 +37,14 @@ because those notes are where most of what I learned ended up.
 
 Two earlier candidates (jsonschema, tenacity) were rejected the same way. They
 aren't in the repo, but [`REJECTED.md`](REJECTED.md) mentions them.
+
+## Running the checks on GitHub
+
+Any task's self-check can be run without installing anything. Open the
+**Actions** tab, pick **Self-check a task**, press **Run workflow** and choose
+the task. It builds the Docker image and runs that task's `run.sh`. The log
+shows a `PASS`/`FAIL` line for every expectation and finishes with
+`ALL EXPECTATIONS MET`.
 
 ## How each task is laid out
 
