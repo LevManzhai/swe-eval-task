@@ -29,6 +29,7 @@ import tempfile
 import threading
 import time
 import warnings
+from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import Future
 from typing import Any
 
@@ -412,6 +413,13 @@ class _RacingFuture(Future):
 
 
 class TestPortalCompletionRace:
+    """
+    The waiting thread cancels the future at the very moment the call
+    completes. Either side may win that race: the caller may get the result
+    (or the exception) or a ``concurrent.futures.CancelledError``. What must not
+    happen is an exception inside the event loop, which takes the portal down.
+    """
+
     @pytest.mark.parametrize("raises", [False, True], ids=["result", "exception"])
     async def test_cancel_during_completion_does_not_crash_the_portal(
         self, monkeypatch: pytest.MonkeyPatch, raises: bool
@@ -424,11 +432,14 @@ class TestPortalCompletionRace:
 
         monkeypatch.setattr(from_thread, "Future", _RacingFuture)
         async with BlockingPortal() as portal:
-            if raises:
-                with pytest.raises(ValueError, match="boom"):
-                    await to_thread.run_sync(portal.call, func)
+            try:
+                result = await to_thread.run_sync(portal.call, func)
+            except FutureCancelledError:
+                pass
+            except ValueError as exc:
+                assert raises and str(exc) == "boom"
             else:
-                assert await to_thread.run_sync(portal.call, func) == "ok"
+                assert not raises and result == "ok"
 
             # The portal is still alive and serving calls
             monkeypatch.undo()

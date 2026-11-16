@@ -1,0 +1,1117 @@
+diff --git a/src/anyio/_backends/_asyncio.py b/src/anyio/_backends/_asyncio.py
+index 41213ae..40fdfee 100644
+--- a/src/anyio/_backends/_asyncio.py
++++ b/src/anyio/_backends/_asyncio.py
+@@ -83,6 +83,7 @@ from .._core._streams import create_memory_object_stream
+ from .._core._synchronization import (
+     CapacityLimiter as BaseCapacityLimiter,
+ )
++from .._core._synchronization import CapacityLimiterAdapter
+ from .._core._synchronization import Event as BaseEvent
+ from .._core._synchronization import Lock as BaseLock
+ from .._core._synchronization import (
+@@ -891,6 +892,7 @@ class WorkerThreadPool:
+         func: Callable[[Unpack[PosArgsT]], T_Retval],
+         args: tuple[*PosArgsT],
+         cancel_scope: CancelScope,
++        on_complete: Callable[[], object] | None = None,
+     ) -> asyncio.Future[T_Retval]:
+         future = asyncio.Future[T_Retval]()
+         with self.lock:
+@@ -908,7 +910,9 @@ class WorkerThreadPool:
+                     self.workers.remove(worker)
+                     raise
+ 
+-            worker.queue.put_nowait((context, func, args, future, cancel_scope))
++            worker.queue.put_nowait(
++                (context, func, args, future, cancel_scope, on_complete)
++            )
+ 
+         return future
+ 
+@@ -948,13 +952,27 @@ class WorkerThread(Thread):
+         super().__init__(name="AnyIO worker thread", daemon=False, **kwargs)
+         self.pool = pool
+         self.queue: Queue[
+-            tuple[Context, Callable, tuple, asyncio.Future, CancelScope] | None
++            tuple[
++                Context,
++                Callable,
++                tuple,
++                asyncio.Future,
++                CancelScope,
++                Callable[[], object] | None,
++            ]
++            | None
+         ] = Queue(2)
+ 
+     @staticmethod
+     def _report_result(
+-        future: asyncio.Future, result: Any, exc: BaseException | None
++        future: asyncio.Future,
++        result: Any,
++        exc: BaseException | None,
++        on_complete: Callable[[], object] | None = None,
+     ) -> None:
++        if on_complete is not None:
++            on_complete()
++
+         if not future.cancelled():
+             if exc is not None:
+                 if isinstance(exc, StopIteration):
+@@ -967,9 +985,17 @@ class WorkerThread(Thread):
+                 future.set_result(result)
+ 
+     def _run_job(
+-        self, item: tuple[Context, Callable, tuple, asyncio.Future, CancelScope]
++        self,
++        item: tuple[
++            Context,
++            Callable,
++            tuple,
++            asyncio.Future,
++            CancelScope,
++            Callable[[], object] | None,
++        ],
+     ) -> bool:
+-        context, func, args, future, cancel_scope = item
++        context, func, args, future, cancel_scope, on_complete = item
+         loop = future.get_loop()
+         result = None
+         exception: BaseException | None = None
+@@ -991,7 +1017,9 @@ class WorkerThread(Thread):
+                 self.pool.idle_workers[self] = None
+ 
+         try:
+-            loop.call_soon_threadsafe(self._report_result, future, result, exception)
++            loop.call_soon_threadsafe(
++                self._report_result, future, result, exception, on_complete
++            )
+         except RuntimeError:
+             if not loop.is_closed():
+                 raise
+@@ -1048,6 +1076,62 @@ if hasattr(os, "register_at_fork"):
+     os.register_at_fork(after_in_child=_reset_threadpool_after_fork)
+ 
+ 
++class _AbandonedWorkerThread:
++    """Borrower of a capacity limiter token held by an abandoned worker thread."""
++
++    def __repr__(self) -> str:
++        return f"<abandoned worker thread at {id(self):x}>"
++
++
++class _AbandonedThreadTracker:
++    """
++    Keeps a capacity limiter token borrowed on behalf of a worker thread that was
++    abandoned by its host task, until the thread actually finishes.
++
++    All methods must be called in the event loop thread.
++
++    """
++
++    def __init__(self, limiter: BaseCapacityLimiter):
++        if isinstance(limiter, CapacityLimiterAdapter):
++            limiter = limiter._limiter
++
++        self._limiter = limiter
++        self._thread_done = False
++        self._borrower: _AbandonedWorkerThread | None = None
++
++    def thread_finished(self) -> None:
++        self._thread_done = True
++        if self._borrower is not None:
++            borrower, self._borrower = self._borrower, None
++            assert isinstance(self._limiter, CapacityLimiter)
++            try:
++                self._limiter.release_on_behalf_of(borrower)
++            except RuntimeError:
++                pass
++
++    def abandon(self) -> bool:
++        """
++        Transfer the current task's token to the worker thread.
++
++        :return: ``True`` if the token was transferred, ``False`` if the caller should
++            release it as usual
++
++        """
++        if self._thread_done or not isinstance(self._limiter, CapacityLimiter):
++            return False
++
++        task = current_task()
++        if task not in self._limiter._borrowers:
++            return False
++
++        self._borrower = _AbandonedWorkerThread()
++        # Swap the borrowers without releasing the token in between
++        self._limiter._borrowers.discard(task)
++        self._limiter._borrowers.add(self._borrower)
++        return True
++
++
+ #
+ # Subprocesses
+ #
+@@ -1318,8 +1402,12 @@ class SocketStream(abc.SocketStream):
+                 and not self._protocol.is_at_eof
+             ):
+                 self._transport.resume_reading()
+-                await self._protocol.read_event.wait()
+-                self._transport.pause_reading()
++                try:
++                    await self._protocol.read_event.wait()
++                finally:
++                    # Re-apply the flow control even if we were cancelled
++                    if not self._transport.is_closing():
++                        self._transport.pause_reading()
+             else:
+                 await AsyncIOBackend.checkpoint()
+ 
+@@ -1438,8 +1526,20 @@ class _RawSocketMixin:
+ 
+ 
+ class UNIXSocketStream(_RawSocketMixin, abc.UNIXSocketStream):
++    # Set when a send operation was interrupted after part of the data had already
++    # been sent, leaving the byte stream in an undefined state
++    _broken = False
++
++    def _check_broken(self) -> None:
++        if self._broken and not self._closing:
++            raise BrokenResourceError(
++                "a previous send operation was interrupted after sending only part "
++                "of the data"
++            )
++
+     async def send_eof(self) -> None:
+         with self._send_guard:
++            self._check_broken()
+             self._raw_socket.shutdown(socket.SHUT_WR)
+ 
+     async def receive(self, max_bytes: int = 65536) -> bytes:
+@@ -1448,6 +1548,7 @@ class UNIXSocketStream(_RawSocketMixin, abc.UNIXSocketStream):
+ 
+         loop = get_running_loop()
+         await AsyncIOBackend.checkpoint()
++        self._check_broken()
+         with self._receive_guard:
+             while True:
+                 try:
+@@ -1468,20 +1569,28 @@ class UNIXSocketStream(_RawSocketMixin, abc.UNIXSocketStream):
+     async def send(self, item: bytes) -> None:
+         loop = get_running_loop()
+         await AsyncIOBackend.checkpoint()
++        self._check_broken()
+         with self._send_guard:
+             view = memoryview(item)
+-            while view:
+-                try:
+-                    bytes_sent = self._raw_socket.send(view)
+-                except BlockingIOError:
+-                    await self._wait_until_writable(loop)
+-                except OSError as exc:
+-                    if self._closing:
+-                        raise ClosedResourceError from None
++            total = len(view)
++            try:
++                while view:
++                    try:
++                        bytes_sent = self._raw_socket.send(view)
++                    except BlockingIOError:
++                        await self._wait_until_writable(loop)
++                    except OSError as exc:
++                        if self._closing:
++                            raise ClosedResourceError from None
++                        else:
++                            raise BrokenResourceError from exc
+                     else:
+-                        raise BrokenResourceError from exc
+-                else:
+-                    view = view[bytes_sent:]
++                        view = view[bytes_sent:]
++            except BaseException:
++                if 0 < len(view) < total:
++                    self._broken = True
++
++                raise
+ 
+     async def receive_fds(self, msglen: int, maxfds: int) -> tuple[bytes, list[int]]:
+         if not isinstance(msglen, int) or msglen < 0:
+@@ -1492,6 +1601,7 @@ class UNIXSocketStream(_RawSocketMixin, abc.UNIXSocketStream):
+         loop = get_running_loop()
+         fds = array.array("i")
+         await AsyncIOBackend.checkpoint()
++        self._check_broken()
+         with self._receive_guard:
+             while True:
+                 try:
+@@ -1539,22 +1649,30 @@ class UNIXSocketStream(_RawSocketMixin, abc.UNIXSocketStream):
+         fdarray = array.array("i", filenos)
+         ancdata = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, fdarray)]
+         view = memoryview(message)
++        total = len(view)
+         await AsyncIOBackend.checkpoint()
++        self._check_broken()
+         with self._send_guard:
+-            while view:
+-                try:
+-                    bytes_sent = self._raw_socket.sendmsg([view], ancdata)
+-                except BlockingIOError:
+-                    await self._wait_until_writable(loop)
+-                except OSError as exc:
+-                    if self._closing:
+-                        raise ClosedResourceError from None
++            try:
++                while view:
++                    try:
++                        bytes_sent = self._raw_socket.sendmsg([view], ancdata)
++                    except BlockingIOError:
++                        await self._wait_until_writable(loop)
++                    except OSError as exc:
++                        if self._closing:
++                            raise ClosedResourceError from None
++                        else:
++                            raise BrokenResourceError from exc
+                     else:
+-                        raise BrokenResourceError from exc
+-                else:
+-                    view = view[bytes_sent:]
+-                    # The descriptors were sent with the first successful write.
+-                    ancdata = []
++                        view = view[bytes_sent:]
++                        # The descriptors were sent with the first successful write.
++                        ancdata = []
++            except BaseException:
++                if 0 < len(view) < total:
++                    self._broken = True
++
++                raise
+ 
+ 
+ class TCPSocketListener(abc.SocketListener):
+@@ -1593,10 +1711,15 @@ class TCPSocketListener(abc.SocketListener):
+                 finally:
+                     self._accept_scope = None
+ 
+-        client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+-        transport, protocol = await self._loop.connect_accepted_socket(
+-            StreamProtocol, client_sock
+-        )
++        try:
++            client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
++            transport, protocol = await self._loop.connect_accepted_socket(
++                StreamProtocol, client_sock
++            )
++        except BaseException:
++            client_sock.close()
++            raise
++
+         return SocketStream(transport, protocol)
+ 
+     async def aclose(self) -> None:
+@@ -2619,7 +2742,12 @@ class AsyncIOBackend(AsyncBackend):
+     ) -> T_Retval:
+         await cls.checkpoint()
+ 
+-        async with limiter or cls.current_default_thread_limiter():
++        if limiter is None:
++            limiter = cls.current_default_thread_limiter()
++
++        await limiter.acquire()
++        token_transferred = False
++        try:
+             with CancelScope(shield=not abandon_on_cancel) as scope:
+                 context = copy_context()
+                 context.run(set_current_async_library, None)
+@@ -2628,7 +2756,24 @@ class AsyncIOBackend(AsyncBackend):
+                 else:
+                     worker_scope = scope._parent_scope
+ 
+-                return await _threadpool.submit(context, func, args, worker_scope)
++                if not abandon_on_cancel:
++                    return await _threadpool.submit(context, func, args, worker_scope)
++
++                tracker = _AbandonedThreadTracker(limiter)
++                future = _threadpool.submit(
++                    context, func, args, worker_scope, tracker.thread_finished
++                )
++                try:
++                    return await future
++                except BaseException:
++                    # The thread keeps running after being abandoned, so it must keep
++                    # holding its token until it actually finishes, or the limiter
++                    # would allow more threads to run than it should
++                    token_transferred = tracker.abandon()
++                    raise
++        finally:
++            if not token_transferred:
++                limiter.release()
+ 
+     @classmethod
+     def check_cancelled(cls) -> None:
+@@ -2855,7 +3000,12 @@ class AsyncIOBackend(AsyncBackend):
+     async def create_unix_datagram_socket(  # type: ignore[override]
+         cls, raw_socket: socket.socket, remote_path: str | bytes | None
+     ) -> abc.UNIXDatagramSocket | abc.ConnectedUNIXDatagramSocket:
+-        await cls.checkpoint()
++        try:
++            await cls.checkpoint()
++        except BaseException:
++            raw_socket.close()
++            raise
++
+         loop = get_running_loop()
+ 
+         if remote_path:
+diff --git a/src/anyio/_core/_fileio.py b/src/anyio/_core/_fileio.py
+index 661cbfa..7d11ff4 100644
+--- a/src/anyio/_core/_fileio.py
++++ b/src/anyio/_core/_fileio.py
+@@ -29,6 +29,7 @@ from typing import (
+ from .. import to_thread
+ from ..abc import AsyncResource
+ from ._synchronization import CapacityLimiter
++from ._tasks import CancelScope
+ 
+ if sys.version_info >= (3, 14):
+     from pathlib.types import PathInfo
+@@ -110,7 +111,10 @@ class AsyncFile(AsyncResource, Generic[AnyStr]):
+                 break
+ 
+     async def aclose(self) -> None:
+-        return await to_thread.run_sync(self._fp.close, limiter=self._limiter)
++        # Shielded so that the file always gets closed, even if the calling task has
++        # been cancelled
++        with CancelScope(shield=True):
++            await to_thread.run_sync(self._fp.close, limiter=self._limiter)
+ 
+     async def read(self, size: int = -1) -> AnyStr:
+         return await to_thread.run_sync(self._fp.read, size, limiter=self._limiter)
+@@ -264,8 +268,10 @@ class _PathIterator(AsyncIterator[T]):
+     path_cls: type[T]
+ 
+     async def __anext__(self) -> T:
++        # Not abandoned on cancellation, as that would cause the element retrieved
++        # by the worker thread to be lost
+         nextval = await to_thread.run_sync(
+-            next, self.iterator, None, abandon_on_cancel=True, limiter=self.limiter
++            next, self.iterator, None, limiter=self.limiter
+         )
+         if nextval is None:
+             raise StopAsyncIteration from None
+diff --git a/src/anyio/_core/_sockets.py b/src/anyio/_core/_sockets.py
+index bdd493f..d24466f 100644
+--- a/src/anyio/_core/_sockets.py
++++ b/src/anyio/_core/_sockets.py
+@@ -6,7 +6,7 @@ import socket
+ import ssl
+ import stat
+ import sys
+-from collections.abc import Awaitable
++from collections.abc import Awaitable, Iterable
+ from dataclasses import dataclass
+ from functools import partial
+ from ipaddress import IPv4Address, IPv6Address, ip_address
+@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
+ 
+ from .. import ConnectionFailed, to_thread
+ from ..abc import (
++    AsyncResource,
+     ByteStreamConnectable,
+     ConnectedUDPSocket,
+     ConnectedUNIXDatagramSocket,
+@@ -248,12 +249,21 @@ async def connect_tcp(
+ 
+     oserrors: list[OSError] = []
+     try:
+-        async with create_task_group() as tg:
+-            for _af, addr in target_addrs:
+-                event = Event()
+-                tg.start_soon(try_connect, addr, event)
+-                with move_on_after(happy_eyeballs_delay):
+-                    await event.wait()
++        try:
++            async with create_task_group() as tg:
++                for _af, addr in target_addrs:
++                    event = Event()
++                    tg.start_soon(try_connect, addr, event)
++                    with move_on_after(happy_eyeballs_delay):
++                        await event.wait()
++        except BaseException:
++            # If one of the attempts succeeded before we were cancelled (or some other
++            # error occurred), make sure that the connected socket is not leaked
++            if connected_stream is not None:
++                stream_to_close, connected_stream = connected_stream, None
++                await aclose_forcefully(stream_to_close)
++
++            raise
+ 
+         if connected_stream is None:
+             cause = (
+@@ -413,8 +423,7 @@ async def create_tcp_listener(
+ 
+                     listeners.append(asynclib.create_tcp_listener(raw_socket))
+             except BaseException as exc:
+-                for listener in listeners:
+-                    await listener.aclose()
++                await _aclose_all(listeners)
+ 
+                 # If an ephemeral port was requested but binding the assigned port
+                 # failed for another interface, rotate the address list and try again
+@@ -606,7 +615,11 @@ async def create_unix_datagram_socket(
+     raw_socket = await setup_unix_local_socket(
+         local_path, local_mode, socket.SOCK_DGRAM
+     )
+-    return await get_async_backend().create_unix_datagram_socket(raw_socket, None)
++    try:
++        return await get_async_backend().create_unix_datagram_socket(raw_socket, None)
++    except BaseException:
++        raw_socket.close()
++        raise
+ 
+ 
+ async def create_connected_unix_datagram_socket(
+@@ -639,9 +652,13 @@ async def create_connected_unix_datagram_socket(
+     raw_socket = await setup_unix_local_socket(
+         local_path, local_mode, socket.SOCK_DGRAM
+     )
+-    return await get_async_backend().create_unix_datagram_socket(
+-        raw_socket, remote_path
+-    )
++    try:
++        return await get_async_backend().create_unix_datagram_socket(
++            raw_socket, remote_path
++        )
++    except BaseException:
++        raw_socket.close()
++        raise
+ 
+ 
+ async def getaddrinfo(
+@@ -843,6 +860,29 @@ def notify_closing(obj: FileDescriptorLike) -> None:
+ #
+ 
+ 
++async def _aclose_all(resources: Iterable[AsyncResource]) -> None:
++    """
++    Close all the given resources, even if closing one of them raises an exception
++    (such as a cancellation exception).
++
++    The first exception raised is re-raised after every resource has been closed.
++
++    """
++    first_exc: BaseException | None = None
++    for resource in resources:
++        try:
++            await resource.aclose()
++        except BaseException as exc:
++            if first_exc is None:
++                first_exc = exc
++
++    if first_exc is not None:
++        try:
++            raise first_exc
++        finally:
++            del first_exc
++
++
+ def convert_ipv6_sockaddr(
+     sockaddr: tuple[str, int, int, int] | tuple[str, int],
+ ) -> tuple[str, int]:
+@@ -924,11 +964,12 @@ async def setup_unix_local_socket(
+             if mode is not None and sys.platform == "linux":
+                 os.fchmod(raw_socket.fileno(), mode)
+ 
+-            await to_thread.run_sync(raw_socket.bind, path_str, abandon_on_cancel=True)
++            # These are not abandoned on cancellation, as the socket must not be
++            # closed while another thread is still operating on it
++            await to_thread.run_sync(raw_socket.bind, path_str)
+             if mode is not None and sys.platform != "linux":
+                 await to_thread.run_sync(
+-                    partial(os.chmod, path_str, mode, follow_symlinks=False),
+-                    abandon_on_cancel=True,
++                    partial(os.chmod, path_str, mode, follow_symlinks=False)
+                 )
+         except BaseException:
+             raw_socket.close()
+diff --git a/src/anyio/_core/_tempfile.py b/src/anyio/_core/_tempfile.py
+index ca36a51..afc1a24 100644
+--- a/src/anyio/_core/_tempfile.py
++++ b/src/anyio/_core/_tempfile.py
+@@ -17,6 +17,7 @@ from typing import (
+ from .. import to_thread
+ from .._core._fileio import AsyncFile
+ from ..lowlevel import checkpoint_if_cancelled
++from ._tasks import CancelScope
+ 
+ if TYPE_CHECKING:
+     from _typeshed import OpenBinaryMode, OpenTextMode, ReadableBuffer, WriteableBuffer
+@@ -322,15 +323,28 @@ class SpooledTemporaryFile(AsyncFile[AnyStr]):
+         if self._rolled:
+             return
+ 
+-        self._rolled = True
+         buffer = self._fp
+-        position = buffer.tell()
+-        buffer.seek(0)
+-        self._fp = await to_thread.run_sync(
+-            lambda: tempfile.TemporaryFile(**self._tempfile_params)
+-        )
+-        await self.write(buffer.read())
+-        await self.seek(position)
++
++        def create_and_fill() -> Any:
++            # Do everything in one go in the worker thread, so that a cancellation
++            # can't leave the file in a half rolled over state
++            position = buffer.tell()
++            buffer.seek(0)
++            data = buffer.read()
++            fp = tempfile.TemporaryFile(**self._tempfile_params)
++            try:
++                fp.write(data)
++                fp.seek(position)
++            except BaseException:
++                fp.close()
++                buffer.seek(position)
++                raise
++
++            return fp
++
++        new_fp = await to_thread.run_sync(create_and_fill)
++        self._fp = new_fp
++        self._rolled = True
+         buffer.close()
+ 
+     @property
+@@ -499,7 +513,10 @@ class TemporaryDirectory(Generic[AnyStr]):
+         self._tempdir = await to_thread.run_sync(
+             lambda: tempfile.TemporaryDirectory(**params)
+         )
+-        return await to_thread.run_sync(self._tempdir.__enter__)
++        # TemporaryDirectory.__enter__() just returns the name, so there's no need to
++        # do an extra (cancellable) thread round trip here, which could otherwise
++        # leave the directory behind
++        return self._tempdir.__enter__()
+ 
+     async def __aexit__(
+         self,
+@@ -508,13 +525,17 @@ class TemporaryDirectory(Generic[AnyStr]):
+         traceback: TracebackType | None,
+     ) -> None:
+         if self._tempdir is not None:
+-            await to_thread.run_sync(
+-                self._tempdir.__exit__, exc_type, exc_value, traceback
+-            )
++            # Shielded so that the directory always gets cleaned up, even if the
++            # calling task has been cancelled
++            with CancelScope(shield=True):
++                await to_thread.run_sync(
++                    self._tempdir.__exit__, exc_type, exc_value, traceback
++                )
+ 
+     async def cleanup(self) -> None:
+         if self._tempdir is not None:
+-            await to_thread.run_sync(self._tempdir.cleanup)
++            with CancelScope(shield=True):
++                await to_thread.run_sync(self._tempdir.cleanup)
+ 
+ 
+ @overload
+diff --git a/src/anyio/abc/_sockets.py b/src/anyio/abc/_sockets.py
+index d6a1139..c2367e7 100644
+--- a/src/anyio/abc/_sockets.py
++++ b/src/anyio/abc/_sockets.py
+@@ -280,7 +280,13 @@ class SocketListener(Listener[SocketStream], _SocketProvider):
+ 
+             while True:
+                 stream = await self.accept()
+-                task_group.start_soon(handler, stream)
++                try:
++                    task_group.start_soon(handler, stream)
++                except BaseException:
++                    from .._core._resources import aclose_forcefully
++
++                    await aclose_forcefully(stream)
++                    raise
+ 
+ 
+ class UDPSocket(UnreliableObjectStream[UDPPacketType], _SocketProvider):
+diff --git a/src/anyio/from_thread.py b/src/anyio/from_thread.py
+index df45eda..a8ce7b4 100644
+--- a/src/anyio/from_thread.py
++++ b/src/anyio/from_thread.py
+@@ -11,7 +11,7 @@ __all__ = (
+ 
+ import sys
+ from collections.abc import Awaitable, Callable, Coroutine, Generator
+-from concurrent.futures import Future
++from concurrent.futures import Future, InvalidStateError
+ from contextlib import (
+     AbstractAsyncContextManager,
+     AbstractContextManager,
+@@ -174,12 +174,46 @@ class _BlockingAsyncContextManager(AbstractContextManager, Generic[T_co]):
+         return self._exit_future.result()
+ 
+ 
++def _set_future_result(future: Future[T_Retval], value: T_Retval) -> None:
++    """
++    Set the result of a future that may be cancelled concurrently from another thread.
++
++    """
++    try:
++        future.set_result(value)
++    except InvalidStateError:
++        # The future was cancelled (possibly from another thread) in the meantime
++        pass
++
++
++def _set_future_exception(future: Future[Any], exc: BaseException) -> None:
++    """
++    Set the exception of a future that may be cancelled concurrently from another
++    thread.
++
++    """
++    try:
++        future.set_exception(exc)
++    except InvalidStateError:
++        # The future was cancelled (possibly from another thread) in the meantime
++        pass
++
++
+ class _BlockingPortalTaskStatus(TaskStatus):
+     def __init__(self, future: Future):
+         self._future = future
+ 
+     def started(self, value: object = None) -> None:
+-        self._future.set_result(value)
++        if self._future.done():
++            if self._future.cancelled():
++                # The task was cancelled from another thread before it got to report
++                # its startup
++                return
++
++            # Preserve the original behavior (raising InvalidStateError)
++            self._future.set_result(value)
++
++        _set_future_result(self._future, value)
+ 
+ 
+ class BlockingPortal:
+@@ -272,17 +306,20 @@ class BlockingPortal:
+                 retval = retval_or_awaitable
+         except get_cancelled_exc_class():
+             future.cancel()
+-            future.set_running_or_notify_cancel()
++            try:
++                future.set_running_or_notify_cancel()
++            except RuntimeError:
++                # The future was already cancelled and notified (or otherwise
++                # finished) by someone else
++                pass
+         except BaseException as exc:
+-            if not future.cancelled():
+-                future.set_exception(exc)
++            _set_future_exception(future, exc)
+ 
+             # Let base exceptions fall through
+             if not isinstance(exc, Exception):
+                 raise
+         else:
+-            if not future.cancelled():
+-                future.set_result(retval)
++            _set_future_result(future, retval)
+         finally:
+             scope = None  # type: ignore[assignment]
+ 
+@@ -511,12 +548,12 @@ class BlockingPortal:
+                 if future.cancelled():
+                     task_status_future.cancel()
+                 elif future.exception():
+-                    task_status_future.set_exception(future.exception())
++                    _set_future_exception(task_status_future, future.exception())
+                 else:
+                     exc = RuntimeError(
+                         "Task exited without calling task_status.started()"
+                     )
+-                    task_status_future.set_exception(exc)
++                    _set_future_exception(task_status_future, exc)
+ 
+         self._check_running()
+         task_status_future: Future = Future()
+diff --git a/src/anyio/functools.py b/src/anyio/functools.py
+index b0bdfb4..8703d9a 100644
+--- a/src/anyio/functools.py
++++ b/src/anyio/functools.py
+@@ -197,12 +197,31 @@ class AsyncLRUCacheWrapper(Generic[P, T]):
+             # Check if another task filled the cache while we acquired the lock
+             if (cached_value := cache_entry[key][0]) is initial_missing:
+                 self._misses += 1
++                try:
++                    value = await self.__wrapped__(*args, **kwargs)
++                except BaseException:
++                    # The call failed or was cancelled, so nothing gets cached. Remove
++                    # the placeholder unless another task is waiting to retry the call.
++                    if (
++                        not lock.statistics().tasks_waiting
++                        and cache_entry.get(key, (None,))[0] is initial_missing
++                    ):
++                        del cache_entry[key]
++
++                    raise
++
++                # Only update the cache bookkeeping once the value is actually there,
++                # so that a failed or cancelled call can't throw off the size limit
+                 if self._maxsize is not None and self._currsize >= self._maxsize:
+-                    cache_entry.popitem(last=False)
++                    # Evict the least recently used entry holding an actual value
++                    # (skipping placeholders of calls still in progress)
++                    for old_key, (_, old_lock, _) in cache_entry.items():
++                        if old_lock is None and old_key != key:
++                            del cache_entry[old_key]
++                            break
+                 else:
+                     self._currsize += 1
+ 
+-                value = await self.__wrapped__(*args, **kwargs)
+                 expires_at = (
+                     current_time() + self._ttl if self._ttl is not None else None
+                 )
+diff --git a/src/anyio/streams/buffered.py b/src/anyio/streams/buffered.py
+index afc25e3..93333b8 100644
+--- a/src/anyio/streams/buffered.py
++++ b/src/anyio/streams/buffered.py
+@@ -39,8 +39,8 @@ class BufferedByteReceiveStream(ByteReceiveStream):
+     _closed: bool = field(init=False, default=False)
+ 
+     async def aclose(self) -> None:
+-        await self.receive_stream.aclose()
+         self._closed = True
++        await self.receive_stream.aclose()
+ 
+     @property
+     def buffer(self) -> bytes:
+diff --git a/src/anyio/streams/file.py b/src/anyio/streams/file.py
+index b9d7ca4..6b89e3c 100644
+--- a/src/anyio/streams/file.py
++++ b/src/anyio/streams/file.py
+@@ -37,7 +37,12 @@ class _BaseFileStream:
+         self._file = file
+ 
+     async def aclose(self) -> None:
+-        await to_thread.run_sync(self._file.close)
++        from .._core._tasks import CancelScope
++
++        # Shielded so that the file always gets closed, even if the calling task has
++        # been cancelled
++        with CancelScope(shield=True):
++            await to_thread.run_sync(self._file.close)
+ 
+     @property
+     def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
+diff --git a/src/anyio/streams/memory.py b/src/anyio/streams/memory.py
+index 213e441..153bd72 100644
+--- a/src/anyio/streams/memory.py
++++ b/src/anyio/streams/memory.py
+@@ -65,6 +65,22 @@ class _MemoryObjectStreamState(Generic[T_Item]):
+         init=False, default_factory=OrderedDict
+     )
+ 
++    def requeue(self, item: T_Item) -> None:
++        """
++        Put back an item that was handed to a receiver which could not accept it
++        (because it was cancelled), so that it's not lost.
++
++        """
++        while self.waiting_receivers:
++            receive_event, receiver = self.waiting_receivers.popitem(last=False)
++            if not receiver.task_info.has_pending_cancellation():
++                receiver.item = item
++                receive_event.set()
++                return
++
++        # Put it at the front of the buffer to preserve ordering
++        self.buffer.appendleft(item)
++
+     def statistics(self) -> MemoryObjectStreamStatistics:
+         return MemoryObjectStreamStatistics(
+             len(self.buffer),
+@@ -129,6 +145,13 @@ class MemoryObjectReceiveStream(ObjectReceiveStream[T_co], Generic[T_co]):
+ 
+             try:
+                 await receive_event.wait()
++            except BaseException:
++                # If an item was already handed to us, don't let it get lost
++                if hasattr(receiver, "item"):
++                    self._state.requeue(receiver.item)
++                    del receiver.item
++
++                raise
+             finally:
+                 self._state.waiting_receivers.pop(receive_event, None)
+                 if self._waiters is not None:
+diff --git a/src/anyio/streams/stapled.py b/src/anyio/streams/stapled.py
+index 9a75345..cf0fc68 100644
+--- a/src/anyio/streams/stapled.py
++++ b/src/anyio/streams/stapled.py
+@@ -53,8 +53,10 @@ class StapledByteStream(ByteStream):
+         await self.send_stream.aclose()
+ 
+     async def aclose(self) -> None:
+-        await self.send_stream.aclose()
+-        await self.receive_stream.aclose()
++        try:
++            await self.send_stream.aclose()
++        finally:
++            await self.receive_stream.aclose()
+ 
+     @property
+     def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
+@@ -99,8 +101,10 @@ class StapledObjectStream(ObjectStream[T_Item], Generic[T_Item]):
+         await self.send_stream.aclose()
+ 
+     async def aclose(self) -> None:
+-        await self.send_stream.aclose()
+-        await self.receive_stream.aclose()
++        try:
++            await self.send_stream.aclose()
++        finally:
++            await self.receive_stream.aclose()
+ 
+     @property
+     def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
+@@ -148,8 +152,21 @@ class MultiListener(Listener[T_Stream], Generic[T_Stream]):
+                 tg.start_soon(listener.serve, handler, task_group)
+ 
+     async def aclose(self) -> None:
++        # Close every listener, even if closing one of them raises an exception
++        # (such as a cancellation exception)
++        first_exc: BaseException | None = None
+         for listener in self.listeners:
+-            await listener.aclose()
++            try:
++                await listener.aclose()
++            except BaseException as exc:
++                if first_exc is None:
++                    first_exc = exc
++
++        if first_exc is not None:
++            try:
++                raise first_exc
++            finally:
++                del first_exc
+ 
+     @property
+     def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
+diff --git a/src/anyio/streams/text.py b/src/anyio/streams/text.py
+index b3f4bbd..ce0ef5b 100644
+--- a/src/anyio/streams/text.py
++++ b/src/anyio/streams/text.py
+@@ -77,8 +77,10 @@ class TextReceiveStream(ObjectReceiveStream[str]):
+                 return decoded
+ 
+     async def aclose(self) -> None:
+-        await self.transport_stream.aclose()
+-        self._decoder.reset()
++        try:
++            await self.transport_stream.aclose()
++        finally:
++            self._decoder.reset()
+ 
+     @property
+     def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
+@@ -110,8 +112,16 @@ class TextSendStream(ObjectSendStream[str]):
+         self._encoder = encoder_class(errors=self.errors)
+ 
+     async def send(self, item: str) -> None:
++        # Stateful encoders (e.g. ones that emit a BOM or shift sequences) must be
++        # restored to their previous state if the item could not be sent, or the
++        # following output would be garbled
++        state = self._encoder.getstate()
+         encoded = self._encoder.encode(item)
+-        await self.transport_stream.send(encoded)
++        try:
++            await self.transport_stream.send(encoded)
++        except BaseException:
++            self._encoder.setstate(state)
++            raise
+ 
+     async def aclose(self) -> None:
+         await self.transport_stream.aclose()
+@@ -164,8 +174,10 @@ class TextStream(ObjectStream[str]):
+         await self.transport_stream.send_eof()
+ 
+     async def aclose(self) -> None:
+-        await self._send_stream.aclose()
+-        await self._receive_stream.aclose()
++        try:
++            await self._send_stream.aclose()
++        finally:
++            await self._receive_stream.aclose()
+ 
+     @property
+     def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
+diff --git a/src/anyio/streams/tls.py b/src/anyio/streams/tls.py
+index d2a4cb3..c0c0d78 100644
+--- a/src/anyio/streams/tls.py
++++ b/src/anyio/streams/tls.py
+@@ -12,7 +12,7 @@ import re
+ import ssl
+ import sys
+ from collections.abc import Callable, Mapping
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from functools import wraps
+ from ssl import SSLContext
+ from typing import Any, TypeAlias, TypeVar, TypeVarTuple, Unpack
+@@ -90,6 +90,9 @@ class TLSStream(ByteStream):
+     _ssl_object: ssl.SSLObject
+     _read_bio: ssl.MemoryBIO
+     _write_bio: ssl.MemoryBIO
++    #: set if an operation was interrupted after encrypted data had already been
++    #: removed from the outgoing buffer but before it was known to have been sent
++    _broken: bool = field(init=False, default=False)
+ 
+     @classmethod
+     async def wrap(
+@@ -174,9 +177,32 @@ class TLSStream(ByteStream):
+         await wrapper._call_sslobject_method(ssl_object.do_handshake)
+         return wrapper
+ 
++    def _check_broken(self) -> None:
++        if self._broken:
++            raise BrokenResourceError(
++                "a previous operation on this TLS stream was interrupted while "
++                "sending encrypted data"
++            )
++
++    async def _flush_write_bio(self) -> None:
++        """Send all the pending encrypted data to the transport stream."""
++        data = self._write_bio.read()
++        try:
++            await self.transport_stream.send(data)
++        except BaseException as exc:
++            # The encrypted data has been consumed from the outgoing buffer, but we
++            # can't know whether it was sent or not. Any further output would
++            # likely be garbage from the peer's point of view, so this stream can't
++            # be used anymore.
++            if not isinstance(exc, Exception):
++                self._broken = True
++
++            raise
++
+     async def _call_sslobject_method(
+         self, func: Callable[[Unpack[PosArgsT]], T_Retval], *args: *PosArgsT
+     ) -> T_Retval:
++        self._check_broken()
+         while True:
+             try:
+                 result = func(*args)
+@@ -184,7 +210,7 @@ class TLSStream(ByteStream):
+                 try:
+                     # Flush any pending writes first
+                     if self._write_bio.pending:
+-                        await self.transport_stream.send(self._write_bio.read())
++                        await self._flush_write_bio()
+ 
+                     data = await self.transport_stream.receive()
+                 except EndOfStream:
+@@ -196,7 +222,7 @@ class TLSStream(ByteStream):
+                 else:
+                     self._read_bio.write(data)
+             except ssl.SSLWantWriteError:
+-                await self.transport_stream.send(self._write_bio.read())
++                await self._flush_write_bio()
+             except ssl.SSLSyscallError as exc:
+                 self._read_bio.write_eof()
+                 self._write_bio.write_eof()
+@@ -216,7 +242,7 @@ class TLSStream(ByteStream):
+             else:
+                 # Flush any pending writes first
+                 if self._write_bio.pending:
+-                    await self.transport_stream.send(self._write_bio.read())
++                    await self._flush_write_bio()
+ 
+                 return result
+ 
+@@ -233,7 +259,7 @@ class TLSStream(ByteStream):
+         return self.transport_stream, self._read_bio.read()
+ 
+     async def aclose(self) -> None:
+-        if self.standard_compatible:
++        if self.standard_compatible and not self._broken:
+             try:
+                 await self.unwrap()
+             except BaseException:
+diff --git a/src/anyio/to_interpreter.py b/src/anyio/to_interpreter.py
+index 344e5b8..d6f8736 100644
+--- a/src/anyio/to_interpreter.py
++++ b/src/anyio/to_interpreter.py
+@@ -15,6 +15,7 @@ from typing import Any, Final, TypeVar, TypeVarTuple, Unpack
+ from . import current_time, to_thread
+ from ._core._exceptions import BrokenWorkerInterpreter
+ from ._core._synchronization import CapacityLimiter
++from ._core._tasks import CancelScope
+ from .lowlevel import RunVar
+ 
+ if sys.version_info >= (3, 14):
+@@ -211,17 +212,23 @@ async def run_sync(
+             limiter=limiter,
+         )
+     finally:
+-        # Prune workers that have been idle for too long
+-        now = current_time()
+-        while idle_workers:
+-            if now - idle_workers[0].last_used <= MAX_WORKER_IDLE_TIME:
+-                break
+-
+-            await to_thread.run_sync(idle_workers.popleft().destroy, limiter=limiter)
+-
++        # Return the worker to the pool first, so it won't get lost even if the
++        # pruning below is interrupted
+         worker.last_used = current_time()
+         idle_workers.append(worker)
+ 
++        # Prune workers that have been idle for too long (shielded from cancellation
++        # so that a worker removed from the pool always gets destroyed)
++        with CancelScope(shield=True):
++            now = current_time()
++            while idle_workers:
++                if now - idle_workers[0].last_used <= MAX_WORKER_IDLE_TIME:
++                    break
++
++                await to_thread.run_sync(
++                    idle_workers.popleft().destroy, limiter=limiter
++                )
++
+ 
+ def current_default_interpreter_limiter() -> CapacityLimiter:
+     """
+diff --git a/src/anyio/to_process.py b/src/anyio/to_process.py
+index 6e5cfee..e2a213b 100644
+--- a/src/anyio/to_process.py
++++ b/src/anyio/to_process.py
+@@ -165,10 +165,21 @@ async def run_sync(  # type: ignore[return]
+                     protocol=pickle.HIGHEST_PROTOCOL,
+                 )
+                 await send_raw_command(pickled)
+-            except (BrokenWorkerProcess, get_cancelled_exc_class()):
+-                raise
+             except BaseException as exc:
+-                process.kill()
++                # Make sure the worker process doesn't outlive a failed or cancelled
++                # initialization
++                if process.returncode is None:
++                    try:
++                        process.kill()
++                    except ProcessLookupError:
++                        pass
++
++                with CancelScope(shield=True):
++                    await process.aclose()
++
++                if isinstance(exc, (BrokenWorkerProcess, get_cancelled_exc_class())):
++                    raise
++
+                 raise BrokenWorkerProcess(
+                     "Error during worker process initialization"
+                 ) from exc

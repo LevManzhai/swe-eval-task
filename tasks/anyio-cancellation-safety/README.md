@@ -1,7 +1,8 @@
 # anyio: operations that aren't safe to cancel
 
-> **Status: built; full self-check and difficulty check in progress.** See the
-> end of [`NOTES.md`](NOTES.md) for the attempts and their scores.
+> **Status: difficulty check in progress. Attempt 1 failed (34 / 36): it fixed
+> ten of the eleven bugs and never found the eleventh.** Details at the end of
+> [`NOTES.md`](NOTES.md).
 
 [anyio](https://github.com/agronholm/anyio) is the async I/O layer underneath
 httpx, Starlette/FastAPI and a lot of other Python networking code. Its whole
@@ -45,11 +46,10 @@ check against:
   worker thread, a native `Task.cancel()` at a precise checkpoint, a
   `concurrent.futures.Future` cancelled between two lines. A generic fuzzer
   doesn't reach most of them.
-- **Tempting fixes are wrong.** Catching `InvalidStateError` in the portal
-  looks right and isn't (a `Future` cancelled but not yet notified accepts
-  `set_result()` silently). Adding a `checkpoint_if_cancelled()` at the top of
-  `TLSStream.send()` or `SocketStream.receive()` passes the obvious test and
-  misses the real window. Both are in `verifier/wrong_fixes/`.
+- **Tempting fixes are wrong.** Adding a `checkpoint_if_cancelled()` at the top
+  of `TLSStream.send()` or `SocketStream.receive()` passes the obvious test and
+  misses the real window where cancellation lands. Both are in
+  `verifier/wrong_fixes/`.
 
 ## Layout
 
@@ -60,8 +60,8 @@ check against:
 | `environment/starting_state.patch` | reverts the eleven fixes, their tests and their changelog lines |
 | `solution/reference.patch` | the eleven upstream fixes, source code only |
 | `verifier/test_task.py` | the hidden tests |
-| `verifier/alt_fixes/` | a correct solution written quite differently; must pass |
-| `verifier/wrong_fixes/` | fourteen wrong or incomplete solutions; must fail |
+| `verifier/alt_fixes/` | two correct solutions written differently from upstream; must pass |
+| `verifier/wrong_fixes/` | thirteen wrong or incomplete solutions; must fail |
 | `difficulty/` | the patches the one-shot attempts produced |
 | `run.sh` | builds the image and checks all of the above |
 

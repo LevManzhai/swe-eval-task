@@ -109,31 +109,40 @@ Points worth noting:
 
 - the starting state passes the upstream suite and fails the hidden tests;
 - `solution/reference.patch` passes both;
-- `verifier/alt_fixes/01_resend_tls_and_thread_side_rollover.patch` passes
-  both. It is deliberately built differently from upstream: TLS keeps the
-  unsent ciphertext instead of breaking the stream, the rollover runs entirely
-  in the worker thread and only switches the object over at the end,
-  `connect_tcp()` uses a hand-over flag in a `finally`, the temporary-directory
-  creation keeps its checkpoint but cleans up on failure;
-- each of the fourteen `verifier/wrong_fixes/` passes the upstream suite and
+- two alternative solutions pass both:
+  - `verifier/alt_fixes/01_resend_tls_and_thread_side_rollover.patch` is
+    deliberately built differently from upstream: TLS keeps the unsent
+    ciphertext instead of breaking the stream, the rollover runs entirely in the
+    worker thread and only switches the object over at the end, `connect_tcp()`
+    uses a hand-over flag in a `finally`, and the temporary-directory creation
+    keeps its checkpoint but cleans up on failure;
+  - `verifier/alt_fixes/02_portal_catches_invalid_state_error.patch` is the
+    reference with the portal fixed by catching `InvalidStateError` instead of
+    calling `set_running_or_notify_cancel()` first. Then a cancellation that
+    wins the race shows up as `CancelledError` in the waiting thread instead
+    of the result, which the contract allows;
+- each of the thirteen `verifier/wrong_fixes/` passes the upstream suite and
   fails the hidden tests:
   - `01`–`11`: everything fixed except one of the eleven bugs;
-  - `12`: the portal "fixed" by catching `InvalidStateError`. This was my own
-    first attempt at the alternative solution, and the hidden tests caught it.
-    A `concurrent.futures.Future` that has been cancelled but not yet notified
-    accepts `set_result()` without complaint and stops being cancelled, so the
-    exception you expect to catch never comes;
   - `13`, `14`: `checkpoint_if_cancelled()` added at the top of
     `SocketStream.receive()` / `TLSStream.send()` instead of handling
-    cancellation where it can actually land.
+    cancellation where it can actually land. (Number `12` was moved to
+    `alt_fixes/`, see below.)
 
-Two things the self-check found in my own work while I was building this, both
-fixed before any difficulty attempt ran:
+Mistakes the self-check and the first attempt turned up in my own work, all
+fixed. Grading was redone after each fix:
 
 - the TLS "cancelled while blocked" test deadlocked even on the reference
   solution, because both directions of the in-memory transport were
   unbuffered and the server's post-handshake messages had nowhere to go;
-- the alternative solution's portal fix was wrong (now wrong fix `12`).
+- the portal tests demanded the result whenever the call finished first. But
+  when the waiting thread cancels at the same instant, `CancelledError` is just
+  as valid an outcome; the contract only forbids an exception inside the event
+  loop. I'd built a "wrong fix" that caught `InvalidStateError`, and it was
+  actually a correct alternative. Attempt 1 fixed the portal the same way and
+  failed on it under the old test. Now the tests accept either outcome and
+  still require the portal to survive; that patch is `alt_fixes/02`;
+- wrong fix `06` was missing an import, so it failed for the wrong reason.
 
 ### Environment notes
 
@@ -154,4 +163,26 @@ the repository, one try, no hints. I accept the task if at most one attempt
 in three passes the hidden tests. Attempts run one at a time, and I stop as
 soon as the outcome is decided.
 
-Results are added below as they come in.
+| Attempt | Time | Result | What it missed |
+|---|---|---|---|
+| 1 | 18 min, 78 tool calls | **failed**, 34 / 36 | `CapacityLimiter.acquire_on_behalf_of()` |
+
+**Attempt 1** (`difficulty/attempt-1.patch`, 15 files, +491 / −110). It was a
+serious audit. It found and fixed ten of the eleven bugs, plus things that
+weren't in the task: UNIX socket leaks, `to_process` workers, memory object
+streams, `lru_cache` accounting. It never looked at `acquire_on_behalf_of()`.
+There, a native `Task.cancel()` that lands inside the shielded checkpoint after
+a non-blocking acquire makes the method call `release()` for the *current
+task* instead of the borrower. The caller gets `RuntimeError: this borrower
+isn't holding any of this CapacityLimiter's tokens` instead of the
+cancellation, and the borrower's token is never returned. That breaks rule 1
+of the contract (nothing leaks).
+
+It's the same pattern as the one real failure on the tomlkit task: one bug
+with a narrow trigger that the attempt's own testing never reached. The
+difference is that here there were eleven of them, and nothing in the sandbox
+says which places are wrong.
+
+Under the first version of the portal tests the attempt also failed those (see
+above). That was my mistake, not the attempt's, and the score here is from the
+corrected tests.

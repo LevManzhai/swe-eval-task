@@ -63,10 +63,18 @@ index bdd493f..733341d 100644
          oserrors.clear()
  
 diff --git a/src/anyio/_core/_tempfile.py b/src/anyio/_core/_tempfile.py
-index ca36a51..74f344d 100644
+index ca36a51..5ac46b0 100644
 --- a/src/anyio/_core/_tempfile.py
 +++ b/src/anyio/_core/_tempfile.py
-@@ -322,16 +322,18 @@ class SpooledTemporaryFile(AsyncFile[AnyStr]):
+@@ -17,6 +17,7 @@ from typing import (
+ from .. import to_thread
+ from .._core._fileio import AsyncFile
+ from ..lowlevel import checkpoint_if_cancelled
++from ._tasks import CancelScope
+ 
+ if TYPE_CHECKING:
+     from _typeshed import OpenBinaryMode, OpenTextMode, ReadableBuffer, WriteableBuffer
+@@ -322,16 +323,18 @@ class SpooledTemporaryFile(AsyncFile[AnyStr]):
          if self._rolled:
              return
  
@@ -95,7 +103,7 @@ index ca36a51..74f344d 100644
  
      @property
      def closed(self) -> bool:
-@@ -499,7 +501,7 @@ class TemporaryDirectory(Generic[AnyStr]):
+@@ -499,7 +502,7 @@ class TemporaryDirectory(Generic[AnyStr]):
          self._tempdir = await to_thread.run_sync(
              lambda: tempfile.TemporaryDirectory(**params)
          )
@@ -104,7 +112,7 @@ index ca36a51..74f344d 100644
  
      async def __aexit__(
          self,
-@@ -514,7 +516,10 @@ class TemporaryDirectory(Generic[AnyStr]):
+@@ -514,7 +517,10 @@ class TemporaryDirectory(Generic[AnyStr]):
  
      async def cleanup(self) -> None:
          if self._tempdir is not None:
