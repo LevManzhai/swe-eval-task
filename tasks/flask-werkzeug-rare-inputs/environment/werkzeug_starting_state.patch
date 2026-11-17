@@ -1,0 +1,806 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 9f61763a..dd53159f 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -235,16 +235,6 @@ Version 3.2.0
+     and ``upgrade_insecure_requests`` CSP directives. :pr:`3114`
+ -   The development server does not send an extra ``100 Continue`` response, as
+     Python's base server already sends it. :issue:`3138`
+--   The ``int`` and ``float`` URL converters do not accept non-ASCII digits.
+-    :issue:`3242`
+--   The ``int`` and ``float`` URL converters validate the value when building
+-    URLs. :issue:`3242`
+--   The ``int`` URL converter does not count the negative sign for
+-    ``fixed_digits``. :issue:`3242`
+--   The ``float`` URL converter does not accept values that are too large and
+-    overflow to ``inf``. :issue:`3242`
+--   The ``float`` URL converter does not produce scientific notation, ``inf``,
+-    or ``nan``. :issue:`3146`
+ -   ``Request.if_range`` discards the header if it is an invalid weak ETag.
+     :pr:`3163`
+ -   Use SHA3-256 instead of SHA-1 for generating ETags and the debugger pin.
+@@ -294,8 +284,6 @@ Version 3.2.0
+ -   ``Response.set_data`` closes the previous iterable. :issue:`3320`
+ -   The response removes the ``Content-Length`` header and body for a 205
+     status. :issue:`3320`
+--   Development server cleans up resources if handling client disconnect fails.
+-    :issue:`3328`
+ -   Colorama is never used. Modern Windows terminals support ANSI styles
+     natively. :pr:`3331`
+ -   The ``Response.text`` property is a shortcut for
+@@ -314,24 +302,13 @@ Released 2026-09-27
+     markers on NTFS. :ghsa:`g6x2-hccm-hh4m`
+ -   ``ProfilerMiddleware`` uses ``profiling.tracing`` on Python 3.15.
+     :issue:`3207`
+--   ``uri_to_iri`` and ``iri_to_uri`` preserve empty username, password, and
+-    port 0. :issue:`3189`
+ -   Improve performance of ``parse_options_header``. :pr:`3231`
+ -   Improve performance of ``parse_etags``. :pr:`3231`
+ -   Improve performance of ``parse_cookie``. :pr:`3231`
+--   ``get_host`` also checks that the port is in the valid range. :pr:`3236`
+--   The ``int`` URL converter returns a 404 instead of 500 error when the value
+-    is longer than ``sys.get_int_max_str_digits()``. :issue:`3237`
+ -   Improve debugger PIN generation from cgroup data inside Podman.
+     :issue:`3245`
+--   ``Authorization`` parsing ``basic`` auth disallows non-base64 characters.
+-     :pr:`3248`
+ -   ``application/x-www-form-urlencoded`` form data is no longer limited to
+     ``max_form_memory_size``, only ``max_content_length``. :pr:`3251`
+--   ``LimitedStream.readinto`` does not resize the buffer when it reads less
+-    than the remaining size. :pr:`3253`
+--   Rules with 10 or more converters in a single part assign matched values
+-    correctly. :pr:`3254`
+ -   The invalid ``Range`` suffix length ``-0`` is no longer accepted. :pr:`3255`
+ 
+ 
+diff --git a/src/werkzeug/_header_property.py b/src/werkzeug/_header_property.py
+index d0e0bf64..70a0f0c5 100644
+--- a/src/werkzeug/_header_property.py
++++ b/src/werkzeug/_header_property.py
+@@ -133,15 +133,8 @@ class header_property(t.Generic[T]):
+ 
+         if value is None:
+             del obj.headers[self.name]
+-            return
+-
+-        result = self.dump_func(value)
+-
+-        if not result:
+-            del obj.headers[self.name]
+-            return
+-
+-        obj.headers[self.name] = result
++        else:
++            obj.headers[self.name] = self.dump_func(value)
+ 
+     def __delete__(self, obj: t.Any) -> None:
+         if self.read_only:
+diff --git a/src/werkzeug/datastructures/auth.py b/src/werkzeug/datastructures/auth.py
+index 54f01463..9c023fe5 100644
+--- a/src/werkzeug/datastructures/auth.py
++++ b/src/werkzeug/datastructures/auth.py
+@@ -149,9 +149,7 @@ class Authorization:
+ 
+         if scheme == "basic":
+             try:
+-                username, _, password = (
+-                    base64.b64decode(rest, validate=True).decode().partition(":")
+-                )
++                username, _, password = base64.b64decode(rest).decode().partition(":")
+             except (binascii.Error, UnicodeError):
+                 return None
+ 
+diff --git a/src/werkzeug/http.py b/src/werkzeug/http.py
+index 02e9f839..e02c3ec4 100644
+--- a/src/werkzeug/http.py
++++ b/src/werkzeug/http.py
+@@ -611,9 +611,6 @@ def parse_options_header(value: str | None) -> tuple[str, dict[str, str]]:
+                     else:
+                         # Consume any other character.
+                         quote_pos += 1
+-                else:
+-                    # Scanned all without finding closing quote.
+-                    break
+ 
+         # Continue to the next delimited part, skipping spaces.
+         if m_delim := _parameter_delimiter_re.search(rest, scan_pos):
+diff --git a/src/werkzeug/routing/converters.py b/src/werkzeug/routing/converters.py
+index 8fb505d6..082168cc 100644
+--- a/src/werkzeug/routing/converters.py
++++ b/src/werkzeug/routing/converters.py
+@@ -1,6 +1,5 @@
+ from __future__ import annotations
+ 
+-import math
+ import re
+ import typing as t
+ import uuid
+@@ -125,33 +124,14 @@ class PathConverter(BaseConverter):
+     weight = 200
+ 
+ 
+-class IntegerConverter(BaseConverter):
+-    """An :class:`int` value. Available as ``int`` in rules.
++class NumberConverter(BaseConverter):
++    """Baseclass for `IntegerConverter` and `FloatConverter`.
+ 
+-    Extraneous leading zeros are allowed. Negative zero is allowed. Therefore,
+-    there is not a 1-to-1 unique mapping between URLs and parsed values.
+-
+-    Python limits the length of strings when parsing ints. A value greater than
+-    :func:`sys.get_int_max_str_digits` will not match.
+-
+-    :param map: The map this rule is bound to.
+-    :param fixed_digits: Require a fixed number of digits. For example, ``4``
+-        will only match values like ``0001``. The negative sign is not counted,
+-        ``-0004`` is considered 4 digits.
+-    :param min: The minimum value, inclusive.
+-    :param max: The maximum value, inclusive.
+-    :param signed: Allow negative values.
+-
+-    .. versionchanged:: 3.2
+-        Non-ASCII digits are not allowed. The negative sign is not counted for
+-        ``fixed_digits``. ``to_url`` performs validation.
+-
+-    .. versionchanged:: 0.15
+-        The ``signed`` parameter was added.
++    :internal:
+     """
+ 
+     weight = 50
+-    regex = r"[0-9]+"
++    num_convert: t.Callable[[t.Any], t.Any] = int
+ 
+     def __init__(
+         self,
+@@ -161,87 +141,84 @@ class IntegerConverter(BaseConverter):
+         max: int | None = None,
+         signed: bool = False,
+     ) -> None:
++        if signed:
++            self.regex = self.signed_regex
+         super().__init__(map)
++        self.fixed_digits = fixed_digits
+         self.min = min
+         self.max = max
+-        self.fixed_digits = fixed_digits
+         self.signed = signed
+ 
+-        if signed:
+-            self.regex = f"-?{self.regex}"
+-
+     def to_python(self, value: str) -> t.Any:
+-        if self.fixed_digits and len(value.removeprefix("-")) != self.fixed_digits:
+-            raise ValidationError(f"Must be {self.fixed_digits} digits.")
+-
+-        try:
+-            value_num = int(value)
+-        except ValueError as e:  # if > sys.get_int_max_str_digits()
+-            raise ValidationError() from e
+-
++        if self.fixed_digits and len(value) != self.fixed_digits:
++            raise ValidationError()
++        value_num = self.num_convert(value)
+         if (self.min is not None and value_num < self.min) or (
+             self.max is not None and value_num > self.max
+         ):
+-            raise ValidationError("Outside of allowed range.")
+-
++            raise ValidationError()
+         return value_num
+ 
+     def to_url(self, value: t.Any) -> str:
+-        value = int(value)
++        value_str = str(self.num_convert(value))
++        if self.fixed_digits:
++            value_str = value_str.zfill(self.fixed_digits)
++        return value_str
+ 
+-        if not self.signed and value < 0:
+-            raise ValidationError("Negative values are not allowed.")
++    @property
++    def signed_regex(self) -> str:
++        return f"-?{self.regex}"
+ 
+-        if (self.min is not None and value < self.min) or (
+-            self.max is not None and value > self.max
+-        ):
+-            raise ValidationError("Outside of allowed range.")
+ 
+-        value_str = str(value)
++class IntegerConverter(NumberConverter):
++    """This converter only accepts integer values::
+ 
+-        if self.fixed_digits:
+-            width = self.fixed_digits + (value < 0)
+-            value_str = value_str.zfill(width)
++        Rule("/page/<int:page>")
+ 
+-            if len(value_str) > width:
+-                raise ValidationError(
+-                    f"More than {self.fixed_digits} digits are not allowed."
+-                )
++    By default it only accepts unsigned, positive values. The ``signed``
++    parameter will enable signed, negative values. ::
+ 
+-        return value_str
++        Rule("/page/<int(signed=True):page>")
+ 
++    :param map: The :class:`Map`.
++    :param fixed_digits: The number of fixed digits in the URL. If you
++        set this to ``4`` for example, the rule will only match if the
++        URL looks like ``/0001/``. The default is variable length.
++    :param min: The minimal value.
++    :param max: The maximal value.
++    :param signed: Allow signed (negative) values.
++
++    .. versionadded:: 0.15
++        The ``signed`` parameter.
++    """
++
++    regex = r"\d+"
+ 
+-class FloatConverter(BaseConverter):
+-    """A :class:`float` value. Available as ``float`` in rules.
+ 
+-    Values must have an integer and decimal part, ``4.`` and ``.4`` are not
+-    allowed. Scientific notation, ``inf``, and ``nan`` are not allowed.
++class FloatConverter(NumberConverter):
++    """This converter only accepts floating point values::
+ 
+-    Values that are too large to fit in a float are not allowed; Python would
+-    convert them to ``inf``. Values that are too tiny are allowed; Python
+-    converts them to ``0.0``.
++        Rule("/probability/<float:probability>")
+ 
+-    Extraneous leading and trailing zeros are allowed. Many values, such as
+-    ``0.1``, are not exactly expressible as a float and are converted to the
+-    nearest expressible value. Therefore, there is not a 1-to-1 unique mapping
+-    between URLs and parsed values.
++    By default it only accepts unsigned, positive values. The ``signed``
++    parameter will enable signed, negative values. ::
+ 
+-    :param map: The map this rule is bound to.
+-    :param min: The minimum value, inclusive.
+-    :param max: The maximum value, inclusive.
+-    :param signed: Allow negative values.
++        Rule("/offset/<float(signed=True):offset>")
++
++    :param map: The :class:`Map`.
++    :param min: The minimal value.
++    :param max: The maximal value.
++    :param signed: Allow signed (negative) values.
+ 
+     .. versionchanged:: 3.2
+-        Non-ASCII digits are not allowed. Values that are too large and overflow
+-        to ``inf`` are not allowed. ``to_url`` performs validation and does not
+-        produce scientific notation.
++        Does not produce scientific notation.
+ 
+-    .. versionchanged:: 0.15
+-        The ``signed`` parameter was added.
++    .. versionadded:: 0.15
++        The ``signed`` parameter.
+     """
+ 
+-    weight = 50
+-    regex = r"[0-9]+\.[0-9]+"
++    regex = r"\d+\.\d+"
++    num_convert = float
+ 
+     def __init__(
+         self,
+@@ -250,62 +227,11 @@ class FloatConverter(BaseConverter):
+         max: float | None = None,
+         signed: bool = False,
+     ) -> None:
+-        super().__init__(map)
+-        self.min = min
+-        self.max = max
+-        self.signed = signed
+-
+-        if signed:
+-            self.regex = f"-?{self.regex}"
+-
+-    def to_python(self, value: str) -> t.Any:
+-        value_num: float = float(value)
+-        # will convert too tiny to 0.0, too large to inf
+-
+-        if math.isinf(value_num):
+-            raise ValidationError("Too large.")
+-
+-        if (self.min is not None and value_num < self.min) or (
+-            self.max is not None and value_num > self.max
+-        ):
+-            raise ValidationError("Outside of allowed range.")
+-
+-        return value_num
++        super().__init__(map, min=min, max=max, signed=signed)  # type: ignore
+ 
+     def to_url(self, value: t.Any) -> str:
+-        value = float(value)
+-
+-        if not math.isfinite(value):
+-            raise ValidationError("Infinity or NaN are not allowed.")
+-
+-        if not self.signed and value < 0:
+-            raise ValidationError("Negative values are not allowed.")
+-
+-        if (self.min is not None and value < self.min) or (
+-            self.max is not None and value > self.max
+-        ):
+-            raise ValidationError("Outside of allowed range.")
+-
+-        # Use `str(value)` if it doesn't produce scientific notation.
+-        if "e" not in (value_str := str(value)):
+-            return value_str
+-
+-        sig, _, exp_str = value_str.partition("e")
+-        left, _, right = sig.partition(".")
+-        exp = int(exp_str)
+-
+-        # A big number. Expand trailing zeros in the integer part.
+-        if exp > 0:
+-            return f"{left}{right}{'0' * (exp - len(right))}.0"
+-
+-        # A small number. Expand leading zeros in the fraction part.
+-        if left.startswith("-"):
+-            left = left[1:]
+-            start = "-0"
+-        else:
+-            start = "0"
+-
+-        return f"{start}.{'0' * (-exp - len(left))}{left}{right}"
++        # f format ensures no scientific notation, but forces trailing zeroes
++        return f"{self.num_convert(value):f}".rstrip("0")
+ 
+ 
+ class UUIDConverter(BaseConverter):
+diff --git a/src/werkzeug/routing/matcher.py b/src/werkzeug/routing/matcher.py
+index f416b1b8..ba12ed63 100644
+--- a/src/werkzeug/routing/matcher.py
++++ b/src/werkzeug/routing/matcher.py
+@@ -143,14 +143,13 @@ class StateMachineMatcher:
+                             remaining = [""]
+ 
+                     converter_groups = sorted(
+-                        (
+-                            item
+-                            for item in match.groupdict().items()
+-                            if item[0].startswith("__werkzeug_")
+-                        ),
+-                        key=lambda item: int(item[0][11:]),
++                        match.groupdict().items(), key=lambda entry: entry[0]
+                     )
+-                    groups = [item[1] for item in converter_groups]
++                    groups = [
++                        value
++                        for key, value in converter_groups
++                        if key.startswith("__werkzeug_")
++                    ]
+                     rv = _match(new_state, remaining, values + groups)
+                     if rv is not None:
+                         return rv
+@@ -195,8 +194,8 @@ class StateMachineMatcher:
+             for name, value in zip(rule._converters.keys(), values, strict=True):
+                 try:
+                     value = rule._converters[name].to_python(value)
+-                except ValidationError as e:
+-                    raise NoMatch(have_match_for, websocket_mismatch) from e
++                except ValidationError:
++                    raise NoMatch(have_match_for, websocket_mismatch) from None
+                 result[str(name)] = value
+             if rule.defaults:
+                 result.update(rule.defaults)
+diff --git a/src/werkzeug/sansio/utils.py b/src/werkzeug/sansio/utils.py
+index e0e6461c..60d691e0 100644
+--- a/src/werkzeug/sansio/utils.py
++++ b/src/werkzeug/sansio/utils.py
+@@ -16,7 +16,7 @@ _host_re = re.compile(
+     |
+         \[[a-f0-9]*:[a-f0-9.:]+]  # ipv6
+     )
+-    (?::(?P<port>[1-9][0-9]{,4}))?  # optional port
++    (?::[0-9]+)?  # optional port
+     """,
+     flags=re.ASCII | re.IGNORECASE | re.VERBOSE,
+ )
+@@ -50,13 +50,10 @@ def host_is_trusted(
+     if not hostname:
+         return False
+ 
+-    if (m := _host_re.fullmatch(hostname)) is None:
++    if _host_re.fullmatch(hostname) is None:
+         return False
+ 
+-    hostname, port_str = m.groups()
+-
+-    if port_str and not (1 <= int(port_str) <= 65535):
+-        return False
++    hostname = hostname.partition(":")[0]
+ 
+     if not trusted_list:
+         return True
+diff --git a/src/werkzeug/serving.py b/src/werkzeug/serving.py
+index 51a752ce..6bed9e47 100644
+--- a/src/werkzeug/serving.py
++++ b/src/werkzeug/serving.py
+@@ -14,7 +14,6 @@ It provides features like interactive debugging and code reloading. Use
+ 
+ from __future__ import annotations
+ 
+-import contextlib
+ import datetime as dt
+ import errno
+ import io
+@@ -336,40 +335,34 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
+                 if chunk_response:
+                     self.wfile.write(b"0\r\n\r\n")
+             finally:
++                # Check for any remaining data in the read socket, and discard it. This
++                # will read past request.max_content_length, but lets the client see a
++                # 413 response instead of a connection reset failure. If we supported
++                # keep-alive connections, this naive approach would break by reading the
++                # next request line. Since we know that write (above) closes every
++                # connection we can read everything.
++                selector = selectors.DefaultSelector()
++                selector.register(self.connection, selectors.EVENT_READ)
++                total_size = 0
++                total_reads = 0
++
++                # A timeout of 0 tends to fail because a client needs a small amount of
++                # time to continue sending its data.
++                while selector.select(timeout=0.01):
++                    # Only read 10MB into memory at a time.
++                    data = self.rfile.read(10_000_000)
++                    total_size += len(data)
++                    total_reads += 1
++
++                    # Stop reading on no data, >=10GB, or 1000 reads. If a client sends
++                    # more than that, they'll get a connection reset failure.
++                    if not data or total_size >= 10_000_000_000 or total_reads > 1000:
++                        break
++
++                selector.close()
++
+                 if hasattr(application_iter, "close"):
+-                    close_iter: contextlib.AbstractContextManager[t.Any] = (
+-                        contextlib.closing(application_iter)
+-                    )
+-                else:
+-                    close_iter = contextlib.nullcontext()
+-
+-                with close_iter, selectors.DefaultSelector() as selector:
+-                    # Check for any remaining data in the read socket, and discard it.
+-                    # This will read past request.max_content_length, but lets the
+-                    # client see a 413 response instead of a connection reset failure.
+-                    # If we supported keep-alive connections, this naive approach would
+-                    # break by reading the next request line. Since we know that write
+-                    # (above) closes every connection we can read everything.
+-                    selector.register(self.connection, selectors.EVENT_READ)
+-                    total_size = 0
+-                    total_reads = 0
+-
+-                    # A timeout of 0 tends to fail because a client needs a small amount
+-                    # of time to continue sending its data.
+-                    while selector.select(timeout=0.01):
+-                        # Only read 10MB into memory at a time.
+-                        data = self.rfile.read(10_000_000)
+-                        total_size += len(data)
+-                        total_reads += 1
+-
+-                        # Stop reading on no data, >=10GB, or 1000 reads. If a client
+-                        # sends more than that, they'll get a connection reset failure.
+-                        if (
+-                            not data
+-                            or total_size >= 10_000_000_000
+-                            or total_reads > 1_000
+-                        ):
+-                            break
++                    application_iter.close()
+ 
+         try:
+             execute(self.server.app)
+diff --git a/src/werkzeug/urls.py b/src/werkzeug/urls.py
+index eaa6fc48..ab851bee 100644
+--- a/src/werkzeug/urls.py
++++ b/src/werkzeug/urls.py
+@@ -68,9 +68,6 @@ def uri_to_iri(uri: str) -> str:
+ 
+     :param uri: The URI to convert.
+ 
+-    .. versionchanged:: 3.1.9
+-        Empty username, password, and port 0 are preserved.
+-
+     .. versionchanged:: 3.0
+         Passing a tuple or bytes, and the ``charset`` and ``errors`` parameters,
+         are removed.
+@@ -98,13 +95,13 @@ def uri_to_iri(uri: str) -> str:
+     if ":" in netloc:
+         netloc = f"[{netloc}]"
+ 
+-    if parts.port is not None:
++    if parts.port:
+         netloc = f"{netloc}:{parts.port}"
+ 
+-    if parts.username is not None:
++    if parts.username:
+         auth = _unquote_user(parts.username)
+ 
+-        if parts.password is not None:
++        if parts.password:
+             password = _unquote_user(parts.password)
+             auth = f"{auth}:{password}"
+ 
+@@ -122,9 +119,6 @@ def iri_to_uri(iri: str) -> str:
+ 
+     :param iri: The IRI to convert.
+ 
+-    .. versionchanged:: 3.1.9
+-        Empty username, password, and port 0 are preserved.
+-
+     .. versionchanged:: 3.0
+         Passing a tuple or bytes, the ``charset`` and ``errors`` parameters,
+         and the ``safe_conversion`` parameter, are removed.
+@@ -156,13 +150,13 @@ def iri_to_uri(iri: str) -> str:
+     if ":" in netloc:
+         netloc = f"[{netloc}]"
+ 
+-    if parts.port is not None:
++    if parts.port:
+         netloc = f"{netloc}:{parts.port}"
+ 
+-    if parts.username is not None:
++    if parts.username:
+         auth = quote(parts.username, safe="%!$&'()*+,;=")
+ 
+-        if parts.password is not None:
++        if parts.password:
+             password = quote(parts.password, safe="%!$&'()*+,;=")
+             auth = f"{auth}:{password}"
+ 
+diff --git a/src/werkzeug/wsgi.py b/src/werkzeug/wsgi.py
+index eb8c4aa4..70ba4be8 100644
+--- a/src/werkzeug/wsgi.py
++++ b/src/werkzeug/wsgi.py
+@@ -552,11 +552,7 @@ class _LimitedStream(io.RawIOBase):
+                     return 0
+ 
+                 if out_size:
+-                    # Need to slice both sides. Math here is complicated.
+-                    # size=10, remaining=5, out_size=3, remaining > out_size
+-                    # Without slicing temp_b (b[:s] = tb), would try to
+-                    # put 5 bytes into 3 bytes, causing b to resize to 12.
+-                    b[:out_size] = temp_b[:out_size]
++                    b[:out_size] = temp_b
+         else:
+             # WSGI requires that stream.read is available.
+             try:
+diff --git a/tests/sansio/test_utils.py b/tests/sansio/test_utils.py
+index 8aea0883..a2a039a3 100644
+--- a/tests/sansio/test_utils.py
++++ b/tests/sansio/test_utils.py
+@@ -45,17 +45,7 @@ def test_get_host_missing() -> None:
+ 
+ 
+ @pytest.mark.parametrize(
+-    "value",
+-    [
+-        "",
+-        "a.test:8080@b.test",
+-        "a.test:port",
+-        "[z:443]:8080",
+-        "a.test:0",
+-        "a.test:65536",
+-        "a.test:0443",
+-        "a.test:",
+-    ],
++    "value", ["", "a.test:8080@b.test", "a.test:port", "[z:443]:8080"]
+ )
+ def test_get_host_invalid(value: str | None) -> None:
+     assert get_host("http", value, None) == ""
+diff --git a/tests/test_http.py b/tests/test_http.py
+index a9e9c8f7..8d4277a0 100644
+--- a/tests/test_http.py
++++ b/tests/test_http.py
+@@ -232,11 +232,6 @@ class TestHTTPUtility:
+         content = base64.b64encode(b"\xffser:pass").decode()
+         assert Authorization.from_header(f"Basic {content}") is None
+ 
+-    def test_authorization_basic_validate(self):
+-        """Non-alphabet characters are rejected."""
+-        content = "!".join(base64.b64encode(b"test").decode())
+-        assert Authorization.from_header(f"Basic {content}") is None
+-
+     def test_authorization_eq(self):
+         basic1 = Authorization.from_header("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")
+         basic2 = Authorization(
+diff --git a/tests/test_routing.py b/tests/test_routing.py
+index 46d28821..5dd7a071 100644
+--- a/tests/test_routing.py
++++ b/tests/test_routing.py
+@@ -2,7 +2,6 @@ from __future__ import annotations
+ 
+ import collections.abc as cabc
+ import gc
+-import sys
+ import typing as t
+ import uuid
+ 
+@@ -465,6 +464,35 @@ def test_defaults():
+     assert adapter.build("foo", {"page": 2}) == "/foo/2"
+ 
+ 
++def test_negative():
++    map = r.Map(
++        [
++            r.Rule("/foos/<int(signed=True):page>", endpoint="foos"),
++            r.Rule("/bars/<float(signed=True):page>", endpoint="bars"),
++            r.Rule("/foo/<int:page>", endpoint="foo"),
++            r.Rule("/bar/<float:page>", endpoint="bar"),
++        ]
++    )
++    adapter = map.bind("example.org", "/")
++
++    assert adapter.match("/foos/-2") == ("foos", {"page": -2})
++    assert adapter.match("/foos/-50") == ("foos", {"page": -50})
++    assert adapter.match("/bars/-2.0") == ("bars", {"page": -2.0})
++    assert adapter.match("/bars/-0.185") == ("bars", {"page": -0.185})
++
++    # Make sure signed values are rejected in unsigned mode
++    pytest.raises(NotFound, lambda: adapter.match("/foo/-2"))
++    pytest.raises(NotFound, lambda: adapter.match("/foo/-50"))
++    pytest.raises(NotFound, lambda: adapter.match("/bar/-0.185"))
++    pytest.raises(NotFound, lambda: adapter.match("/bar/-2.0"))
++
++
++def test_float_no_scientific():
++    map = r.Map([r.Rule("/<float:v>", endpoint="a")])
++    adapter = map.bind("test.example")
++    assert "e" not in adapter.build("a", {"v": 0.00001})
++
++
+ def test_greedy():
+     map = r.Map(
+         [
+@@ -844,100 +872,6 @@ def test_default_converters():
+     assert "foo" not in r.Map.default_converters
+ 
+ 
+-_converter_match_params = {
+-    "int": {
+-        "positive": ({}, "123", 123),
+-        "unsigned negative": ({}, "-123", None),
+-        "Unicode digits": ({}, "١٢٣", None),
+-        "max digits": ({}, "1" * (sys.get_int_max_str_digits() + 1), None),
+-        "negative max digits": (
+-            {"signed": True},
+-            "-" + "1" * (sys.get_int_max_str_digits() + 1),
+-            None,
+-        ),
+-        "negative": ({"signed": True}, "-123", -123),
+-        "fixed positive": ({"fixed_digits": 4}, "0123", 123),
+-        "fixed unsigned negative": ({"fixed_digits": 4}, "-0123", None),
+-        "fixed short": ({"fixed_digits": 4}, "123", None),
+-        "fixed short negative": ({"fixed_digits": 4}, "-123", None),
+-        "fixed long": ({"fixed_digits": 4}, "10000", None),
+-        "fixed negative": ({"fixed_digits": 4, "signed": True}, "-0123", -123),
+-        "range": ({"min": 100, "max": 900}, "500", 500),
+-        "range min": ({"min": 100, "max": 900}, "50", None),
+-        "range max": ({"min": 100, "max": 900}, "950", None),
+-        "fixed range": ({"min": 100, "max": 900, "fixed_digits": 4}, "0500", 500),
+-        "fixed range min": ({"min": 100, "max": 900, "fixed_digits": 4}, "0050", None),
+-        "fixed range max": ({"min": 100, "max": 900, "fixed_digits": 4}, "0950", None),
+-        "build unsigned negative": ({}, None, -123),
+-        "build range": ({"min": 100}, None, 50),
+-        "build fixed too large": ({"fixed_digits": 4}, None, 12345),
+-    },
+-    "float": {
+-        "positive": ({}, "1.23", 1.23),
+-        "unsigned negative": ({}, "-1.23", None),
+-        "no integer part": ({}, ".4", None),
+-        "no fraction part": ({}, "4.", None),
+-        "Unicode digits": ({}, "١٢٣.0", None),
+-        "overflow": ({}, "1" * 400, None),
+-        "negative": ({"signed": True}, "-1.23", -1.23),
+-        "negative zero": ({"signed": True}, "-0.0", -0.0),
+-        "range": ({"min": 1.5, "max": 6.2}, "5.0", 5.0),
+-        "range min": ({"min": 1.5, "max": 6.2}, "1.4", None),
+-        "range max": ({"min": 1.5, "max": 6.2}, "6.25", None),
+-        "no exp small": ({}, "0.00001", 0.00001),
+-        "no exp small negative": ({"signed": True}, "-0.00001", -0.00001),
+-        "no exp large": ({}, "10000000000000000.0", 10000000000000000.0),
+-        "build inf": ({}, None, float("inf")),
+-        "build nan": ({}, None, float("nan")),
+-        "build unsigned negative": ({}, None, -123.0),
+-        "build range": ({"min": 1.5}, None, 1.0),
+-    },
+-}
+-
+-
+-@pytest.mark.parametrize(
+-    ("name", "kwargs", "url", "value"),
+-    [
+-        pytest.param(name, *params, id=f"{name} {message}")
+-        for name, param_map in _converter_match_params.items()
+-        for message, params in param_map.items()
+-    ],
+-)
+-def test_converter(
+-    name: str,
+-    kwargs: dict[str, t.Any],
+-    url: str | None,
+-    value: t.Any | None,
+-) -> None:
+-    """Test how a configured converter matches and builds.
+-
+-    :param name: Name of the converter.
+-    :param kwargs: Arguments to pass to the converter.
+-    :param url: URL value to match into ``value``. If ``None``, test that
+-        building ``value`` fails.
+-    :param value: Value to build into ``url``. If ``None``, test that
+-        matching ``url`` fails.
+-    """
+-    kwargs_str = ", ".join(f"{k}={v}" for k, v in kwargs.items())
+-    url_map = r.Map([r.Rule(f"/<{name}({kwargs_str}):a>", endpoint="a")])
+-    bound_map = url_map.bind("a.test")
+-    path = f"/{url}"
+-
+-    if url is not None:
+-        if value is not None:
+-            assert bound_map.match(path)[1]["a"] == value
+-        else:
+-            with pytest.raises(NotFound):
+-                bound_map.match()
+-
+-    if value is not None:
+-        if url is not None:
+-            assert bound_map.build("a", {"a": value}) == path
+-        else:
+-            with pytest.raises(r.BuildError):
+-                bound_map.build("a", {"a": value})
+-
+-
+ def test_uuid_converter():
+     m = r.Map([r.Rule("/a/<uuid:a_uuid>", endpoint="a")])
+     a = m.bind("example.org", "/")
+@@ -1000,17 +934,6 @@ def test_nested_regex_groups():
+     assert kwargs["end"] == "2023-02-16T23:46:36.266Z"
+ 
+ 
+-def test_part_converter_order():
+-    """Match groups within a single part are sorted numerically.
+-
+-    ``__werkzeug_2`` should sort before ``__werkzeug_10``.
+-    """
+-    m = r.Map([r.Rule(f"/{'-'.join(f'<int:a{i}>' for i in range(11))}", endpoint="a")])
+-    a = m.bind("a.test")
+-    _, args = a.match(f"/{'-'.join(str(i) for i in range(11))}")
+-    assert args == {f"a{i}": i for i in range(11)}
+-
+-
+ def test_anyconverter():
+     m = r.Map(
+         [
+diff --git a/tests/test_urls.py b/tests/test_urls.py
+index 462f1a7f..101b886e 100644
+--- a/tests/test_urls.py
++++ b/tests/test_urls.py
+@@ -104,17 +104,3 @@ def test_iri_to_uri_dont_quote_valid_code_points():
+ def test_itms_services() -> None:
+     url = "itms-services://?action=download-manifest&url=https://test.example/path"
+     assert urls.iri_to_uri(url) == url
+-
+-
+-@pytest.mark.parametrize(
+-    "value",
+-    ["http://:p@d.test", "http://u:@d.test", "http://:@d.test", "http://u@d.test"],
+-)
+-def test_uri_empty_auth(value: str) -> None:
+-    assert urls.uri_to_iri(value) == value
+-    assert urls.iri_to_uri(value) == value
+-
+-
+-def test_uri_port_0() -> None:
+-    assert urls.uri_to_iri("http://d.test:0") == "http://d.test:0"
+-    assert urls.iri_to_uri("http://d.test:0") == "http://d.test:0"

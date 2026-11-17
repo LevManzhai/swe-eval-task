@@ -1,0 +1,133 @@
+diff --git a/src/flask/app.py b/src/flask/app.py
+index 3965903..1f2756d 100644
+--- a/src/flask/app.py
++++ b/src/flask/app.py
+@@ -35,6 +35,8 @@ from .globals import g
+ from .globals import request
+ from .globals import session
+ from .helpers import _CollectErrors
++from .helpers import _parse_port
++from .helpers import _split_host_port
+ from .helpers import get_debug_flag
+ from .helpers import get_flashed_messages
+ from .helpers import get_load_dotenv
+@@ -729,7 +731,15 @@ class Flask(App):
+         sn_host = sn_port = None
+ 
+         if server_name:
+-            sn_host, _, sn_port = server_name.partition(":")
++            # Handles "[::1]:8080" IPv6 literals as well as "host:port".
++            sn_host, sn_port = _split_host_port(server_name)
++
++        host_port = None
++
++        if host:
++            # The host may be given as "host:port", or a bracketed IPv6
++            # literal. The server needs the bare host.
++            host, host_port = _split_host_port(host)
+ 
+         if not host:
+             if sn_host:
+@@ -738,9 +748,11 @@ class Flask(App):
+                 host = "127.0.0.1"
+ 
+         if port or port == 0:
+-            port = int(port)
++            port = _parse_port(port, allow_zero=True)
++        elif host_port:
++            port = _parse_port(host_port, allow_zero=True)
+         elif sn_port:
+-            port = int(sn_port)
++            port = _parse_port(sn_port, allow_zero=True)
+         else:
+             port = 5000
+ 
+diff --git a/src/flask/helpers.py b/src/flask/helpers.py
+index 5073bea..fd2682a 100644
+--- a/src/flask/helpers.py
++++ b/src/flask/helpers.py
+@@ -677,3 +677,57 @@ class _CollectErrors:
+         """Raise if any errors were collected."""
+         if self.errors:
+             raise BaseExceptionGroup(message, self.errors)
++
++
++def _split_host_port(value: str) -> tuple[str, str | None]:
++    """Split a ``host`` or ``host:port`` value into the host name and the port
++    string, or ``None`` if there is no port. A bracketed IPv6 literal such as
++    ``[::1]:8080`` is returned without brackets. An unbracketed value with
++    more than one colon is treated as an IPv6 literal without a port.
++
++    :meta private:
++    """
++    if value.startswith("["):
++        host, sep, rest = value[1:].partition("]")
++
++        if not sep or (rest and not rest.startswith(":")):
++            raise ValueError(f"Invalid host {value!r}.")
++
++        return host, (rest[1:] if rest else None)
++
++    if value.count(":") > 1:
++        # IPv6 literal without brackets, can't have a port.
++        return value, None
++
++    host, sep, port = value.partition(":")
++    return host, (port if sep else None)
++
++
++def _parse_port(value: str | int, allow_zero: bool = False) -> int:
++    """Parse a TCP port. It must be an integer from 1 to 65535, written with
++    ASCII digits and no leading zeros. If ``allow_zero`` is enabled, ``0`` is
++    also accepted, to bind to any available port.
++
++    :meta private:
++    """
++    if isinstance(value, bool):
++        raise ValueError(f"Invalid port {value!r}.")
++
++    if isinstance(value, int):
++        port = value
++    else:
++        value_str = str(value)
++
++        if not (
++            value_str.isascii()
++            and value_str.isdigit()
++            and (value_str == "0" or not value_str.startswith("0"))
++        ):
++            raise ValueError(f"Invalid port {value!r}.")
++
++        port = int(value_str)
++
++    if not (0 if allow_zero else 1) <= port <= 65535:
++        raise ValueError(f"Invalid port {value!r}.")
++
++    return port
+diff --git a/src/flask/json/tag.py b/src/flask/json/tag.py
+index 8dc3629..08926e3 100644
+--- a/src/flask/json/tag.py
++++ b/src/flask/json/tag.py
+@@ -167,7 +167,7 @@ class TagBytes(JSONTag):
+         return b64encode(value).decode("ascii")
+ 
+     def to_python(self, value: t.Any) -> t.Any:
+-        return b64decode(value)
++        return b64decode(value, validate=True)
+ 
+ 
+ class TagMarkup(JSONTag):
+diff --git a/src/flask/testing.py b/src/flask/testing.py
+index 68b1ab4..1d9bdc1 100644
+--- a/src/flask/testing.py
++++ b/src/flask/testing.py
+@@ -177,7 +177,8 @@ class FlaskClient(Client):
+             app.session_interface.save_session(app, sess, resp)
+ 
+         self._update_cookies_from_response(
+-            ctx.request.host.partition(":")[0],
++            # Same as the test client, handles IPv6 "[::1]:8080" hosts.
++            urlsplit(ctx.request.base_url).hostname or "localhost",
+             ctx.request.path,
+             resp.headers.getlist("Set-Cookie"),
+         )

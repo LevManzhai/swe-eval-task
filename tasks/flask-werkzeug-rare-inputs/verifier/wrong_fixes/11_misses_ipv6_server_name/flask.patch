@@ -1,0 +1,13 @@
+diff --git a/src/flask/testing.py b/src/flask/testing.py
+index 68b1ab48..8d058ca0 100644
+--- a/src/flask/testing.py
++++ b/src/flask/testing.py
+@@ -177,7 +177,7 @@ class FlaskClient(Client):
+             app.session_interface.save_session(app, sess, resp)
+ 
+         self._update_cookies_from_response(
+-            ctx.request.host.partition(":")[0],
++            urlsplit(ctx.request.host_url).hostname or "localhost",
+             ctx.request.path,
+             resp.headers.getlist("Set-Cookie"),
+         )

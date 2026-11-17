@@ -14,6 +14,7 @@ on:
         default: tomlkit-conformance
         type: choice
         options:
+          - flask-werkzeug-rare-inputs
           - aiohttp-http-edge-cases
           - tomlkit-conformance
           - anyio-cancellation-safety
