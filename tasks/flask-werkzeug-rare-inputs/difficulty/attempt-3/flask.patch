@@ -1,0 +1,178 @@
+diff --git a/src/flask/app.py b/src/flask/app.py
+index 3965903..cce0eeb 100644
+--- a/src/flask/app.py
++++ b/src/flask/app.py
+@@ -35,6 +35,8 @@ from .globals import g
+ from .globals import request
+ from .globals import session
+ from .helpers import _CollectErrors
++from .helpers import _parse_port
++from .helpers import _split_host_port
+ from .helpers import get_debug_flag
+ from .helpers import get_flashed_messages
+ from .helpers import get_load_dotenv
+@@ -104,6 +106,28 @@ def add_ctx(f: F) -> F:
+     return update_wrapper(wrapper, f)  # type: ignore[return-value]
+ 
+ 
++
++def _check_run_port(port: t.Any) -> int:
++    """Validate the port given to :meth:`Flask.run`. ``0`` lets the OS choose
++    a port, otherwise it must be 1 to 65535. A string must be written with
++    ASCII digits and without leading zeros.
++    """
++    if isinstance(port, str):
++        if port == "0":
++            return 0
++
++        if (value := _parse_port(port)) is None:
++            raise ValueError(f"Invalid port: {port!r}")
++
++        return value
++
++    value = int(port)
++
++    if value != port or not 0 <= value <= 65535:
++        raise ValueError(f"Invalid port: {port!r}")
++
++    return value
++
+ class Flask(App):
+     """The flask object implements a WSGI application and acts as the central
+     object.  It is passed the name of the module or package of the
+@@ -726,21 +750,34 @@ class Flask(App):
+             self.debug = bool(debug)
+ 
+         server_name = self.config.get("SERVER_NAME")
+-        sn_host = sn_port = None
++        sn_host: str | None = None
++        sn_port: str | None = None
+ 
+         if server_name:
+-            sn_host, _, sn_port = server_name.partition(":")
++            sn_host, sn_port = _split_host_port(server_name)
+ 
+-        if not host:
+-            if sn_host:
+-                host = sn_host
+-            else:
+-                host = "127.0.0.1"
++        host_port: str | None = None
++
++        if host:
++            if "://" not in host:
++                # The host may be given as host:port, or as a bracketed IPv6
++                # literal with or without a port.
++                host, host_port = _split_host_port(host)
++        elif sn_host:
++            host = sn_host
++        else:
++            host = "127.0.0.1"
++
++        if host.startswith("[") and host.endswith("]"):
++            # The server binds to the IPv6 address without brackets.
++            host = host[1:-1]
+ 
+         if port or port == 0:
+-            port = int(port)
+-        elif sn_port:
+-            port = int(sn_port)
++            port = _check_run_port(port)
++        elif host_port is not None:
++            port = _check_run_port(host_port)
++        elif sn_port is not None:
++            port = _check_run_port(sn_port)
+         else:
+             port = 5000
+ 
+diff --git a/src/flask/helpers.py b/src/flask/helpers.py
+index 5073bea..296b393 100644
+--- a/src/flask/helpers.py
++++ b/src/flask/helpers.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import importlib.util
+ import os
++import re
+ import sys
+ import typing as t
+ from datetime import datetime
+@@ -677,3 +678,49 @@ class _CollectErrors:
+         """Raise if any errors were collected."""
+         if self.errors:
+             raise BaseExceptionGroup(message, self.errors)
++
++
++_port_re = re.compile(r"[1-9][0-9]{0,4}", re.ASCII)
++
++
++def _parse_port(value: str) -> int | None:
++    """Parse a TCP port, 1 to 65535 written with ASCII digits and without
++    leading zeros. Returns ``None`` if the value is not valid.
++    """
++    if _port_re.fullmatch(value) is None:
++        return None
++
++    port = int(value)
++
++    if port > 65535:
++        return None
++
++    return port
++
++
++def _split_host_port(value: str) -> tuple[str, str | None]:
++    """Split a ``host:port`` value into the host and the port string, or
++    ``None`` if there is no port. A bracketed IPv6 literal such as
++    ``[::1]:8080`` is handled, and the brackets are kept on the host. An
++    unbracketed IPv6 address such as ``::1`` is treated as a host without a
++    port.
++    """
++    if value.startswith("["):
++        end = value.find("]")
++
++        if end != -1:
++            host = value[: end + 1]
++            rest = value[end + 1 :]
++
++            if not rest:
++                return host, None
++
++            if rest.startswith(":"):
++                return host, rest[1:]
++
++    host, sep, port = value.rpartition(":")
++
++    if not sep or ":" in host:
++        return value, None
++
++    return host, port
+diff --git a/src/flask/json/tag.py b/src/flask/json/tag.py
+index 8dc3629..3b0c826 100644
+--- a/src/flask/json/tag.py
++++ b/src/flask/json/tag.py
+@@ -167,7 +167,8 @@ class TagBytes(JSONTag):
+         return b64encode(value).decode("ascii")
+ 
+     def to_python(self, value: t.Any) -> t.Any:
+-        return b64decode(value)
++        # Only accept the base64 alphabet, don't discard other characters.
++        return b64decode(value, validate=True)
+ 
+ 
+ class TagMarkup(JSONTag):
+diff --git a/src/flask/testing.py b/src/flask/testing.py
+index 68b1ab4..489d16d 100644
+--- a/src/flask/testing.py
++++ b/src/flask/testing.py
+@@ -177,7 +177,9 @@ class FlaskClient(Client):
+             app.session_interface.save_session(app, sess, resp)
+ 
+         self._update_cookies_from_response(
+-            ctx.request.host.partition(":")[0],
++            # Match how the Werkzeug client gets the host name, which handles
++            # IPv6 literals.
++            urlsplit(ctx.request.host_url).hostname or "localhost",
+             ctx.request.path,
+             resp.headers.getlist("Set-Cookie"),
+         )

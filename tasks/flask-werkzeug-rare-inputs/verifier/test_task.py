@@ -129,8 +129,10 @@ class TestBuildingInvertsMatching:
     @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
     def test_float_rejects_values_it_would_never_match(self, value: float) -> None:
         app = number_app()
+        # The statement doesn't name the exception; Werkzeug's BuildError and a
+        # converter's ValueError both reject the value.
         with app.test_request_context():
-            with pytest.raises(BuildError):
+            with pytest.raises((BuildError, ValueError)):
                 url_for("signed_float_view", x=value)
 
     def test_many_converters_in_one_segment(self) -> None:

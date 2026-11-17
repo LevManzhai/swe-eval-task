@@ -1,0 +1,1187 @@
+diff --git a/src/werkzeug/_header_property.py b/src/werkzeug/_header_property.py
+index 70a0f0c..3d7e0b6 100644
+--- a/src/werkzeug/_header_property.py
++++ b/src/werkzeug/_header_property.py
+@@ -131,10 +131,14 @@ class header_property(t.Generic[T]):
+         if self.read_only:
+             raise AttributeError("read only property")
+ 
++        if value is not None:
++            value = self.dump_func(value)
++
+         if value is None:
++            # A value that dumps to None means the header is not set.
+             del obj.headers[self.name]
+         else:
+-            obj.headers[self.name] = self.dump_func(value)
++            obj.headers[self.name] = value
+ 
+     def __delete__(self, obj: t.Any) -> None:
+         if self.read_only:
+@@ -237,7 +241,7 @@ class structure_property(t.Generic[_DS]):
+         elif self.fset is not None:
+             self.fset(obj, value)
+         else:
+-            obj.headers[self.key] = value.to_header()
++            _set_or_delete(obj, self.key, value.to_header())
+             value._on_update = make_structure_on_update(obj, self.key, self.cls)
+ 
+     def __delete__(self, obj: Response) -> None:
+@@ -256,9 +260,9 @@ def make_set_header_set(
+         response: Response, value: HeaderSet | t.Collection[str]
+     ) -> None:
+         if isinstance(value, HeaderSet):
+-            response.headers[key] = value.to_header()
++            _set_or_delete(response, key, value.to_header())
+         else:
+-            response.headers[key] = dump_header(value)
++            _set_or_delete(response, key, dump_header(value))
+ 
+     return set_header_set
+ 
+@@ -277,6 +281,16 @@ def make_structure_on_update(
+         if not value:
+             del response.headers[key]
+         else:
+-            response.headers[key] = value.to_header()
++            _set_or_delete(response, key, value.to_header())
+ 
+     return on_update
++
++
++def _set_or_delete(response: Response, key: str, value: str | None) -> None:
++    """Set the header, or remove it if the value is empty, which means it is
++    not set.
++    """
++    if not value:
++        del response.headers[key]
++    else:
++        response.headers[key] = value
+diff --git a/src/werkzeug/_internal.py b/src/werkzeug/_internal.py
+index 05fc8d5..6e2cc68 100644
+--- a/src/werkzeug/_internal.py
++++ b/src/werkzeug/_internal.py
+@@ -105,3 +105,68 @@ def _plain_int(value: str, base: t.Literal[10, 16] = 10) -> int:
+         raise ValueError(value)
+ 
+     return int(value, base)
++
++
++_plain_uint_re = re.compile(r"[0-9]+", re.ASCII)
++
++
++def _plain_uint(value: str) -> int:
++    """Parse a non-negative int made of only ASCII digits, like the
++    ``1*DIGIT`` grammar in HTTP headers. A sign is not allowed.
++
++    Any surrounding spaces and tabs are stripped.
++    """
++    value = value.strip(" \t")
++
++    if _plain_uint_re.fullmatch(value) is None:
++        raise ValueError(value)
++
++    return int(value)
++
++
++_port_re = re.compile(r"[1-9][0-9]{0,4}", re.ASCII)
++
++
++def _parse_port(value: str) -> int | None:
++    """Parse a TCP port, 1 to 65535 written without leading zeros. Returns
++    ``None`` if the value is not valid.
++    """
++    if _port_re.fullmatch(value) is None:
++        return None
++
++    port = int(value)
++
++    if port > 65535:
++        return None
++
++    return port
++
++
++def _split_host_port(value: str) -> tuple[str, str | None]:
++    """Split a ``host:port`` value into the host and the port string, or
++    ``None`` if there is no port. A bracketed IPv6 literal ``[::1]:8080``
++    is handled, and the brackets are kept on the host.
++    """
++    if value.startswith("["):
++        end = value.find("]")
++
++        if end != -1:
++            host = value[: end + 1]
++            rest = value[end + 1 :]
++
++            if rest.startswith(":"):
++                return host, rest[1:]
++
++            if not rest:
++                return host, None
++
++    host, sep, port = value.rpartition(":")
++
++    if not sep:
++        return value, None
++
++    if ":" in host:
++        # An unbracketed IPv6 address, there is no port.
++        return value, None
++
++    return host, port
+diff --git a/src/werkzeug/datastructures/auth.py b/src/werkzeug/datastructures/auth.py
+index 9c023fe..3e5a75d 100644
+--- a/src/werkzeug/datastructures/auth.py
++++ b/src/werkzeug/datastructures/auth.py
+@@ -149,8 +149,10 @@ class Authorization:
+ 
+         if scheme == "basic":
+             try:
+-                username, _, password = base64.b64decode(rest).decode().partition(":")
+-            except (binascii.Error, UnicodeError):
++                # Only the base64 alphabet is valid, don't discard other chars.
++                decoded = base64.b64decode(rest.encode("ascii"), validate=True)
++                username, _, password = decoded.decode().partition(":")
++            except (binascii.Error, UnicodeError, ValueError):
+                 return None
+ 
+             return cls(scheme, {"username": username, "password": password})
+diff --git a/src/werkzeug/datastructures/cache_control.py b/src/werkzeug/datastructures/cache_control.py
+index 6e77c2f..cb580e6 100644
+--- a/src/werkzeug/datastructures/cache_control.py
++++ b/src/werkzeug/datastructures/cache_control.py
+@@ -4,7 +4,7 @@ import collections.abc as cabc
+ import typing as t
+ from inspect import cleandoc
+ 
+-from .._internal import _plain_int
++from .._internal import _plain_uint
+ from ..http import dump_header
+ from ..http import parse_dict_header
+ 
+@@ -83,7 +83,8 @@ def _cache_control_property(
+         doc = " ".join(parts)
+ 
+     doc = cleandoc(doc)
+-    get_convert = _plain_int if convert is int else convert
++    # delta-seconds is 1*DIGIT, a sign is not allowed.
++    get_convert = _plain_uint if convert is int else convert
+ 
+     if not mutable:
+         return property(lambda x: x._get_directive(key, empty, get_convert), doc=doc)
+diff --git a/src/werkzeug/datastructures/etag.py b/src/werkzeug/datastructures/etag.py
+index 136359b..2d6faac 100644
+--- a/src/werkzeug/datastructures/etag.py
++++ b/src/werkzeug/datastructures/etag.py
+@@ -60,7 +60,11 @@ class ETag:
+             weak = True
+             start = 2
+ 
+-        if not (value.startswith('"', start) and value.endswith('"', start)):
++        if not (
++            len(value) - start >= 2
++            and value.startswith('"', start)
++            and value.endswith('"', start)
++        ):
+             # invalid, value must be quoted
+             return None
+ 
+diff --git a/src/werkzeug/formparser.py b/src/werkzeug/formparser.py
+index 3a95302..5de8f67 100644
+--- a/src/werkzeug/formparser.py
++++ b/src/werkzeug/formparser.py
+@@ -7,7 +7,7 @@ from tempfile import SpooledTemporaryFile
+ from types import TracebackType
+ from urllib.parse import parse_qsl
+ 
+-from ._internal import _plain_int
++from ._internal import _plain_uint
+ from .datastructures.file_storage import FileStorage
+ from .datastructures.headers import Headers
+ from .datastructures.structures import ImmutableMultiDict
+@@ -399,7 +399,7 @@ class MultiPartParser:
+         content_type = event.headers.get("Content-Type")
+ 
+         try:
+-            content_length = _plain_int(event.headers["Content-Length"])
++            content_length = _plain_uint(event.headers["Content-Length"])
+         except (KeyError, ValueError):
+             content_length = 0
+ 
+diff --git a/src/werkzeug/http.py b/src/werkzeug/http.py
+index e02c3ec..1ccbf69 100644
+--- a/src/werkzeug/http.py
++++ b/src/werkzeug/http.py
+@@ -512,6 +512,49 @@ _charset_value_re = re.compile(
+ _parameter_delimiter_re = re.compile(r";[ \t]*")
+ 
+ 
++def _find_quote_end(value: str, pos: int) -> int:
++    """Given the position of an opening quote, return the position after the
++    closing quote, or -1 if the quoted string is not closed.
++    """
++    pos += 1
++    length = len(value)
++
++    while pos < length:
++        char = value[pos]
++
++        if char == "\\":
++            # Consume the escaped character.
++            pos += 2
++        elif char == '"':
++            return pos + 1
++        else:
++            pos += 1
++
++    return -1
++
++
++def _find_delimiter(value: str, pos: int) -> int:
++    """Find the next ``;`` at or after ``pos`` that is not inside a quoted
++    string. Returns -1 if there is none, or if an unclosed quoted string is
++    found first.
++    """
++    length = len(value)
++
++    while pos < length:
++        char = value[pos]
++
++        if char == ";":
++            return pos
++
++        if char == '"':
++            if (pos := _find_quote_end(value, pos)) == -1:
++                return -1
++        else:
++            pos += 1
++
++    return -1
++
++
+ def parse_options_header(value: str | None) -> tuple[str, dict[str, str]]:
+     """Parse a header that consists of a value with ``key=value`` parameters separated
+     by semicolons ``;``. For example, the ``Content-Type`` header.
+@@ -596,28 +639,22 @@ def parse_options_header(value: str | None) -> tuple[str, dict[str, str]]:
+ 
+             # Value may be a quoted string, find the closing quote.
+             elif rest.startswith('"', scan_pos):
+-                quote_pos = scan_pos + 1
+-
+-                while quote_pos < length:
+-                    if rest.startswith(("\\\\", '\\"'), quote_pos):
+-                        # Consume escaped slashes and quotes.
+-                        quote_pos += 2
+-                    elif rest.startswith('"', quote_pos):
+-                        # Stop at an unescaped quote.
+-                        quote_pos += 1
+-                        parts.append((pk, rest[scan_pos:quote_pos]))
+-                        scan_pos = quote_pos
+-                        break
+-                    else:
+-                        # Consume any other character.
+-                        quote_pos += 1
+-
+-        # Continue to the next delimited part, skipping spaces.
+-        if m_delim := _parameter_delimiter_re.search(rest, scan_pos):
+-            scan_pos = m_delim.end()
+-        else:
++                if (quote_end := _find_quote_end(rest, scan_pos)) == -1:
++                    # Unclosed quoted string, nothing after it is a parameter.
++                    break
++
++                parts.append((pk, rest[scan_pos:quote_end]))
++                scan_pos = quote_end
++
++        # Continue to the next delimited part, skipping spaces. A delimiter
++        # inside a quoted string is not a delimiter.
++        if (delim_pos := _find_delimiter(rest, scan_pos)) == -1:
+             break
+ 
++        m_delim = _parameter_delimiter_re.match(rest, delim_pos)
++        assert m_delim is not None
++        scan_pos = m_delim.end()
++
+     options: dict[str, str] = {}
+     continuations: dict[str, list[str]] = {}
+     continuation_encodings: dict[str, str] = {}
+@@ -1016,9 +1053,13 @@ def parse_date(value: str | None) -> dt.datetime | None:
+     if value is None:
+         return None
+ 
++    if not value.isascii():
++        # Dates only use ASCII characters, Python would accept other digits.
++        return None
++
+     try:
+         parsed = email.utils.parsedate_to_datetime(value)
+-    except (TypeError, ValueError):
++    except (TypeError, ValueError, OverflowError, IndexError):
+         return None
+ 
+     if parsed.tzinfo is None:
+@@ -1098,7 +1139,10 @@ def _load_retry_after(value: str) -> dt.datetime | None:
+     except OverflowError:
+         return None
+ 
+-    return dt.datetime.now(dt.UTC) + delta
++    try:
++        return dt.datetime.now(dt.UTC) + delta
++    except OverflowError:
++        return None
+ 
+ 
+ def _dump_retry_after(value: dt.datetime | int) -> str:
+@@ -1279,6 +1323,7 @@ _cookie_re = re.compile(
+     flags=re.ASCII | re.VERBOSE,
+ )
+ _cookie_unslash_re = re.compile(rb"\\([0-3][0-7]{2}|.)")
++_cookie_quoted_start_re = re.compile(r'[ \t]*[^ \t=";]+[ \t]*=[ \t]*"', flags=re.ASCII)
+ 
+ 
+ def _cookie_unslash_replace(m: t.Match[bytes]) -> bytes:
+@@ -1356,6 +1401,13 @@ def parse_cookie(value: str | None, **kwargs: t.Any) -> ds.ImmutableMultiDict[st
+ 
+     while True:
+         if (m := _cookie_re.match(cookie, pos)) is None:
++            if (m_quote := _cookie_quoted_start_re.match(cookie, pos)) is not None:
++                # The value starts a quoted string. A semicolon inside it is not
++                # a separator, and if it's never closed, nothing after it is a
++                # cookie.
++                if (pos := _find_quote_end(cookie, m_quote.end() - 1)) == -1:
++                    break
++
+             # Skip invalid chars until the next semicolon.
+             if (pos := cookie.find(";", pos) + 1) == 0:
+                 break
+diff --git a/src/werkzeug/routing/converters.py b/src/werkzeug/routing/converters.py
+index 082168c..45e26a6 100644
+--- a/src/werkzeug/routing/converters.py
++++ b/src/werkzeug/routing/converters.py
+@@ -1,8 +1,11 @@
+ from __future__ import annotations
+ 
++import math
++import numbers
+ import re
+ import typing as t
+ import uuid
++from decimal import Decimal
+ from urllib.parse import quote
+ 
+ if t.TYPE_CHECKING:
+@@ -80,6 +83,16 @@ class UnicodeConverter(BaseConverter):
+                 maxlength_value = str(int(maxlength))
+             length_regex = f"{{{int(minlength)},{maxlength_value}}}"
+         self.regex = f"[^/]{length_regex}"
++        self._regex_re = re.compile(self.regex)
++
++    def to_url(self, value: t.Any) -> str:
++        value_str = str(value)
++
++        # Only build values that this converter would match again.
++        if self._regex_re.fullmatch(value_str) is None:
++            raise ValueError(f"{value_str!r} is not a valid value for this converter.")
++
++        return super().to_url(value_str)
+ 
+ 
+ class AnyConverter(BaseConverter):
+@@ -103,7 +116,7 @@ class AnyConverter(BaseConverter):
+ 
+     def to_url(self, value: t.Any) -> str:
+         if value in self.items:
+-            return str(value)
++            return super().to_url(value)
+ 
+         valid_values = ", ".join(f"'{item}'" for item in sorted(self.items))
+         raise ValueError(f"'{value}' is not one of {valid_values}")
+@@ -123,6 +136,15 @@ class PathConverter(BaseConverter):
+     regex = "[^/].*?"
+     weight = 200
+ 
++    def to_url(self, value: t.Any) -> str:
++        value_str = str(value)
++
++        # The value must not be empty or start with a slash, it would not match.
++        if not value_str or value_str.startswith("/"):
++            raise ValueError(f"{value_str!r} is not a valid value for this converter.")
++
++        return super().to_url(value_str)
++
+ 
+ class NumberConverter(BaseConverter):
+     """Baseclass for `IntegerConverter` and `FloatConverter`.
+@@ -149,22 +171,75 @@ class NumberConverter(BaseConverter):
+         self.max = max
+         self.signed = signed
+ 
++    def _check_range(self, value_num: t.Any) -> bool:
++        return not (
++            (self.min is not None and value_num < self.min)
++            or (self.max is not None and value_num > self.max)
++        )
++
+     def to_python(self, value: str) -> t.Any:
+         if self.fixed_digits and len(value) != self.fixed_digits:
+             raise ValidationError()
+-        value_num = self.num_convert(value)
+-        if (self.min is not None and value_num < self.min) or (
+-            self.max is not None and value_num > self.max
+-        ):
++
++        # The regex only matches ASCII digits, but check again in case a
++        # subclass changed it. Conversion may still fail for extreme values.
++        if self._value_re.fullmatch(value) is None:
++            raise ValidationError()
++
++        try:
++            value_num = self.num_convert(value)
++        except (ValueError, OverflowError):
++            raise ValidationError() from None
++
++        if not self._check_range(value_num):
+             raise ValidationError()
++
+         return value_num
+ 
++    def _format(self, value_num: t.Any) -> str:
++        return str(value_num)
++
+     def to_url(self, value: t.Any) -> str:
+-        value_str = str(self.num_convert(value))
++        if isinstance(value, str):
++            # A string must already be in the format the converter matches.
++            if self._value_re.fullmatch(value) is None:
++                raise ValueError(f"{value!r} is not a valid value for this converter.")
++
++            value_num = self.num_convert(value)
++        else:
++            value_num = self.num_convert(value)
++
++            if isinstance(value, numbers.Number) and value_num != value:
++                # Conversion lost information, such as int(1.5).
++                raise ValueError(f"{value!r} is not a valid value for this converter.")
++
++        value_str = self._format(value_num)
++
+         if self.fixed_digits:
+             value_str = value_str.zfill(self.fixed_digits)
++
++        # The built value must match and convert back to the same value.
++        try:
++            if self.to_python(value_str) != value_num:
++                raise ValidationError()
++        except ValidationError:
++            raise ValueError(
++                f"{value!r} is not a valid value for this converter."
++            ) from None
++
+         return value_str
+ 
++    @property
++    def _value_re(self) -> re.Pattern[str]:
++        regex = self.regex
++        cache = self.__dict__.get("_value_re_cache")
++
++        if cache is None or cache[0] != regex:
++            cache = (regex, re.compile(regex))
++            self.__dict__["_value_re_cache"] = cache
++
++        return cache[1]
++
+     @property
+     def signed_regex(self) -> str:
+         return f"-?{self.regex}"
+@@ -192,7 +267,7 @@ class IntegerConverter(NumberConverter):
+         The ``signed`` parameter.
+     """
+ 
+-    regex = r"\d+"
++    regex = r"[0-9]+"
+ 
+ 
+ class FloatConverter(NumberConverter):
+@@ -217,7 +292,7 @@ class FloatConverter(NumberConverter):
+         The ``signed`` parameter.
+     """
+ 
+-    regex = r"\d+\.\d+"
++    regex = r"[0-9]+\.[0-9]+"
+     num_convert = float
+ 
+     def __init__(
+@@ -229,9 +304,31 @@ class FloatConverter(NumberConverter):
+     ) -> None:
+         super().__init__(map, min=min, max=max, signed=signed)  # type: ignore
+ 
+-    def to_url(self, value: t.Any) -> str:
+-        # f format ensures no scientific notation, but forces trailing zeroes
+-        return f"{self.num_convert(value):f}".rstrip("0")
++    def to_python(self, value: str) -> t.Any:
++        value_num = super().to_python(value)
++
++        if not math.isfinite(value_num):
++            # Too large to represent, would overflow to infinity.
++            raise ValidationError()
++
++        return value_num
++
++    def _format(self, value_num: t.Any) -> str:
++        if not math.isfinite(value_num):
++            raise ValueError(f"{value_num!r} is not a valid value for this converter.")
++
++        if value_num == 0 and not self.signed:
++            # -0.0 can't be represented without a sign.
++            value_num = 0.0
++
++        # The shortest repr round trips to the same float, format it without
++        # scientific notation.
++        value_str = format(Decimal(repr(value_num)), "f")
++
++        if "." not in value_str:
++            value_str = f"{value_str}.0"
++
++        return value_str
+ 
+ 
+ class UUIDConverter(BaseConverter):
+@@ -253,4 +350,7 @@ class UUIDConverter(BaseConverter):
+         return uuid.UUID(value)
+ 
+     def to_url(self, value: uuid.UUID) -> str:
++        if not isinstance(value, uuid.UUID):
++            value = uuid.UUID(str(value))
++
+         return str(value)
+diff --git a/src/werkzeug/routing/map.py b/src/werkzeug/routing/map.py
+index 6d4d675..55e2bb5 100644
+--- a/src/werkzeug/routing/map.py
++++ b/src/werkzeug/routing/map.py
+@@ -10,6 +10,7 @@ from urllib.parse import quote
+ from urllib.parse import urljoin
+ from urllib.parse import urlunsplit
+ 
++from .._internal import _split_host_port
+ from ..datastructures import HeaderSet
+ from ..datastructures.structures import MultiDict
+ from ..exceptions import BadHost
+@@ -261,12 +262,20 @@ class Map:
+             path_info = "/"
+ 
+         # Port isn't part of IDNA, and might push a name over the 63 octet limit.
+-        server_name, port_sep, port = server_name.lower().partition(":")
++        server_name, port = _split_host_port(server_name.lower())
++        port_sep = ""
+ 
+-        try:
+-            server_name = server_name.encode("idna").decode("ascii")
+-        except UnicodeError as e:
+-            raise BadHost() from e
++        if port is not None:
++            port_sep = ":"
++        else:
++            port = ""
++
++        if not server_name.startswith("["):
++            # An IPv6 literal is not encoded.
++            try:
++                server_name = server_name.encode("idna").decode("ascii")
++            except UnicodeError as e:
++                raise BadHost() from e
+ 
+         return MapAdapter(
+             map=self,
+diff --git a/src/werkzeug/sansio/request.py b/src/werkzeug/sansio/request.py
+index 70136ff..5f0298f 100644
+--- a/src/werkzeug/sansio/request.py
++++ b/src/werkzeug/sansio/request.py
+@@ -7,6 +7,7 @@ from urllib.parse import parse_qsl
+ 
+ from .._header_property import header_property
+ from .._internal import _plain_int
++from .._internal import _plain_uint
+ from ..datastructures.accept import Accept
+ from ..datastructures.accept import LanguageAccept
+ from ..datastructures.accept import MIMEAccept
+@@ -369,7 +370,7 @@ class Request:
+ 
+     max_forwards = header_property[int | None](
+         "Max-Forwards",
+-        load_func=int,
++        load_func=_plain_uint,
+         read_only=True,
+         doc="""The ``Max-Forwards`` header. How many times to forward the
+         request for ``TRACE`` or ``OPTIONS`` methods.
+diff --git a/src/werkzeug/sansio/response.py b/src/werkzeug/sansio/response.py
+index fc4f27a..e06abab 100644
+--- a/src/werkzeug/sansio/response.py
++++ b/src/werkzeug/sansio/response.py
+@@ -8,6 +8,7 @@ from http import HTTPStatus
+ from .._header_property import header_property
+ from .._header_property import make_structure_on_update
+ from .._header_property import structure_property
++from .._internal import _plain_uint
+ from ..datastructures.auth import WWWAuthenticate
+ from ..datastructures.cache_control import ResponseCacheControl
+ from ..datastructures.csp import ContentSecurityPolicy
+@@ -366,7 +367,7 @@ class Response:
+ 
+     content_length = header_property[int | None](
+         "Content-Length",
+-        load_func=int,
++        load_func=_plain_uint,
+         doc="""The ``Content-Length`` header. The size of the body in bytes.
+ 
+         An ``int``, or ``None`` if not set. Set to ``None`` or use ``del`` to
+@@ -612,7 +613,12 @@ class Response:
+         elif isinstance(value, tuple):
+             value = ETag(*value)
+ 
+-        self.headers["ETag"] = value.to_header()
++        if header_value := value.to_header():
++            self.headers["ETag"] = header_value
++        else:
++            # An empty or invalid value means the header is not set.
++            del self.headers["ETag"]
++
+         value._on_update = make_structure_on_update(self, "ETag", ETag)
+ 
+     def set_etag(self, etag: str, weak: bool = False) -> None:
+@@ -833,7 +839,7 @@ class Response:
+ 
+     access_control_max_age = header_property[int | None](
+         "Access-Control-Max-Age",
+-        load_func=int,
++        load_func=_plain_uint,
+         doc="""The ``Access-Control-Max-Age`` header. How long in seconds the
+         access control headers in a response are valid.
+ 
+diff --git a/src/werkzeug/sansio/utils.py b/src/werkzeug/sansio/utils.py
+index 60d691e..51acfe3 100644
+--- a/src/werkzeug/sansio/utils.py
++++ b/src/werkzeug/sansio/utils.py
+@@ -4,7 +4,9 @@ import re
+ import typing as t
+ from urllib.parse import quote
+ 
++from .._internal import _parse_port
+ from .._internal import _plain_int
++from .._internal import _split_host_port
+ from ..datastructures.set import HeaderSet
+ from ..exceptions import SecurityError
+ from ..urls import uri_to_iri
+@@ -16,7 +18,7 @@ _host_re = re.compile(
+     |
+         \[[a-f0-9]*:[a-f0-9.:]+]  # ipv6
+     )
+-    (?::[0-9]+)?  # optional port
++    (?::(?P<port>[1-9][0-9]{0,4}))?  # optional port, no leading zeros
+     """,
+     flags=re.ASCII | re.IGNORECASE | re.VERBOSE,
+ )
+@@ -50,10 +52,18 @@ def host_is_trusted(
+     if not hostname:
+         return False
+ 
+-    if _host_re.fullmatch(hostname) is None:
++    if (m := _host_re.fullmatch(hostname)) is None:
+         return False
+ 
+-    hostname = hostname.partition(":")[0]
++    if (port := m.group("port")) is not None and _parse_port(port) is None:
++        # port out of range
++        return False
++
++    hostname = m.group("hostname")
++
++    if hostname.startswith("["):
++        # Compare IPv6 addresses without brackets.
++        hostname = hostname[1:-1]
+ 
+     if not trusted_list:
+         return True
+@@ -68,9 +78,12 @@ def host_is_trusted(
+         else:
+             suffix_match = False
+ 
++        if ref.startswith("[") and ref.endswith("]"):
++            ref = ref[1:-1]
++
+         try:
+             ref = ref.encode("idna").decode("ascii")
+-        except UnicodeEncodeError:
++        except UnicodeError:
+             return False
+ 
+         if ref == hostname or (suffix_match and hostname.endswith(f".{ref}")):
+diff --git a/src/werkzeug/serving.py b/src/werkzeug/serving.py
+index 6bed9e4..92f2eca 100644
+--- a/src/werkzeug/serving.py
++++ b/src/werkzeug/serving.py
+@@ -34,6 +34,7 @@ from ._internal import _log
+ from ._internal import _plain_int
+ from ._internal import _wsgi_encoding_dance
+ from .datastructures.set import HeaderSet
++from .exceptions import ClientDisconnected
+ from .exceptions import InternalServerError
+ from .urls import uri_to_iri
+ 
+@@ -85,6 +86,16 @@ if t.TYPE_CHECKING:
+     from cryptography.x509 import Certificate
+ 
+ 
++class _InvalidChunkedInput(ClientDisconnected, OSError):
++    """The chunked request body is malformed or incomplete. This is the
++    client's error, so it is a ``400 Bad Request``. It is also an ``OSError``
++    for code that handles read errors.
++    """
++
++    def __init__(self, description: str | None = None) -> None:
++        ClientDisconnected.__init__(self, description)
++
++
+ class DechunkedInput(io.RawIOBase):
+     """An input stream that handles ``Transfer-Encoding: chunked``. Only
+     used by the dev server, which must not be used in production. A production
+@@ -104,9 +115,9 @@ class DechunkedInput(io.RawIOBase):
+             line = self._rfile.readline(100).decode("latin1").removesuffix("\r\n")
+             _len = _plain_int(line, 16)
+         except ValueError as e:
+-            raise OSError("Invalid chunk header") from e
++            raise _InvalidChunkedInput("Invalid chunk header") from e
+         if _len < 0:
+-            raise OSError("Negative chunk length not allowed")
++            raise _InvalidChunkedInput("Negative chunk length not allowed")
+         return _len
+ 
+     def readinto(self, buf: bytearray) -> int:  # type: ignore[override]
+@@ -125,27 +136,25 @@ class DechunkedInput(io.RawIOBase):
+             if self._len > 0:
+                 # There is data (left) in this chunk, so append it to the
+                 # buffer. If this operation fully consumes the chunk, this will
+-                # reset self._len to 0.
+-                n = min(len(buf), self._len)
+-
+-                # If (read + chunk size) becomes more than len(buf), buf will
+-                # grow beyond the original size and read more data than
+-                # required. So only read as much data as can fit in buf.
+-                if read + n > len(buf):
+-                    buf[read:] = self._rfile.read(len(buf) - read)
+-                    self._len -= len(buf) - read
+-                    read = len(buf)
+-                else:
+-                    buf[read : read + n] = self._rfile.read(n)
+-                    self._len -= n
+-                    read += n
++                # reset self._len to 0. Only read as much data as fits in the
++                # remaining space of the buffer, its size must not change.
++                n = min(len(buf) - read, self._len)
++                data = self._rfile.read(n)
++
++                if len(data) != n:
++                    # The client disconnected before sending the full chunk.
++                    raise _InvalidChunkedInput("Incomplete chunk")
++
++                buf[read : read + n] = data
++                self._len -= n
++                read += n
+ 
+             if self._len == 0:
+                 # Skip the terminating newline of a chunk that has been fully
+                 # consumed. This also applies to the 0-sized final chunk
+                 terminator = self._rfile.readline(2)
+                 if terminator not in (b"\n", b"\r\n", b"\r"):
+-                    raise OSError("Missing chunk terminating newline")
++                    raise _InvalidChunkedInput("Missing chunk terminating newline")
+ 
+         return read
+ 
+@@ -241,7 +250,14 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
+         return environ
+ 
+     def run_wsgi(self) -> None:
+-        self.environ = environ = self.make_environ()
++        try:
++            self.environ = environ = self.make_environ()
++        except ValueError:
++            # The request target could not be parsed, such as an invalid IPv6
++            # host in an absolute URL. This is the client's error.
++            self.send_error(400)
++            return
++
+         status_set: str | None = None
+         headers_set: list[tuple[str, str]] | None = None
+         status_sent: str | None = None
+@@ -335,13 +351,23 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
+                 if chunk_response:
+                     self.wfile.write(b"0\r\n\r\n")
+             finally:
+-                # Check for any remaining data in the read socket, and discard it. This
+-                # will read past request.max_content_length, but lets the client see a
+-                # 413 response instead of a connection reset failure. If we supported
+-                # keep-alive connections, this naive approach would break by reading the
+-                # next request line. Since we know that write (above) closes every
+-                # connection we can read everything.
+-                selector = selectors.DefaultSelector()
++                try:
++                    drain_input()
++                finally:
++                    # Always close the iterable, even if draining failed.
++                    if hasattr(application_iter, "close"):
++                        application_iter.close()
++
++        def drain_input() -> None:
++            # Check for any remaining data in the read socket, and discard it. This
++            # will read past request.max_content_length, but lets the client see a
++            # 413 response instead of a connection reset failure. If we supported
++            # keep-alive connections, this naive approach would break by reading the
++            # next request line. Since we know that write (above) closes every
++            # connection we can read everything.
++            selector = selectors.DefaultSelector()
++
++            try:
+                 selector.register(self.connection, selectors.EVENT_READ)
+                 total_size = 0
+                 total_reads = 0
+@@ -358,12 +384,9 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
+                     # more than that, they'll get a connection reset failure.
+                     if not data or total_size >= 10_000_000_000 or total_reads > 1000:
+                         break
+-
++            finally:
+                 selector.close()
+ 
+-                if hasattr(application_iter, "close"):
+-                    application_iter.close()
+-
+         try:
+             execute(self.server.app)
+         except connection_dropped_errors as e:
+@@ -439,8 +462,8 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
+         try:
+             path = uri_to_iri(self.path)
+             msg = f"{self.command} {path} {self.request_version}"
+-        except AttributeError:
+-            # path isn't set if the requestline was bad
++        except (AttributeError, ValueError):
++            # path isn't set if the requestline was bad, or it can't be parsed
+             msg = self.requestline
+ 
+         # Escape control characters that may be in the decoded path.
+diff --git a/src/werkzeug/test.py b/src/werkzeug/test.py
+index ef792c7..d23a937 100644
+--- a/src/werkzeug/test.py
++++ b/src/werkzeug/test.py
+@@ -17,6 +17,8 @@ from urllib.parse import unquote
+ from urllib.parse import urlsplit
+ from urllib.parse import urlunsplit
+ 
++from ._internal import _plain_int
++from ._internal import _split_host_port
+ from ._internal import _wsgi_decoding_dance
+ from ._internal import _wsgi_encoding_dance
+ from .datastructures.auth import Authorization
+@@ -979,7 +981,7 @@ class Client:
+             response.request.environ, path=path, query_string=qs
+         )
+ 
+-        to_name_parts = netloc.partition(":")[0].split(".")
++        to_name_parts = _split_host_port(netloc)[0].split(".")
+         from_name_parts = builder.server_name.split(".")
+ 
+         if to_name_parts != [""]:
+@@ -1319,6 +1321,17 @@ class TestResponse(Response):
+         self._compat_tuple = response, status, headers
+ 
+ 
++def _parse_cookie_max_age(value: str | None) -> int | None:
++    """Parse a ``Max-Age`` cookie attribute. An invalid value is ignored."""
++    if value is None:
++        return None
++
++    try:
++        return _plain_int(value)
++    except ValueError:
++        return None
++
++
+ @dataclasses.dataclass
+ class Cookie:
+     """A cookie key, value, and parameters.
+@@ -1405,7 +1418,7 @@ class Cookie:
+             decoded_key=decoded_key,
+             decoded_value=decoded_value,
+             expires=parse_date(params.get("expires")),
+-            max_age=int(params["max-age"] or 0) if "max-age" in params else None,
++            max_age=_parse_cookie_max_age(params.get("max-age")),
+             domain=params.get("domain") or server_name,
+             origin_only="domain" not in params,
+             path=params.get("path") or path.rpartition("/")[0] or "/",
+@@ -1420,6 +1433,7 @@ class Cookie:
+ 
+     @property
+     def _should_delete(self) -> bool:
+-        return self.max_age == 0 or (
++        # Zero or negative max age expires the cookie immediately.
++        return (self.max_age is not None and self.max_age <= 0) or (
+             self.expires is not None and self.expires.timestamp() == 0
+         )
+diff --git a/src/werkzeug/urls.py b/src/werkzeug/urls.py
+index ab851be..df63196 100644
+--- a/src/werkzeug/urls.py
++++ b/src/werkzeug/urls.py
+@@ -8,8 +8,8 @@ from urllib.parse import quote
+ from urllib.parse import unquote
+ from urllib.parse import urlencode
+ from urllib.parse import urlsplit
+-from urllib.parse import urlunsplit
+ 
++from ._internal import _split_host_port
+ from .datastructures.structures import iter_multi_items
+ 
+ 
+@@ -58,6 +58,98 @@ _unquote_path = _make_unquote_part("path", _always_unsafe + "/?#")
+ _unquote_user = _make_unquote_part("user", _always_unsafe + ":@/?#")
+ 
+ 
++class _URLParts(t.NamedTuple):
++    scheme: str
++    username: str | None
++    password: str | None
++    host: str | None
++    port: str | None
++    path: str
++    query: str | None
++    fragment: str | None
++
++
++# Characters that urlsplit removes, used to find which delimiters are present.
++_strip_chars = "".join(map(chr, range(0x21)))
++_port_chars_re = re.compile(r"[0-9]*", re.ASCII)
++
++
++def _split_url(url: str) -> _URLParts:
++    """Split a URL into its components. Unlike ``urlsplit``, a component that
++    is present but empty, such as the query in ``/path?``, is ``""`` rather
++    than missing. A component that is not present is ``None``.
++    """
++    parts = urlsplit(url)
++    # Remove the same characters as urlsplit to find the delimiters.
++    clean = url.lstrip(_strip_chars)
++
++    for c in "\t\r\n":
++        clean = clean.replace(c, "")
++
++    rest = clean[len(parts.scheme) + 1 :] if parts.scheme else clean
++    before_fragment, has_fragment, _ = rest.partition("#")
++    has_query = "?" in before_fragment
++    username = password = host = port = None
++
++    if rest.startswith("//"):
++        userinfo, has_userinfo, host_port = parts.netloc.rpartition("@")
++
++        if has_userinfo:
++            username, has_password, password_str = userinfo.partition(":")
++
++            if has_password:
++                password = password_str
++
++        host, port = _split_host_port(host_port)
++        host = host.lower()
++
++        if port is not None and _port_chars_re.fullmatch(port) is None:
++            raise ValueError(f"Port could not be cast to integer value as {port!r}")
++
++    return _URLParts(
++        parts.scheme,
++        username,
++        password,
++        host,
++        port,
++        parts.path,
++        parts.query if has_query else None,
++        parts.fragment if has_fragment else None,
++    )
++
++
++def _join_url(
++    scheme: str,
++    netloc: str | None,
++    path: str,
++    query: str | None,
++    fragment: str | None,
++) -> str:
++    """Join URL components. Unlike ``urlunsplit``, components that are present
++    but empty are kept. Components that are ``None`` are omitted.
++    """
++    out = []
++
++    if scheme:
++        out.append(f"{scheme}:")
++
++    if netloc is not None:
++        out.append(f"//{netloc}")
++
++        if path and not path.startswith("/"):
++            path = f"/{path}"
++
++    out.append(path)
++
++    if query is not None:
++        out.append(f"?{query}")
++
++    if fragment is not None:
++        out.append(f"#{fragment}")
++
++    return "".join(out)
++
++
+ def uri_to_iri(uri: str) -> str:
+     """Convert a URI to an IRI. All valid UTF-8 characters are unquoted,
+     leaving all reserved and invalid characters quoted. If the URL has
+@@ -82,32 +174,33 @@ def uri_to_iri(uri: str) -> str:
+ 
+     .. versionadded:: 0.6
+     """
+-    parts = urlsplit(uri)
++    parts = _split_url(uri)
+     path = _unquote_path(parts.path)
+-    query = _unquote_query(parts.query)
+-    fragment = _unquote_fragment(parts.fragment)
++    query = _unquote_query(parts.query) if parts.query is not None else None
++    fragment = (
++        _unquote_fragment(parts.fragment) if parts.fragment is not None else None
++    )
++    netloc = None
+ 
+-    if parts.hostname:
+-        netloc = _decode_idna(parts.hostname)
+-    else:
+-        netloc = ""
++    if parts.host is not None:
++        if parts.host.startswith("["):
++            netloc = parts.host
++        else:
++            netloc = _decode_idna(parts.host)
+ 
+-    if ":" in netloc:
+-        netloc = f"[{netloc}]"
++        if parts.port is not None:
++            netloc = f"{netloc}:{parts.port}"
+ 
+-    if parts.port:
+-        netloc = f"{netloc}:{parts.port}"
++        if parts.username is not None:
++            auth = _unquote_user(parts.username)
+ 
+-    if parts.username:
+-        auth = _unquote_user(parts.username)
++            if parts.password is not None:
++                password = _unquote_user(parts.password)
++                auth = f"{auth}:{password}"
+ 
+-        if parts.password:
+-            password = _unquote_user(parts.password)
+-            auth = f"{auth}:{password}"
++            netloc = f"{auth}@{netloc}"
+ 
+-        netloc = f"{auth}@{netloc}"
+-
+-    return urlunsplit((parts.scheme, netloc, path, query, fragment))
++    return _join_url(parts.scheme, netloc, path, query, fragment)
+ 
+ 
+ def iri_to_uri(iri: str) -> str:
+@@ -135,34 +228,41 @@ def iri_to_uri(iri: str) -> str:
+ 
+     .. versionadded:: 0.6
+     """
+-    parts = urlsplit(iri)
++    parts = _split_url(iri)
+     # safe = https://url.spec.whatwg.org/#url-path-segment-string
+     # as well as percent for things that are already quoted
+     path = quote(parts.path, safe="%!$&'()*+,/:;=@")
+-    query = quote(parts.query, safe="%!$&'()*+,/:;=?@")
+-    fragment = quote(parts.fragment, safe="%!#$&'()*+,/:;=?@")
+-
+-    if parts.hostname:
+-        netloc = parts.hostname.encode("idna").decode("ascii")
+-    else:
+-        netloc = ""
+-
+-    if ":" in netloc:
+-        netloc = f"[{netloc}]"
+-
+-    if parts.port:
+-        netloc = f"{netloc}:{parts.port}"
+-
+-    if parts.username:
+-        auth = quote(parts.username, safe="%!$&'()*+,;=")
+-
+-        if parts.password:
+-            password = quote(parts.password, safe="%!$&'()*+,;=")
+-            auth = f"{auth}:{password}"
+-
+-        netloc = f"{auth}@{netloc}"
+-
+-    return urlunsplit((parts.scheme, netloc, path, query, fragment))
++    query = (
++        quote(parts.query, safe="%!$&'()*+,/:;=?@") if parts.query is not None else None
++    )
++    fragment = (
++        quote(parts.fragment, safe="%!#$&'()*+,/:;=?@")
++        if parts.fragment is not None
++        else None
++    )
++    netloc = None
++
++    if parts.host is not None:
++        if parts.host.startswith("["):
++            netloc = parts.host
++        elif parts.host:
++            netloc = parts.host.encode("idna").decode("ascii")
++        else:
++            netloc = ""
++
++        if parts.port is not None:
++            netloc = f"{netloc}:{parts.port}"
++
++        if parts.username is not None:
++            auth = quote(parts.username, safe="%!$&'()*+,;=")
++
++            if parts.password is not None:
++                password = quote(parts.password, safe="%!$&'()*+,;=")
++                auth = f"{auth}:{password}"
++
++            netloc = f"{auth}@{netloc}"
++
++    return _join_url(parts.scheme, netloc, path, query, fragment)
+ 
+ 
+ # Python < 3.12
+diff --git a/src/werkzeug/wsgi.py b/src/werkzeug/wsgi.py
+index 70ba4be..d65dc37 100644
+--- a/src/werkzeug/wsgi.py
++++ b/src/werkzeug/wsgi.py
+@@ -552,7 +552,9 @@ class _LimitedStream(io.RawIOBase):
+                     return 0
+ 
+                 if out_size:
+-                    b[:out_size] = temp_b
++                    # Only copy the bytes that were read, the buffer's size must
++                    # not change.
++                    b[:out_size] = temp_b[:out_size]
+         else:
+             # WSGI requires that stream.read is available.
+             try:
+@@ -561,6 +563,8 @@ class _LimitedStream(io.RawIOBase):
+                 self.on_disconnect(error=e)
+                 return 0
+ 
++            # Never write more than requested, the buffer's size must not change.
++            data = data[: min(size, remaining)]
+             out_size = len(data)
+             b[:out_size] = data
+ 

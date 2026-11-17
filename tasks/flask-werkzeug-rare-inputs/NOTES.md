@@ -103,9 +103,10 @@ repositories, one try. Accepted if at most one attempt in three passes.
 |---|---|---|---|
 | 1 | 18 min, 124 tool calls | **failed**, 66 / 68 | rules with 10+ converters in one segment |
 | 2 | 15 min, 99 tool calls | **failed**, 66 / 68 | rules with 10+ converters in one segment |
+| 3 | 15 min, 82 tool calls | **failed**, 66 / 68 | rules with 10+ converters in one segment |
 
-**Result: accepted.** Two of two attempts failed, so even a pass on a third
-would leave it at one in three. I didn't run the third.
+**Result: accepted, 0 of 3.** I ran the third attempt even though the task was
+already accepted after two, to have the full picture.
 
 **Attempt 1** (`difficulty/attempt-1/`, 24 files across both repositories,
 +558 / −123) fixed twelve of the thirteen bugs and a long list of things beyond
@@ -133,3 +134,14 @@ attempt 1.
   twelve are found, and fixed well.
 - Both attempts changed far more than the task asked for; a reviewer would
   want those split into separate changes.
+
+**Attempt 3** (`difficulty/attempt-3/`, 20 files, +645 / −150) is the same
+story a third time: twelve of thirteen fixed, many extras, matcher untouched.
+
+It also showed a flaw in my verifier. It rejects `inf` and `nan` when building
+a URL by raising `ValueError` from the converter, where the test demanded
+Werkzeug's `BuildError`. The statement says such values must be rejected but
+not with which exception, so the test now accepts either. I re-graded all
+three attempts after the change; it affected none of their scores (each fails
+only the two matcher tests).
+

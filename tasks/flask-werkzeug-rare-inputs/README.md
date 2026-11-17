@@ -1,7 +1,7 @@
 # Flask and Werkzeug: rare inputs accepted when they shouldn't be
 
-> **Status: accepted.** Two of two one-shot attempts failed (66 / 68 each).
-> Both fixed twelve of the thirteen bugs and missed the same one. `run.sh`
+> **Status: accepted.** Three of three one-shot attempts failed (66 / 68 each).
+> All three fixed twelve of the thirteen bugs and missed the same one. `run.sh`
 > passes all 30 of its checks. Details at the end of [`NOTES.md`](NOTES.md).
 
 [Flask](https://github.com/pallets/flask) hands almost all of its HTTP work to
