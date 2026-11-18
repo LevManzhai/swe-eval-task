@@ -1,0 +1,790 @@
+diff --git a/src/click/_compat.py b/src/click/_compat.py
+index 54325af..7e7fe0d 100644
+--- a/src/click/_compat.py
++++ b/src/click/_compat.py
+@@ -12,7 +12,21 @@ from weakref import WeakKeyDictionary
+ 
+ CYGWIN = sys.platform.startswith("cygwin")
+ WIN = sys.platform.startswith("win")
+-_ansi_re = re.compile(r"\033\[[;?0-9]*[a-zA-Z]")
++# Terminal control sequences, as defined by ECMA-48. This covers more than the
++# SGR color and style codes Click emits itself: any CSI sequence (cursor
++# movement, erasing, private modes), OSC strings (window titles, hyperlinks)
++# terminated by BEL or ST, DCS/SOS/PM/APC strings, and the remaining two and
++# three character escape sequences. The 8-bit C1 forms are matched as well.
++# A sequence missing its final byte or terminator is left untouched.
++_ansi_re = re.compile(
++    r"""
++    (?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)  # OSC ... BEL or ST
++    | (?:\x1b[PX^_]|[\x90\x98\x9e\x9f])[^\x1b\x9c]*(?:\x1b\\|\x9c)  # DCS SOS PM APC
++    | (?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]  # CSI
++    | \x1b[ -/]*[0-OQ-WYZ\\`-~]  # other escape sequences, not the introducers above
++    """,
++    re.VERBOSE,
++)
+ 
+ 
+ def _make_text_stream(
+diff --git a/src/click/_termui_impl.py b/src/click/_termui_impl.py
+index 9f76b2f..67fbb97 100644
+--- a/src/click/_termui_impl.py
++++ b/src/click/_termui_impl.py
+@@ -140,14 +140,36 @@ class ProgressBar(t.Generic[V]):
+         return next(iter(self))
+ 
+     def render_finish(self) -> None:
++        # Steps held back by ``update_min_steps`` were never rendered. Show
++        # them, so the bar ends where the work really ended.
++        pending = self._flush_pending_steps()
++
+         if self.hidden or not self._is_atty:
+             return
++
++        if pending:
++            self.render_progress()
++
+         self.file.write(AFTER_BAR)
+         self.file.flush()
+ 
++    def _flush_pending_steps(self) -> bool:
++        """Apply the steps that ``update_min_steps`` held back from
++        :meth:`make_step`. Returns whether there were any.
++        """
++        if not self._completed_intervals:
++            return False
++
++        self.make_step(self._completed_intervals)
++        self._completed_intervals = 0
++        return True
++
+     @property
+     def pct(self) -> float:
+-        if self.finished:
++        # Without a known length, finishing is the only sign of completion.
++        # With one, the position tells how far the work got, even if the
++        # iterable ran out before reaching the length.
++        if self.finished and not self.length:
+             return 1.0
+         return min(self.pos / (float(self.length or 1) or 1), 1.0)
+ 
+@@ -368,6 +390,7 @@ class ProgressBar(t.Generic[V]):
+                 yield rv
+                 self.update(1)
+ 
++            self._flush_pending_steps()
+             self.finish()
+             self.render_progress()
+ 
+diff --git a/src/click/core.py b/src/click/core.py
+index a3ae839..1039328 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -144,6 +144,44 @@ def _format_deprecated_suffix(deprecated: bool | str) -> str:
+     return ""
+ 
+ 
++def _default_str(value: t.Any) -> str:
++    """Convert a default value to the string shown in help text.
++
++    ``bytes`` are converted with :func:`repr`, which gives the same text as
++    :class:`str` but does not warn or fail when Python runs with ``-b`` or
++    ``-bb``.
++    """
++    if isinstance(value, (bytes, bytearray)):
++        return repr(value)
++
++    return str(value)
++
++
++def _unwrap_brackets(text: str) -> str:
++    """Remove one pair of square brackets enclosing the whole of ``text``,
++    like ``[fast|slow]``. Text such as ``[A] [B]``, where the first bracket
++    closes before the end, is returned unchanged.
++    """
++    if not (text.startswith("[") and text.endswith("]")):
++        return text
++
++    depth = 0
++
++    for index, char in enumerate(text):
++        if char == "[":
++            depth += 1
++        elif char == "]":
++            depth -= 1
++
++            if depth == 0 and index != len(text) - 1:
++                return text
++
++    if depth != 0:
++        return text
++
++    return text[1:-1]
++
++
+ def batch(iterable: cabc.Iterable[V], batch_size: int) -> list[tuple[V, ...]]:
+     return list(zip(*repeat(iter(iterable), batch_size), strict=False))
+ 
+@@ -538,6 +576,9 @@ class Context:
+         # tie-break feature-switch groups where multiple options share a parameter name
+         # and both fall back to their default value.
+         self._param_default_explicit = {}
++        # Values a prompt already ran through :meth:`Parameter.process_value`,
++        # by parameter, so they are not processed a second time.
++        self._processed_prompt_values: dict[Parameter, t.Any] = {}
+         self._exit_stack = ExitStack()
+ 
+     @property
+@@ -754,8 +795,10 @@ class Context:
+                 for param in self.parent.command.get_params(self):
+                     parent_command_path.extend(param.get_usage_pieces(self))
+ 
+-            rv = f"{' '.join(parent_command_path)} {rv}"
+-        return rv.lstrip()
++            parent_command_path.append(rv)
++            # Skip empty parts, which would leave doubled or stray spaces.
++            rv = " ".join(part for part in parent_command_path if part)
++        return rv.strip()
+ 
+     def find_root(self) -> Context:
+         """Finds the outermost context."""
+@@ -922,6 +965,14 @@ class Context:
+                     # instead.
+                     if default_value is UNSET:
+                         default_value = None
++                    # Like during parsing, the type can tell where the value
++                    # came from.
++                    ctx.set_parameter_source(
++                        param.name,
++                        ParameterSource.DEFAULT_MAP
++                        if ctx._default_map_has(param.name)
++                        else ParameterSource.DEFAULT,
++                    )
+                     kwargs[param.name] = param.type_cast_value(ctx, default_value)
+ 
+             # Track all kwargs as params, so that forward() will pass
+@@ -1185,7 +1236,8 @@ class Command:
+         This is a low-level method called by :meth:`get_usage`.
+         """
+         pieces = self.collect_usage_pieces(ctx)
+-        formatter.write_usage(ctx.command_path, " ".join(pieces))
++        # An empty piece would leave a doubled space in the synopsis.
++        formatter.write_usage(ctx.command_path, " ".join(p for p in pieces if p))
+ 
+     def collect_usage_pieces(self, ctx: Context) -> list[str]:
+         """Returns all the pieces that go into the usage line and returns
+@@ -1200,11 +1252,17 @@ class Command:
+ 
+     def get_help_option_names(self, ctx: Context) -> list[str]:
+         """Returns the names for the help option."""
+-        all_names = set(ctx.help_option_names)
++        # Keep the configured order, a set would make it depend on the
++        # per-process string hash seed.
++        taken = set()
++
+         for param in self.params:
+-            all_names.difference_update(param.opts)
+-            all_names.difference_update(param.secondary_opts)
+-        return list(all_names)
++            taken.update(param.opts)
++            taken.update(param.secondary_opts)
++
++        return [
++            name for name in dict.fromkeys(ctx.help_option_names) if name not in taken
++        ]
+ 
+     def get_help_option(self, ctx: Context) -> Option | None:
+         """Returns the help option object.
+@@ -1268,7 +1326,8 @@ class Command:
+             text = ""
+ 
+         if self.deprecated:
+-            text = f"{text} {_format_deprecated_label(self.deprecated)}"
++            label = _format_deprecated_label(self.deprecated)
++            text = f"{text} {label}" if text else label
+ 
+         return text.strip()
+ 
+@@ -1301,7 +1360,7 @@ class Command:
+ 
+         if self.deprecated:
+             label = _format_deprecated_label(self.deprecated)
+-            text = f"{text} {label}"
++            text = f"{text} {label}" if text else label
+ 
+         if text:
+             formatter.write_paragraph()
+@@ -2124,9 +2183,29 @@ class Group(Command):
+         if cmd is None and not ctx.resilient_parsing:
+             if _split_opt(cmd_name)[0]:
+                 self.parse_args(ctx, args)
+-            raise NoSuchCommand(cmd_name, possibilities=self.commands, ctx=ctx)
++            raise NoSuchCommand(
++                cmd_name, possibilities=self._suggestable_commands(ctx), ctx=ctx
++            )
+         return cmd_name if cmd else None, cmd, args[1:]
+ 
++    def _suggestable_commands(self, ctx: Context) -> list[str]:
++        """Names of the subcommands a "did you mean" hint may suggest: every
++        command :meth:`list_commands` reports, including the ones from other
++        sources, apart from hidden ones.
++        """
++        names = []
++
++        for name in self.list_commands(ctx):
++            try:
++                command = self.get_command(ctx, name)
++            except Exception:
++                continue
++
++            if command is not None and not command.hidden:
++                names.append(name)
++
++        return names
++
+     def shell_complete(self, ctx: Context, incomplete: str) -> list[CompletionItem]:
+         """Return a list of completions for the incomplete value. Looks
+         at the names of options, subcommands, and chained
+@@ -2450,7 +2529,7 @@ class Parameter(ABC):
+ 
+         if deprecated:
+             label = _format_deprecated_label(deprecated)
+-            help = f"{help} {label}" if help is not None else label
++            help = f"{help} {label}" if help else label
+ 
+         self.help = help
+ 
+@@ -2939,9 +3018,24 @@ class Parameter(ABC):
+                 )
+                 echo(style(message, fg="red"), err=True)
+ 
++            # Record the source before processing, so the type and the callback
++            # can look it up with ``ctx.get_parameter_source()``. It is settled
++            # below, once the feature-switch arbitration is known.
++            ctx.set_parameter_source(self.name, source)
++
++            # A prompt already processed the value it returns, including the
++            # callback that validated it. Do not process it a second time.
++            prompted = ctx._processed_prompt_values.pop(self, UNSET)
++            already_processed = (
++                source is ParameterSource.PROMPT
++                and prompted is not UNSET
++                and prompted is value
++            )
++
+             # Process the value through the parameter's type.
+             try:
+-                value = self.process_value(ctx, value)
++                if not already_processed:
++                    value = self.process_value(ctx, value)
+             except Exception:
+                 if not ctx.resilient_parsing:
+                     raise
+@@ -2976,6 +3070,9 @@ class Parameter(ABC):
+             # Nothing has claimed the slot yet. Record at least our source so downstream
+             # lookups don't return ``None``.
+             ctx.set_parameter_source(self.name, source)
++        else:
++            # Another parameter keeps the slot, restore the source of its value.
++            ctx.set_parameter_source(self.name, existing_source)
+ 
+         return value, args
+ 
+@@ -3384,10 +3481,44 @@ class Option(Parameter):
+ 
+     def get_error_hint(self, ctx: Context | None) -> str:
+         result = super().get_error_hint(ctx)
+-        if self.show_envvar and self.envvar is not None:
+-            result += f" (env var: '{self.envvar}')"
++
++        if self.show_envvar:
++            envvars = self._get_envvar_names(ctx)
++
++            if envvars:
++                envvars_str = ", ".join(f"'{envvar}'" for envvar in envvars)
++                result += f" (env var: {envvars_str})"
++
+         return result
+ 
++    def _get_envvar_names(self, ctx: Context | None) -> list[str]:
++        """Names of every environment variable this option reads its value
++        from, in the order they are looked up: the :attr:`envvar` given
++        explicitly, then the one derived from
++        :attr:`Context.auto_envvar_prefix`.
++        """
++        names: list[str] = []
++        envvar = self.envvar
++
++        if envvar:
++            if isinstance(envvar, str):
++                names.append(envvar)
++            else:
++                names.extend(str(name) for name in envvar if name)
++
++        if (
++            self.allow_from_autoenv
++            and ctx is not None
++            and ctx.auto_envvar_prefix is not None
++            and self.name
++        ):
++            auto_envvar = f"{ctx.auto_envvar_prefix}_{self.name.upper()}"
++
++            if auto_envvar not in names:
++                names.append(auto_envvar)
++
++        return names
++
+     def _check_name_is_normalized(self, name: str, decls: cabc.Sequence[str]) -> None:
+         """Warn about an explicit name Click 9.0 will spell differently.
+ 
+@@ -3577,21 +3708,10 @@ class Option(Parameter):
+         extra: types.OptionHelpExtra = {}
+ 
+         if self.show_envvar:
+-            envvar = self.envvar
++            envvars = self._get_envvar_names(ctx)
+ 
+-            if envvar is None:
+-                if (
+-                    self.allow_from_autoenv
+-                    and ctx.auto_envvar_prefix is not None
+-                    and self.name
+-                ):
+-                    envvar = f"{ctx.auto_envvar_prefix}_{self.name.upper()}"
+-
+-            if envvar is not None:
+-                if isinstance(envvar, str):
+-                    extra["envvars"] = (envvar,)
+-                else:
+-                    extra["envvars"] = tuple(str(d) for d in envvar)
++            if envvars:
++                extra["envvars"] = tuple(envvars)
+ 
+         # Temporarily enable resilient parsing to avoid type casting
+         # failing for the default. Might be possible to extend this to
+@@ -3621,7 +3741,7 @@ class Option(Parameter):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
+             elif isinstance(default_value, (list, tuple)):
+-                default_string = ", ".join(str(d) for d in default_value)
++                default_string = ", ".join(_default_str(d) for d in default_value)
+             elif isinstance(default_value, enum.Enum):
+                 default_string = default_value.name
+             elif inspect.isfunction(default_value):
+@@ -3637,7 +3757,7 @@ class Option(Parameter):
+             elif isinstance(default_value, str) and default_value == "":
+                 default_string = '""'
+             else:
+-                default_string = str(default_value)
++                default_string = _default_str(default_value)
+ 
+             if default_string:
+                 extra["default"] = default_string
+@@ -3687,6 +3807,13 @@ class Option(Parameter):
+                 default = bool(default)
+             return confirm(self.prompt, default)
+ 
++        def value_proc(value: t.Any) -> t.Any:
++            # The type and the callback see that the value is being prompted.
++            ctx.set_parameter_source(self.name, ParameterSource.PROMPT)
++            rv = self.process_value(ctx, value)
++            ctx._processed_prompt_values[self] = rv
++            return rv
++
+         # If show_default is given, provide this to `prompt` as well,
+         # otherwise we use `prompt`'s default behavior
+         prompt_kwargs: t.Any = {}
+@@ -3702,7 +3829,7 @@ class Option(Parameter):
+             hide_input=self.hide_input,
+             show_choices=self.show_choices,
+             confirmation_prompt=self.confirmation_prompt,
+-            value_proc=lambda x: self.process_value(ctx, x),
++            value_proc=value_proc,
+             **prompt_kwargs,
+         )
+ 
+@@ -3760,7 +3887,9 @@ class Option(Parameter):
+             # reading falls through as ``None``. Folding the substitution here means
+             # :meth:`consume_value` no longer has to repeat it in a source-checked
+             # branch.
+-            if rv == self.flag_value:
++            # Only compare strings: an environment variable is always a string,
++            # and comparing it to a ``bytes`` flag value warns under ``-b``.
++            if isinstance(self.flag_value, str) and rv == self.flag_value:
+                 return self.flag_value
+             parsed = types.BoolParamType.str_to_bool(rv)
+             if parsed is None:
+@@ -3792,6 +3921,12 @@ class Option(Parameter):
+         """
+         value, source = super().consume_value(ctx, opts)
+ 
++        # A value from the default map is a default like any other, so it
++        # resolves the same way as :attr:`default`: ``True`` activates a
++        # non-boolean flag and gives its :attr:`flag_value`.
++        if source is ParameterSource.DEFAULT_MAP:
++            value = self._resolve_lazy_default(value)
++
+         # The parser emits a sentinel when a flag is allowed to be used without a value.
+         # Resolve it to a prompt or to the activation value depending on the option's
+         # configuration.
+@@ -3905,6 +4040,11 @@ class Argument(Parameter):
+         var = self.type.get_metavar(param=self, ctx=ctx)
+         if not var:
+             var = self.name.upper()
++        if not self.required:
++            # Some types already mark their metavar as optional, like
++            # ``[fast|slow]`` for a choice. Unwrap it so the argument's own
++            # brackets are not doubled.
++            var = _unwrap_brackets(var)
+         if self.deprecated:
+             var += "!"
+         if not self.required:
+diff --git a/src/click/exceptions.py b/src/click/exceptions.py
+index 68b233b..d176166 100644
+--- a/src/click/exceptions.py
++++ b/src/click/exceptions.py
+@@ -89,12 +89,16 @@ class UsageError(ClickException):
+             file = get_text_stderr()
+         color = None
+         hint = ""
+-        if (
+-            self.ctx is not None
+-            and self.ctx.command.get_help_option(self.ctx) is not None
+-        ):
++        help_option = (
++            self.ctx.command.get_help_option(self.ctx) if self.ctx is not None else None
++        )
++        # Suggest a name the help option actually answers to. The first
++        # configured name may be taken by another parameter of the command.
++        help_names = help_option.opts if help_option is not None else []
++
++        if self.ctx is not None and help_names:
+             hint = _("Try '{command} {option}' for help.").format(
+-                command=self.ctx.command_path, option=self.ctx.help_option_names[0]
++                command=self.ctx.command_path, option=help_names[0]
+             )
+             hint = f"{hint}\n"
+         if self.ctx is not None:
+diff --git a/src/click/formatting.py b/src/click/formatting.py
+index c4aa2de..cdd5ad7 100644
+--- a/src/click/formatting.py
++++ b/src/click/formatting.py
+@@ -62,11 +62,16 @@ def wrap_text(
+     from ._textwrap import TextWrapper
+ 
+     text = text.expandtabs()
++    # Lines are only ever broken between words. A word longer than the width,
++    # or one containing hyphens like an option name, is kept whole on its own
++    # line rather than cut apart.
+     wrapper = TextWrapper(
+         width,
+         initial_indent=initial_indent,
+         subsequent_indent=subsequent_indent,
+         replace_whitespace=False,
++        break_long_words=False,
++        break_on_hyphens=False,
+     )
+     if not preserve_paragraphs:
+         return wrapper.fill(text)
+@@ -166,8 +171,15 @@ class HelpFormatter:
+         if prefix is None:
+             prefix = "{usage} ".format(usage=_("Usage:"))
+ 
+-        usage_prefix = f"{prefix:>{self.current_indent}}{prog} "
+-        text_width = self.width - self.current_indent
++        usage_prefix = f"{prefix:>{self.current_indent}}"
++
++        # Without a program name, the prefix's own trailing space separates it
++        # from the arguments. Adding another would double it.
++        if prog:
++            usage_prefix = f"{usage_prefix}{prog} "
++        # Keep a positive width however deep the indentation, the text then
++        # goes one word per line instead of failing.
++        text_width = max(self.width - self.current_indent, 1)
+ 
+         if not args:
+             # Without args, the prefix's trailing space and the wrap_text
+@@ -218,7 +230,7 @@ class HelpFormatter:
+         self.write(
+             wrap_text(
+                 text,
+-                self.width,
++                max(self.width, 1),
+                 initial_indent=indent,
+                 subsequent_indent=indent,
+                 preserve_paragraphs=True,
+diff --git a/src/click/parser.py b/src/click/parser.py
+index 4fcbf7c..333e8de 100644
+--- a/src/click/parser.py
++++ b/src/click/parser.py
+@@ -199,9 +199,11 @@ class _Argument:
+             if holes == len(value):
+                 value = UNSET
+             elif holes != 0:
++                # Name the argument the way the help page shows it.
++                name = getattr(self.obj, "spec", None) or self.dest
+                 raise BadArgumentUsage(
+                     _("Argument {name!r} takes {nargs} values.").format(
+-                        name=self.dest, nargs=self.nargs
++                        name=name, nargs=self.nargs
+                     )
+                 )
+ 
+@@ -328,11 +330,15 @@ class _OptionParser:
+         while state.rargs:
+             arg = state.rargs.pop(0)
+             arglen = len(arg)
++            # Only a string can be an option or the ``--`` marker. Anything
++            # else, like ``bytes``, is a value. Checking the type first also
++            # avoids comparing ``bytes`` to ``str``, which warns under ``-b``.
++            is_str = isinstance(arg, str)
+             # Double dashes always handled explicitly regardless of what
+             # prefixes are valid.
+-            if arg == "--":
++            if is_str and arg == "--":
+                 return
+-            elif arg[:1] in self._opt_prefixes and arglen > 1:
++            elif is_str and arg[:1] in self._opt_prefixes and arglen > 1:
+                 self._process_opts(arg, state)
+             elif self.allow_interspersed_args:
+                 state.largs.append(arg)
+diff --git a/src/click/termui.py b/src/click/termui.py
+index dad7885..110c25b 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import collections.abc as cabc
++import enum
+ import inspect
+ import io
+ import itertools
+@@ -12,6 +13,7 @@ from contextlib import AbstractContextManager
+ from contextlib import redirect_stdout
+ from gettext import gettext as _
+ 
++from . import _compat
+ from ._compat import isatty
+ from ._compat import strip_ansi
+ from .exceptions import Abort
+@@ -84,7 +86,17 @@ def hidden_prompt_func(prompt: str) -> str:
+ def _readline_prompt(func: t.Callable[[str], str], text: str, err: bool) -> str:
+     """Call a prompt function, passing the full prompt so readline can
+     handle line editing and cursor positioning correctly.
++
++    Like :func:`echo`, terminal control sequences are removed from the prompt
++    when the stream it is written to does not support them.
+     """
++    stream = sys.stderr if err else sys.stdout
++
++    # Look the function up on the module at call time, the test runner
++    # replaces it to control styling.
++    if _compat.should_strip_ansi(stream, resolve_color_default()):
++        text = strip_ansi(text)
++
+     if err:
+         with redirect_stdout(sys.stderr):
+             return func(text)
+@@ -101,7 +113,8 @@ def _build_prompt(
+ ) -> str:
+     prompt = text
+     if type is not None and show_choices and isinstance(type, Choice):
+-        prompt += f" ({', '.join(map(str, type.choices))})"
++        # Show each choice the way it is typed, the name for an enum member.
++        prompt += f" ({', '.join(map(type._format_choice, type.choices))})"
+     default_preview = ""
+     if show_default:
+         if isinstance(show_default, str):
+@@ -116,7 +129,15 @@ def _format_default(default: V) -> V | str:
+         name = getattr(default, "name", None)
+ 
+         if name is not None:
+-            return str(name)
++            return repr(name) if isinstance(name, bytes) else str(name)
++
++    # Show an enum member by its name, the way help text shows it.
++    if isinstance(default, enum.Enum):
++        return default.name
++
++    # Same text as str(), without the warning or error under ``-b``.
++    if isinstance(default, (bytes, bytearray)):
++        return repr(default)
+ 
+     return default
+ 
+@@ -718,7 +739,10 @@ def style(
+ 
+     .. versionadded:: 2.0
+     """
+-    if not isinstance(text, str):
++    if isinstance(text, (bytes, bytearray)):
++        # Same text as str(), without the warning or error under ``-b``.
++        text = repr(text)
++    elif not isinstance(text, str):
+         text = str(text)
+ 
+     bits = []
+diff --git a/src/click/types.py b/src/click/types.py
+index c2e6f8a..e936e72 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -271,10 +271,10 @@ class FuncParamType(ParamType[_ValueT_co], t.Generic[_ValueT_contra, _ValueT_co]
+             message = str(exc)
+ 
+             if not message:
+-                try:
++                if isinstance(value, (bytes, bytearray)):
++                    message = bytes(value).decode("utf-8", "replace")
++                else:
+                     message = str(value)
+-                except UnicodeError:
+-                    message = t.cast("bytes", value).decode("utf-8", "replace")
+ 
+             self.fail(message, param, ctx)
+ 
+@@ -357,6 +357,14 @@ class Choice(ParamType[_ValueT_co], t.Generic[_ValueT_co]):
+     def __init__(
+         self, choices: cabc.Iterable[_ValueT_co], case_sensitive: bool = True
+     ) -> None:
++        if isinstance(choices, (set, frozenset)):
++            # The iteration order of a set changes from one process to the
++            # next. Sort it, so help, errors, and completions are stable.
++            try:
++                choices = sorted(choices)  # type: ignore[type-var]
++            except TypeError:
++                choices = sorted(choices, key=repr)
++
+         self.choices = tuple(choices)
+         self.case_sensitive = case_sensitive
+ 
+@@ -385,6 +393,19 @@ class Choice(ParamType[_ValueT_co], t.Generic[_ValueT_co]):
+             for choice in self.choices
+         }
+ 
++    @staticmethod
++    def _format_choice(choice: object) -> str:
++        """Return a choice the way a user types it on the command line: the
++        name of an enum member, decoded ``bytes``, or the string otherwise.
++        """
++        if isinstance(choice, enum.Enum):
++            return choice.name
++
++        if isinstance(choice, bytes):
++            return STRING.convert(choice, None, None)
++
++        return str(choice)
++
+     def normalize_choice(self, choice: object, ctx: Context | None) -> str:
+         """
+         Normalize a choice value, used to map a passed string to a choice.
+@@ -395,7 +416,7 @@ class Choice(ParamType[_ValueT_co], t.Generic[_ValueT_co]):
+ 
+         .. versionadded:: 8.2.0
+         """
+-        normed_value = choice.name if isinstance(choice, enum.Enum) else str(choice)
++        normed_value = self._format_choice(choice)
+ 
+         if ctx is not None and ctx.token_normalize_func is not None:
+             normed_value = ctx.token_normalize_func(normed_value)
+@@ -487,15 +508,20 @@ class Choice(ParamType[_ValueT_co], t.Generic[_ValueT_co]):
+         """
+         from click.shell_completion import CompletionItem
+ 
+-        str_choices = map(str, self.choices)
++        # Offer each choice the way it is typed on the command line, which for
++        # an enum member is its name. Match the incomplete value after the same
++        # normalization :meth:`convert` applies, so the suggestions are exactly
++        # the values that are accepted.
++        normed_incomplete = self.normalize_choice(choice=incomplete, ctx=ctx)
++        results = []
+ 
+-        if self.case_sensitive:
+-            matched = (c for c in str_choices if c.startswith(incomplete))
+-        else:
+-            incomplete = incomplete.lower()
+-            matched = (c for c in str_choices if c.lower().startswith(incomplete))
++        for choice, normed_choice in self._normalized_mapping(ctx=ctx).items():
++            if not normed_choice.startswith(normed_incomplete):
++                continue
+ 
+-        return [CompletionItem(c) for c in matched]
++            results.append(CompletionItem(self._format_choice(choice)))
++
++        return results
+ 
+ 
+ class DateTimeInfoDict(ParamTypeInfoDict):
+@@ -837,6 +863,12 @@ class BoolParamType(ParamType[bool]):
+         """
+         if isinstance(value, bool):
+             return value
++        if isinstance(value, (bytes, bytearray)):
++            value = bytes(value).decode("utf-8", "replace")
++        elif not isinstance(value, str):
++            # A value from a default or the default map may not be a string,
++            # like ``0`` or ``1``. Read it the way it would be typed.
++            value = str(value)
+         return BoolParamType.bool_states.get(value.strip().lower())
+ 
+     def convert(
+@@ -847,7 +879,10 @@ class BoolParamType(ParamType[bool]):
+             self.fail(
+                 _(
+                     "{value!r} is not a valid boolean. Recognized values: {states}"
+-                ).format(value=value, states=", ".join(sorted(self.bool_states))),
++                ).format(
++                    value=value,
++                    states=", ".join(sorted(s for s in self.bool_states if s)),
++                ),
+                 param,
+                 ctx,
+             )
+@@ -947,7 +982,7 @@ class File(ParamType[t.IO[t.Any]]):
+     def resolve_lazy_flag(self, value: str | os.PathLike[str]) -> bool:
+         if self.lazy is not None:
+             return self.lazy
+-        if os.fspath(value) == "-":
++        if os.fsdecode(value) == "-":
+             return False
+         elif "w" in self.mode:
+             return True
+@@ -1138,7 +1173,14 @@ class Path(ParamType[_PathT_co, str | os.PathLike[str]], t.Generic[_PathT_co]):
+     ) -> _PathT_co:
+         rv = value
+ 
+-        is_dash = self.file_okay and self.allow_dash and rv in (b"-", "-")
++        # Compare the decoded form: comparing ``str`` and ``bytes`` warns when
++        # Python runs with ``-b``.
++        is_dash = (
++            self.file_okay
++            and self.allow_dash
++            and isinstance(rv, (str, bytes))
++            and os.fsdecode(rv) == "-"
++        )
+ 
+         if not is_dash:
+             if self.resolve_path:
+@@ -1192,7 +1234,7 @@ class Path(ParamType[_PathT_co, str | os.PathLike[str]], t.Generic[_PathT_co]):
+                     ctx,
+                 )
+ 
+-            if self.executable and not os.access(value, os.X_OK):
++            if self.executable and not os.access(rv, os.X_OK):
+                 self.fail(
+                     _("{name} {filename!r} is not executable.").format(
+                         name=self.name.title(), filename=format_filename(value)
+diff --git a/src/click/utils.py b/src/click/utils.py
+index 6021c96..275e781 100644
+--- a/src/click/utils.py
++++ b/src/click/utils.py
+@@ -127,7 +127,9 @@ class _LazyFile:
+         self.errors = errors
+         self.atomic = atomic
+ 
+-        if self.name == "-":
++        # Decode for the comparison, the name is ``bytes`` for a ``bytes``
++        # filename, and comparing that to a string warns under ``-b``.
++        if os.fsdecode(self.name) == "-":
+             self._f, self.should_close = open_stream(filename, mode, encoding, errors)
+         else:
+             if "r" in mode:
