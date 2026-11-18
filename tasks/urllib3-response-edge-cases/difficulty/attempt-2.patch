@@ -1,0 +1,1376 @@
+diff --git a/src/urllib3/connection.py b/src/urllib3/connection.py
+index 1aeaba3..10f4105 100644
+--- a/src/urllib3/connection.py
++++ b/src/urllib3/connection.py
+@@ -22,7 +22,7 @@ if typing.TYPE_CHECKING:
+ 
+ from ._collections import HTTPHeaderDict
+ from .http2 import probe as http2_probe
+-from .util.response import assert_header_parsing
++from .util.response import assert_header_parsing, normalize_field_value
+ from .util.timeout import _DEFAULT_TIMEOUT, _TYPE_TIMEOUT, Timeout
+ from .util.util import to_str
+ from .util.wait import wait_for_read
+@@ -45,6 +45,7 @@ from ._version import __version__
+ from .exceptions import (
+     ConnectTimeoutError,
+     HeaderParsingError,
++    InvalidHeader,
+     NameResolutionError,
+     NewConnectionError,
+     ProxyError,
+@@ -633,7 +634,13 @@ class HTTPConnection(_HTTPConnection):
+                 exc_info=True,
+             )
+ 
+-        headers = HTTPHeaderDict(httplib_response.msg.items())
++        headers = HTTPHeaderDict(
++            [
++                (name, normalize_field_value(value))
++                for name, value in httplib_response.msg.items()
++            ]
++        )
++        _sync_framing(httplib_response, headers, resp_options.request_method)
+ 
+         response = HTTPResponse(
+             body=httplib_response,
+@@ -653,6 +660,40 @@ class HTTPConnection(_HTTPConnection):
+         return response
+ 
+ 
++def _sync_framing(
++    httplib_response: http.client.HTTPResponse,
++    headers: HTTPHeaderDict,
++    request_method: str | None,
++) -> None:
++    """
++    Makes ``http.client`` delimit the body by the Content-Length as urllib3
++    parses it (RFC 9110, Section 8.6), rather than as Python's ``int()`` does.
++    """
++    from .response import _parse_content_length
++
++    status = httplib_response.status
++    if (
++        httplib_response.chunked
++        or status in (204, 304)
++        or 100 <= status < 200
++        or (request_method or "").upper() == "HEAD"
++    ):
++        return
++    content_length = headers.get("content-length")
++    if content_length is None:
++        return
++    try:
++        length = _parse_content_length(content_length)
++    except InvalidHeader:
++        # HTTPResponse raises this error itself.
++        return
++    if length != httplib_response.length:
++        httplib_response.length = length
++        if length is None:
++            # The body is delimited by the end of the connection.
++            httplib_response.will_close = True
++
++
+ class HTTPSConnection(HTTPConnection):
+     """
+     Many of the parameters to this constructor are passed to the underlying SSL
+diff --git a/src/urllib3/connectionpool.py b/src/urllib3/connectionpool.py
+index 0b1dd4a..17e1c22 100644
+--- a/src/urllib3/connectionpool.py
++++ b/src/urllib3/connectionpool.py
+@@ -913,7 +913,11 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
+                 method = "GET"
+                 # And lose the body not to transfer anything sensitive.
+                 body = None
++                # The state of the body doesn't apply to the new request.
++                body_pos = None
++                chunked = False
+                 headers = HTTPHeaderDict(headers)._prepare_for_method_change()
++                headers.discard("Transfer-Encoding")
+ 
+             # Strip headers marked as unsafe to forward to the redirected location.
+             # Check remove_headers_on_redirect to avoid a potential network call within
+@@ -936,7 +940,8 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
+                 return response
+ 
+             response.drain_conn()
+-            retries.sleep_for_retry(response)
++            if retries.respect_retry_after_header:
++                retries.sleep_for_retry(response)
+             log.debug("Redirecting %s -> %s", url, redirect_location)
+             return self.urlopen(
+                 method,
+diff --git a/src/urllib3/poolmanager.py b/src/urllib3/poolmanager.py
+index e099dd8..c74aad6 100644
+--- a/src/urllib3/poolmanager.py
++++ b/src/urllib3/poolmanager.py
+@@ -20,6 +20,7 @@ from .exceptions import (
+ from .response import BaseHTTPResponse
+ from .util.connection import _TYPE_SOCKET_OPTIONS
+ from .util.proxy import connection_requires_http_tunnel
++from .util.request import set_file_position
+ from .util.retry import Retry
+ from .util.timeout import Timeout
+ from .util.url import Url, parse_url
+@@ -458,6 +459,12 @@ class PoolManager(RequestMethods):
+         if "headers" not in kw:
+             kw["headers"] = self.headers
+ 
++        # Record the position of a file-like body, so that it can be sent
++        # again from there on a redirect that keeps the body.
++        body_pos = kw.get("body_pos")
++        if body_pos is None and kw.get("body") is not None:
++            body_pos = set_file_position(kw["body"], None)
++
+         if self._proxy_requires_url_absolute_form(u):
+             # Strip the fragment here but let the connection pool normalize the URL
+             # to avoid decoding IPv6 zone identifiers twice.
+@@ -477,21 +484,29 @@ class PoolManager(RequestMethods):
+             method = "GET"
+             # And lose the body not to transfer anything sensitive.
+             kw["body"] = None
++            # The state of the body doesn't apply to the new request.
++            kw.pop("body_pos", None)
++            kw.pop("chunked", None)
+             kw["headers"] = HTTPHeaderDict(kw["headers"])._prepare_for_method_change()
++            kw["headers"].discard("Transfer-Encoding")
++        elif body_pos is not None:
++            # The body is sent again: rewind it.
++            kw["body_pos"] = body_pos
+ 
+         retries = kw.get("retries", response.retries)
+         if not isinstance(retries, Retry):
+             retries = Retry.from_int(retries, redirect=redirect)
+ 
+-        # Strip headers marked as unsafe to forward to the redirected location.
+-        # Check remove_headers_on_redirect to avoid a potential network call within
+-        # conn.is_same_host() which may use socket.gethostbyname() in the future.
+-        if retries.remove_headers_on_redirect and not conn.is_same_host(
+-            redirect_location
+-        ):
++        # Strip headers marked as unsafe to forward to the redirected location,
++        # if and only if it's a different origin (scheme, host and port). The
++        # connection pool can't tell, as it may be the pool of a proxy.
++        if kw["headers"] and not _is_same_origin(url, redirect_location):
++            remove_headers = set(retries.remove_headers_on_redirect)
++            # The Host header of the previous request doesn't apply either.
++            remove_headers.add("host")
+             new_headers = kw["headers"].copy()
+             for header in kw["headers"]:
+-                if header.lower() in retries.remove_headers_on_redirect:
++                if header.lower() in remove_headers:
+                     new_headers.pop(header, None)
+             kw["headers"] = new_headers
+ 
+@@ -509,9 +524,33 @@ class PoolManager(RequestMethods):
+         log.info("Redirecting %s -> %s", url, redirect_location)
+ 
+         response.drain_conn()
++        # Honour Retry-After in the redirect response (RFC 9110, Section 10.2.3).
++        if retries.respect_retry_after_header:
++            retries.sleep_for_retry(response)
+         return self.urlopen(method, redirect_location, **kw)
+ 
+ 
++def _origin(url: str) -> tuple[str, str | None, int | None]:
++    """
++    Returns the origin (scheme, host, port) of an absolute URL, with the
++    default port of the scheme filled in.
++    """
++    parsed = parse_url(url)
++    scheme = (parsed.scheme or "http").lower()
++    port = parsed.port
++    if port is None:
++        port = port_by_scheme.get(scheme)
++    # parse_url() already normalizes the host.
++    return scheme, parsed.host, port
++
++
++def _is_same_origin(url: str, other_url: str) -> bool:
++    try:
++        return _origin(url) == _origin(other_url)
++    except LocationValueError:
++        return False
++
++
+ class ProxyManager(PoolManager):
+     """
+     Behaves just like :class:`PoolManager`, but sends all requests through
+diff --git a/src/urllib3/response.py b/src/urllib3/response.py
+index 1d435f8..5ed8c33 100644
+--- a/src/urllib3/response.py
++++ b/src/urllib3/response.py
+@@ -4,6 +4,7 @@ import collections
+ import io
+ import json as _json
+ import logging
++import re
+ import socket
+ import sys
+ import typing
+@@ -25,7 +26,6 @@ try:
+ except ImportError:
+     brotli = None
+ 
+-from . import util
+ from ._base_connection import _TYPE_BODY
+ from ._collections import HTTPHeaderDict
+ from .connection import BaseSSLError, HTTPConnection, HTTPException
+@@ -60,6 +60,20 @@ _READ_CHUNK_SIZE = 2**16
+ # via an unterminated chunk-size line.
+ _MAX_CHUNK_LINE_LENGTH = 2**16
+ 
++# Largest ``max_length`` passed to decompressors (they take a C ``ssize_t``).
++_MAX_DECODE_LENGTH = 2**31 - 1
++
++# Largest amount of bytes requested from the underlying file object in a
++# single call. Bigger reads are split, which avoids overflows (and huge
++# allocations) for very large ``amt`` values or lengths announced by the server.
++_MAX_SINGLE_READ = 2**28
++
++# chunk-size = 1*HEXDIG, optionally followed by BWS before the chunk
++# extensions (RFC 9112, Section 7.1).
++_CHUNK_SIZE_RE = re.compile(rb"([0-9A-Fa-f]+)[ \t]*")
++# Content-Length = 1*DIGIT (RFC 9110, Section 8.6)
++_CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
++
+ 
+ class ContentDecoder:
+     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+@@ -79,8 +93,13 @@ class DeflateDecoder(ContentDecoder):
+         self._first_try_data = b""
+         self._unfed_data = b""
+         self._obj = zlib.decompressobj()
++        # Whether any input was received. A decoder that never got any data
++        # corresponds to an empty body, which is not a truncated stream.
++        self._received_input = False
+ 
+     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
++        if data:
++            self._received_input = True
+         data = self._unfed_data + data
+         self._unfed_data = b""
+         # Data received after EOF cannot produce more output from this
+@@ -135,7 +154,10 @@ class DeflateDecoder(ContentDecoder):
+         )
+ 
+     def flush(self) -> bytes:
+-        return self._obj.flush()
++        ret = self._obj.flush()
++        if self._received_input and not self._obj.eof:
++            raise DecodeError("Deflate data is incomplete")
++        return ret
+ 
+ 
+ class GzipDecoderState:
+@@ -149,6 +171,8 @@ class GzipDecoder(ContentDecoder):
+         self._obj = zlib.decompressobj(16 + zlib.MAX_WBITS)
+         self._state = GzipDecoderState.FIRST_MEMBER
+         self._unconsumed_tail = b""
++        # Whether the current zlib object (gzip member) received input.
++        self._obj_received_input = False
+ 
+     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+         if self._state == GzipDecoderState.SWALLOW_DATA:
+@@ -170,6 +194,8 @@ class GzipDecoder(ContentDecoder):
+ 
+         ret: bytes | bytearray = b""
+         while True:
++            if data:
++                self._obj_received_input = True
+             try:
+                 chunk = self._obj.decompress(
+                     data, max_length=max(max_length - len(ret), 0)
+@@ -204,6 +230,7 @@ class GzipDecoder(ContentDecoder):
+             if self._obj.eof:
+                 self._state = GzipDecoderState.OTHER_MEMBERS
+                 self._obj = zlib.decompressobj(16 + zlib.MAX_WBITS)
++                self._obj_received_input = False
+ 
+         return ret if isinstance(ret, bytes) else bytes(ret)
+ 
+@@ -214,7 +241,10 @@ class GzipDecoder(ContentDecoder):
+     def flush(self) -> bytes:
+         if self._state == GzipDecoderState.SWALLOW_DATA:
+             return b""
+-        return self._obj.flush()
++        ret = self._obj.flush()
++        if self._obj_received_input and not self._obj.eof:
++            raise DecodeError("Gzip data is incomplete")
++        return ret
+ 
+ 
+ if brotli is not None:
+@@ -229,12 +259,15 @@ if brotli is not None:
+                 setattr(self, "_decompress", self._obj.decompress)
+             else:
+                 setattr(self, "_decompress", self._obj.process)
++            self._received_input = False
+ 
+         # Requires Brotli >= 1.2.0 for `output_buffer_limit`.
+         def _decompress(self, data: bytes, output_buffer_limit: int = -1) -> bytes:
+             raise NotImplementedError()
+ 
+         def decompress(self, data: bytes, max_length: int = -1) -> bytes:
++            if data:
++                self._received_input = True
+             try:
+                 if max_length > 0:
+                     return self._decompress(data, output_buffer_limit=max_length)
+@@ -257,9 +290,13 @@ if brotli is not None:
+                 return False
+ 
+         def flush(self) -> bytes:
++            ret = b""
+             if hasattr(self._obj, "flush"):
+-                return self._obj.flush()  # type: ignore[no-any-return]
+-            return b""
++                ret = self._obj.flush()
++            is_finished = getattr(self._obj, "is_finished", None)
++            if self._received_input and is_finished is not None and not is_finished():
++                raise DecodeError("Brotli data is incomplete")
++            return ret  # type: ignore[no-any-return]
+ 
+ 
+ try:
+@@ -275,8 +312,11 @@ else:
+     class ZstdDecoder(ContentDecoder):
+         def __init__(self) -> None:
+             self._obj = zstd.ZstdDecompressor()
++            self._received_input = False
+ 
+         def decompress(self, data: bytes, max_length: int = -1) -> bytes:
++            if data:
++                self._received_input = True
+             if not data and not self.has_unconsumed_tail:
+                 return b""
+             if self._obj.eof:
+@@ -317,7 +357,7 @@ else:
+             )
+ 
+         def flush(self) -> bytes:
+-            if not self._obj.eof:
++            if self._received_input and not self._obj.eof:
+                 raise DecodeError("Zstandard data is incomplete")
+             return b""
+ 
+@@ -336,7 +376,8 @@ class MultiDecoder(ContentDecoder):
+     max_decode_links = 5
+ 
+     def __init__(self, modes: str) -> None:
+-        encodings = [m.strip() for m in modes.split(",")]
++        encodings = [m.strip(" \t") for m in modes.split(",")]
++        encodings = [m for m in encodings if m]
+         if len(encodings) > self.max_decode_links:
+             raise DecodeError(
+                 "Too many content encodings in the chain: "
+@@ -345,7 +386,15 @@ class MultiDecoder(ContentDecoder):
+         self._decoders = [_get_decoder(e) for e in encodings]
+ 
+     def flush(self) -> bytes:
+-        return self._decoders[0].flush()
++        # Flush every decoder in the order the data passes through them, so
++        # that the output a decoder produces on flush is still decoded by the
++        # following ones.
++        data = b""
++        for i, d in enumerate(reversed(self._decoders)):
++            if i:
++                data = d.decompress(data)
++            data += d.flush()
++        return data
+ 
+     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+         if max_length <= 0:
+@@ -396,6 +445,34 @@ def _get_decoder(mode: str) -> ContentDecoder:
+     return DeflateDecoder()
+ 
+ 
++def _parse_content_length(content_length: str) -> int | None:
++    """
++    Parses the value of a Content-Length header field.
++
++    Content-Length = 1*DIGIT (RFC 9110, Section 8.6). A list of identical
++    values (e.g. ``42, 42``, as produced by repeated fields) is accepted as
++    that value. Returns ``None`` when the value is not valid, and raises
++    :class:`~urllib3.exceptions.InvalidHeader` when it contains differing
++    values.
++    """
++    values = [v.strip(" \t") for v in content_length.split(",")]
++    values = [v for v in values if v]
++    if not values or not all(_CONTENT_LENGTH_RE.fullmatch(v) for v in values):
++        return None
++    # Compare without leading zeros to avoid converting huge strings.
++    normalized = {v.lstrip("0") or "0" for v in values}
++    if len(normalized) > 1:
++        raise InvalidHeader(
++            "Content-Length contained multiple "
++            "unmatching values (%s)" % content_length
++        )
++    value = normalized.pop()
++    try:
++        return int(value)
++    except ValueError:  # Too many digits to be converted.
++        return None
++
++
+ class BytesQueueBuffer:
+     """Memory-efficient bytes buffer
+ 
+@@ -523,6 +600,8 @@ class BaseHTTPResponse(io.IOBase):
+         self._decoder: ContentDecoder | None = None
+         # Distinguish an uninitialized decoder from a response needing no decoder.
+         self._decoder_initialized = False
++        # Whether the decoder was flushed, i.e. the end of the body was decoded.
++        self._decoder_flushed = False
+         self.length_remaining: int | None
+ 
+     def get_redirect_location(self) -> str | None | typing.Literal[False]:
+@@ -635,16 +714,19 @@ class BaseHTTPResponse(io.IOBase):
+             # Note: content-encoding value should be case-insensitive, per RFC 7230
+             # Section 3.2
+             content_encoding = self.headers.get("content-encoding", "").lower()
+-            if content_encoding in self.CONTENT_DECODERS:
+-                self._decoder = _get_decoder(content_encoding)
+-            elif "," in content_encoding:
+-                encodings = [
+-                    e.strip()
+-                    for e in content_encoding.split(",")
+-                    if e.strip() in self.CONTENT_DECODERS
+-                ]
+-                if encodings:
+-                    self._decoder = _get_decoder(content_encoding)
++            # Content-Encoding is a list (RFC 9110, Section 5.6.1): empty
++            # elements are ignored, as is "identity" (no transformation).
++            encodings = [e.strip(" \t") for e in content_encoding.split(",")]
++            encodings = [e for e in encodings if e and e != "identity"]
++            if len(encodings) > MultiDecoder.max_decode_links:
++                raise DecodeError(
++                    "Too many content encodings in the chain: "
++                    f"{len(encodings)} > {MultiDecoder.max_decode_links}"
++                )
++            # Only decode when every coding that was applied is supported.
++            # Otherwise the content can't be decoded and is returned as is.
++            if encodings and all(e in self.CONTENT_DECODERS for e in encodings):
++                self._decoder = _get_decoder(", ".join(encodings))
+ 
+         self._decoder_initialized = True
+ 
+@@ -668,6 +750,10 @@ class BaseHTTPResponse(io.IOBase):
+ 
+         if max_length is None or flush_decoder:
+             max_length = -1
++        elif max_length > _MAX_DECODE_LENGTH:
++            # Decompressors take a C size; a larger limit means no limit
++            # in practice.
++            max_length = _MAX_DECODE_LENGTH
+ 
+         try:
+             if self._decoder:
+@@ -680,7 +766,7 @@ class BaseHTTPResponse(io.IOBase):
+                 "failed to decode it." % content_encoding,
+                 e,
+             ) from e
+-        if flush_decoder:
++        if flush_decoder and not self._decoder_flushed:
+             data += self._flush_decoder()
+ 
+         return data
+@@ -690,8 +776,17 @@ class BaseHTTPResponse(io.IOBase):
+         Flushes the decoder. Should only be called if the decoder is actually
+         being used.
+         """
++        self._decoder_flushed = True
+         if self._decoder:
+-            return self._decoder.decompress(b"") + self._decoder.flush()
++            try:
++                return self._decoder.decompress(b"") + self._decoder.flush()
++            except self.DECODER_ERROR_CLASSES as e:
++                content_encoding = self.headers.get("content-encoding", "").lower()
++                raise DecodeError(
++                    "Received response with content-encoding: %s, but "
++                    "failed to decode it." % content_encoding,
++                    e,
++                ) from e
+         return b""
+ 
+     # Compatibility methods for `io` module
+@@ -805,6 +900,7 @@ class HTTPResponse(BaseHTTPResponse):
+ 
+         # Are we using the chunked-style of transfer encoding?
+         self.chunk_left: int | None = None
++        self._chunked_trailer_read = False
+ 
+         # Determine length of response
+         self.length_remaining = self._init_length(request_method)
+@@ -887,24 +983,7 @@ class HTTPResponse(BaseHTTPResponse):
+                 )
+                 return None
+ 
+-            try:
+-                # RFC 7230 section 3.3.2 specifies multiple content lengths can
+-                # be sent in a single Content-Length header
+-                # (e.g. Content-Length: 42, 42). This line ensures the values
+-                # are all valid ints and that as long as the `set` length is 1,
+-                # all values are the same. Otherwise, the header is invalid.
+-                lengths = {int(val) for val in content_length.split(",")}
+-                if len(lengths) > 1:
+-                    raise InvalidHeader(
+-                        "Content-Length contained multiple "
+-                        "unmatching values (%s)" % content_length
+-                    )
+-                length = lengths.pop()
+-            except ValueError:
+-                length = None
+-            else:
+-                if length < 0:
+-                    length = None
++            length = _parse_content_length(content_length)
+ 
+         else:  # if content_length is None
+             length = None
+@@ -998,19 +1077,23 @@ class HTTPResponse(BaseHTTPResponse):
+         happen.
+ 
+         This happens to urllib3 injected with pyOpenSSL-backed SSL-support.
++
++        Reads of more than that are split in all cases, as very large amounts
++        can't be passed to the underlying file object at once.
+         """
+         assert self._fp
+         c_int_max = 2**31 - 1
+         if (
+-            (amt and amt > c_int_max)
+-            or (
+-                amt is None
+-                and self.length_remaining
+-                and self.length_remaining > c_int_max
+-            )
+-        ) and util.IS_PYOPENSSL:
++            amt is None
++            and self.length_remaining is not None
++            and self.length_remaining > c_int_max
++        ):
++            # Read a huge body in bounded pieces.
++            amt = self.length_remaining
++
++        if amt is not None and amt > c_int_max:
+             if read1:
+-                return self._fp.read1(c_int_max)
++                return self._fp.read1(_MAX_SINGLE_READ)
+             buffer = io.BytesIO()
+             # Besides `max_chunk_amt` being a maximum chunk size, it
+             # affects memory overhead of reading a response by this
+@@ -1018,13 +1101,10 @@ class HTTPResponse(BaseHTTPResponse):
+             # `c_int_max` equal to 2 GiB - 1 byte is the actual maximum
+             # chunk size that does not lead to an overflow error, but
+             # 256 MiB is a compromise.
+-            max_chunk_amt = 2**28
+-            while amt is None or amt != 0:
+-                if amt is not None:
+-                    chunk_amt = min(amt, max_chunk_amt)
+-                    amt -= chunk_amt
+-                else:
+-                    chunk_amt = max_chunk_amt
++            max_chunk_amt = _MAX_SINGLE_READ
++            while amt != 0:
++                chunk_amt = min(amt, max_chunk_amt)
++                amt -= chunk_amt
+                 data = self._fp.read(chunk_amt)
+                 if not data:
+                     break
+@@ -1049,34 +1129,59 @@ class HTTPResponse(BaseHTTPResponse):
+         if self._fp is None:
+             return None  # type: ignore[return-value]
+ 
++        if self.chunked and self.supports_chunked_reads():
++            # Chunked bodies are always parsed by urllib3 itself, so that the
++            # body is the same however it is read.
++            with self._error_catcher():
++                data = self._raw_read_chunked(amt, read1=read1)
++            if data:
++                self._fp_bytes_read += len(data)
++            return data
++
+         fp_closed = getattr(self._fp, "closed", False)
+ 
+         with self._error_catcher():
+             data = self._fp_read(amt, read1=read1) if not fp_closed else b""
+-            if amt is not None and amt != 0 and not data:
+-                # Platform-specific: Buggy versions of Python.
+-                # Close the connection when no data is returned
+-                #
+-                # This is redundant to what httplib/http.client _should_
+-                # already do.  However, versions of python released before
+-                # December 15, 2012 (http://bugs.python.org/issue16298) do
+-                # not properly close the connection in all cases. There is
+-                # no harm in redundantly calling close.
+-                self._fp.close()
++            expected = self.length_remaining
++            if amt != 0 and not data:
++                if amt is not None or read1:
++                    # Platform-specific: Buggy versions of Python.
++                    # Close the connection when no data is returned
++                    #
++                    # This is redundant to what httplib/http.client _should_
++                    # already do.  However, versions of python released before
++                    # December 15, 2012 (http://bugs.python.org/issue16298) do
++                    # not properly close the connection in all cases. There is
++                    # no harm in redundantly calling close.
++                    #
++                    # `self._fp.read1` in CPython 3.12 and older doesn't always
++                    # close `http.client.HTTPResponse` either.
++                    # See https://github.com/python/cpython/issues/113199
++                    self._fp.close()
+                 if (
+                     self.enforce_content_length
+-                    and self.length_remaining is not None
+-                    and self.length_remaining != 0
++                    and expected is not None
++                    and expected != 0
+                 ):
+                     # This is an edge case that httplib failed to cover due
+                     # to concerns of backward compatibility. We're
+                     # addressing it here to make sure IncompleteRead is
+                     # raised during streaming, so all calls with incorrect
+                     # Content-Length are caught.
+-                    raise IncompleteRead(self._fp_bytes_read, self.length_remaining)
+-            elif read1 and (
+-                (amt != 0 and not data) or self.length_remaining == len(data)
++                    raise IncompleteRead(self._fp_bytes_read, expected)
++            elif (
++                amt is None
++                and not read1
++                and self.enforce_content_length
++                and expected is not None
++                and len(data) != expected
+             ):
++                # A full read didn't end at the end of the body.
++                self._fp.close()
++                raise IncompleteRead(
++                    self._fp_bytes_read + len(data), expected - len(data)
++                )
++            elif read1 and expected is not None and expected == len(data):
+                 # All data has been read, but `self._fp.read1` in
+                 # CPython 3.12 and older doesn't always close
+                 # `http.client.HTTPResponse`, so we close it here.
+@@ -1089,6 +1194,43 @@ class HTTPResponse(BaseHTTPResponse):
+                 self.length_remaining -= len(data)
+         return data
+ 
++    def _raw_read_chunked(self, amt: int | None, *, read1: bool = False) -> bytes:
++        """
++        Reads up to `amt` bytes (everything when `amt` is None) of the
++        payload of a chunked response, without decoding it. With `read1`,
++        at most one chunk is read.
++        """
++        # Don't bother reading the body of a HEAD request.
++        if self._original_response and is_response_to_head(self._original_response):
++            self._original_response.close()
++            return b""
++
++        # The response was read and closed already.
++        if getattr(self._fp, "fp", None) is None:
++            return b""
++
++        # The last chunk was read already.
++        if self.chunk_left == 0:
++            self._finish_chunked()
++            return b""
++
++        if amt == 0:
++            return b""
++
++        parts = []
++        total = 0
++        while amt is None or total < amt:
++            self._update_chunk_length()
++            if self.chunk_left == 0:
++                self._finish_chunked()
++                break
++            chunk = self._handle_chunk(None if amt is None else amt - total)
++            parts.append(chunk)
++            total += len(chunk)
++            if read1:
++                break
++        return b"".join(parts)
++
+     def read(
+         self,
+         amt: int | None = None,
+@@ -1119,14 +1261,23 @@ class HTTPResponse(BaseHTTPResponse):
+         if decode_content is None:
+             decode_content = self.decode_content
+ 
+-        if amt and amt < 0:
++        if amt is not None and amt < 0:
+             # Negative numbers and `None` should be treated the same.
+             amt = None
+-        elif amt is not None:
++
++        if amt != 0 and not decode_content and self._has_decoded_content:
++            # Refuse before any data is consumed.
++            raise RuntimeError(
++                "Calling read(decode_content=False) is not supported after "
++                "read(decode_content=True) was called."
++            )
++
++        if amt is not None:
+             cache_content = False
+ 
+             if (
+-                self._decoder
++                decode_content
++                and self._decoder
+                 and self._decoder.has_unconsumed_tail
+                 and len(self._decoded_buffer) < amt
+             ):
+@@ -1144,12 +1295,16 @@ class HTTPResponse(BaseHTTPResponse):
+         if not cache_content:
+             self._uncached_read_occurred = True
+ 
++        if data is None:
++            return data
++
+         flush_decoder = amt is None or (amt != 0 and not data)
+ 
+         if (
+             not data
+             and len(self._decoded_buffer) == 0
+             and not (self._decoder and self._decoder.has_unconsumed_tail)
++            and not (flush_decoder and self._needs_flush(decode_content))
+         ):
+             return data
+ 
+@@ -1166,11 +1321,6 @@ class HTTPResponse(BaseHTTPResponse):
+         else:
+             # do not waste memory on buffer when not decoding
+             if not decode_content:
+-                if self._has_decoded_content:
+-                    raise RuntimeError(
+-                        "Calling read(decode_content=False) is not supported after "
+-                        "read(decode_content=True) was called."
+-                    )
+                 return data
+ 
+             decoded_data = self._decode(
+@@ -1186,6 +1336,7 @@ class HTTPResponse(BaseHTTPResponse):
+                 # For example, the GZ file header takes 10 bytes, we don't want to read
+                 # it one byte at a time
+                 data = self._raw_read(amt)
++                flush_decoder = not data
+                 decoded_data = self._decode(
+                     data,
+                     decode_content,
+@@ -1197,6 +1348,12 @@ class HTTPResponse(BaseHTTPResponse):
+ 
+         return data
+ 
++    def _needs_flush(self, decode_content: bool) -> bool:
++        """
++        Whether the decoder still has to be flushed at the end of the body.
++        """
++        return bool(decode_content and self._decoder and not self._decoder_flushed)
++
+     def read1(
+         self,
+         amt: int | None = None,
+@@ -1216,16 +1373,16 @@ class HTTPResponse(BaseHTTPResponse):
+         """
+         if decode_content is None:
+             decode_content = self.decode_content
+-        if amt and amt < 0:
++        if amt is not None and amt < 0:
+             # Negative numbers and `None` should be treated the same.
+             amt = None
++        if self._has_decoded_content and not decode_content:
++            raise RuntimeError(
++                "Calling read1(decode_content=False) is not supported after "
++                "read1(decode_content=True) was called."
++            )
+         # try and respond without going to the network
+-        if self._has_decoded_content:
+-            if not decode_content:
+-                raise RuntimeError(
+-                    "Calling read1(decode_content=False) is not supported after "
+-                    "read1(decode_content=True) was called."
+-                )
++        if decode_content:
+             if (
+                 self._decoder
+                 and self._decoder.has_unconsumed_tail
+@@ -1379,40 +1536,82 @@ class HTTPResponse(BaseHTTPResponse):
+             raise ProtocolError(
+                 "Response chunk size line exceeded maximum allowed length"
+             ) from None
++        if not line:
++            self.close()
++            # Truncated at start of next chunk
++            raise ProtocolError("Response ended prematurely") from None
+         line = line.split(b";", 1)[0]
+-        try:
+-            self.chunk_left = int(line, 16)
+-        except ValueError:
++        # chunk-size = 1*HEXDIG (RFC 9112, Section 7.1). Python's int() would
++        # also accept signs, underscores, "0x" prefixes and other whitespace.
++        match = _CHUNK_SIZE_RE.fullmatch(line.rstrip(b"\r\n"))
++        if match is None:
+             self.close()
+-            if line:
+-                # Invalid chunked protocol response, abort.
+-                raise InvalidChunkLength(self, line) from None
+-            else:
+-                # Truncated at start of next chunk
+-                raise ProtocolError("Response ended prematurely") from None
++            # Invalid chunked protocol response, abort.
++            raise InvalidChunkLength(self, line) from None
++        self.chunk_left = int(match.group(1), 16)
++
++    def _safe_read(self, amt: int) -> bytes:
++        """
++        Reads exactly `amt` bytes from the underlying ``http.client`` response,
++        in bounded pieces so that huge chunk sizes don't overflow.
++        """
++        if amt <= _MAX_SINGLE_READ:
++            return self._fp._safe_read(amt)  # type: ignore[union-attr, no-any-return]
++        buffer = io.BytesIO()
++        while amt > 0:
++            piece = min(amt, _READ_CHUNK_SIZE * 16)
++            buffer.write(self._fp._safe_read(piece))  # type: ignore[union-attr]
++            amt -= piece
++        return buffer.getvalue()
+ 
+     def _handle_chunk(self, amt: int | None) -> bytes:
+         returned_chunk = None
+         if amt is None:
+-            chunk = self._fp._safe_read(self.chunk_left)  # type: ignore[union-attr]
++            chunk = self._safe_read(self.chunk_left)  # type: ignore[arg-type]
+             returned_chunk = chunk
+-            self._fp._safe_read(2)  # type: ignore[union-attr] # Toss the CRLF at the end of the chunk.
++            self._safe_read(2)  # Toss the CRLF at the end of the chunk.
+             self.chunk_left = None
+         elif self.chunk_left is not None and amt < self.chunk_left:
+-            value = self._fp._safe_read(amt)  # type: ignore[union-attr]
++            value = self._safe_read(amt)
+             self.chunk_left = self.chunk_left - amt
+             returned_chunk = value
+         elif amt == self.chunk_left:
+-            value = self._fp._safe_read(amt)  # type: ignore[union-attr]
+-            self._fp._safe_read(2)  # type: ignore[union-attr] # Toss the CRLF at the end of the chunk.
++            value = self._safe_read(amt)
++            self._safe_read(2)  # Toss the CRLF at the end of the chunk.
+             self.chunk_left = None
+             returned_chunk = value
+         else:  # amt > self.chunk_left
+-            returned_chunk = self._fp._safe_read(self.chunk_left)  # type: ignore[union-attr]
+-            self._fp._safe_read(2)  # type: ignore[union-attr] # Toss the CRLF at the end of the chunk.
++            returned_chunk = self._safe_read(self.chunk_left)  # type: ignore[arg-type]
++            self._safe_read(2)  # Toss the CRLF at the end of the chunk.
+             self.chunk_left = None
+         return returned_chunk  # type: ignore[no-any-return]
+ 
++    def _finish_chunked(self) -> None:
++        """
++        Called once the last chunk was read: discards the trailer section and
++        closes the original response.
++        """
++        if not self._chunked_trailer_read:
++            self._chunked_trailer_read = True
++            # Chunk content ends with \r\n: discard it.
++            while self._fp is not None and getattr(self._fp, "fp", None) is not None:
++                line = self._fp.fp.readline(_MAX_CHUNK_LINE_LENGTH + 1)
++                if len(line) > _MAX_CHUNK_LINE_LENGTH:
++                    raise ProtocolError(
++                        "Response chunk trailer line exceeded maximum allowed length"
++                    )
++                if not line:
++                    # Some sites may not end with '\r\n'.
++                    break
++                if line == b"\r\n":
++                    break
++
++        # We read everything; close the "file".
++        if self._original_response:
++            self._original_response.close()
++        elif self._fp is not None and hasattr(self._fp, "close"):
++            self._fp.close()
++
+     def read_chunked(
+         self, amt: int | None = None, decode_content: bool | None = None
+     ) -> typing.Generator[bytes]:
+@@ -1430,6 +1629,8 @@ class HTTPResponse(BaseHTTPResponse):
+             'content-encoding' header.
+         """
+         self._init_decoder()
++        if decode_content is None:
++            decode_content = self.decode_content
+         # FIXME: Rewrite this method and make it a class with a better structured logic.
+         if not self.chunked:
+             raise ResponseNotChunked(
+@@ -1441,28 +1642,48 @@ class HTTPResponse(BaseHTTPResponse):
+                 "Body should be http.client.HTTPResponse like. "
+                 "It should have have an fp attribute which returns raw chunks."
+             )
++        if amt != 0 and not decode_content and self._has_decoded_content:
++            # Refuse before any data is consumed.
++            raise RuntimeError(
++                "Calling read(decode_content=False) is not supported after "
++                "read(decode_content=True) was called."
++            )
+ 
++        # Data is yielded outside of `_error_catcher()`, so that a generator
++        # that is not exhausted doesn't break the connection when it's closed.
+         with self._error_catcher():
+             # Don't bother reading the body of a HEAD request.
+             if self._original_response and is_response_to_head(self._original_response):
+                 self._original_response.close()
+                 return None
+ 
+-            # If a response is already read and closed
+-            # then return immediately.
+-            if self._fp.fp is None:  # type: ignore[union-attr]
+-                return None
++        if amt == 0:
++            return
++        elif amt and amt < 0:
++            # Negative numbers and `None` should be treated the same,
++            # but httplib handles only `None` correctly.
++            amt = None
+ 
+-            if amt == 0:
+-                return
+-            elif amt and amt < 0:
+-                # Negative numbers and `None` should be treated the same,
+-                # but httplib handles only `None` correctly.
+-                amt = None
++        # Data decoded by earlier reads comes first.
++        if decode_content and len(self._decoded_buffer) > 0:
++            if amt is None:
++                yield self._decoded_buffer.get_all()
++            else:
++                while len(self._decoded_buffer) > 0:
++                    yield self._decoded_buffer.get(amt)
+ 
+-            while True:
++        while True:
++            with self._error_catcher():
++                # If a response is already read and closed
++                # then return immediately.
++                if self._fp.fp is None:  # type: ignore[union-attr]
++                    break
+                 # First, check if any data is left in the decoder's buffer.
+-                if self._decoder and self._decoder.has_unconsumed_tail:
++                if (
++                    decode_content
++                    and self._decoder
++                    and self._decoder.has_unconsumed_tail
++                ):
+                     chunk = b""
+                 else:
+                     self._update_chunk_length()
+@@ -1470,39 +1691,26 @@ class HTTPResponse(BaseHTTPResponse):
+                     if self.chunk_left == 0:
+                         break
+                     chunk = self._handle_chunk(amt)
++                    self._fp_bytes_read += len(chunk)
+                 decoded = self._decode(
+                     chunk,
+                     decode_content=decode_content,
+                     flush_decoder=False,
+                     max_length=amt,
+                 )
+-                if decoded:
+-                    yield decoded
++            if decoded:
++                yield decoded
+ 
+-            if decode_content:
+-                # On CPython and PyPy, we should never need to flush the
+-                # decoder. However, on Jython we *might* need to, so
+-                # lets defensively do it anyway.
++        with self._error_catcher():
++            decoded = b""
++            if self._needs_flush(decode_content):
++                # Decoders may hold data until the end of the stream, and a
++                # truncated stream is only detected here.
+                 decoded = self._flush_decoder()
+-                if decoded:  # Platform-specific: Jython.
+-                    yield decoded
+-
+-            # Chunk content ends with \r\n: discard it.
+-            while self._fp is not None:
+-                line = self._fp.fp.readline(_MAX_CHUNK_LINE_LENGTH + 1)
+-                if len(line) > _MAX_CHUNK_LINE_LENGTH:
+-                    raise ProtocolError(
+-                        "Response chunk trailer line exceeded maximum allowed length"
+-                    )
+-                if not line:
+-                    # Some sites may not end with '\r\n'.
+-                    break
+-                if line == b"\r\n":
+-                    break
+-
+-            # We read everything; close the "file".
+-            if self._original_response:
+-                self._original_response.close()
++            if self._fp.fp is not None:  # type: ignore[union-attr]
++                self._finish_chunked()
++        if decoded:
++            yield decoded
+ 
+     @property
+     def url(self) -> str | None:
+diff --git a/src/urllib3/util/request.py b/src/urllib3/util/request.py
+index 89b530c..b246a1a 100644
+--- a/src/urllib3/util/request.py
++++ b/src/urllib3/util/request.py
+@@ -205,10 +205,23 @@ def rewind_body(body: typing.IO[typing.AnyStr], body_pos: _TYPE_BODY_POSITION) -
+         Position to seek to in file.
+     """
+     body_seek = getattr(body, "seek", None)
+-    if body_seek is not None and isinstance(body_pos, int):
++    if isinstance(body_pos, int) and not isinstance(body_pos, bool):
++        if body_seek is None:
++            if body is None or isinstance(body, (str, bytes, bytearray, memoryview)):
++                # Nothing to rewind: the body can be sent again as is.
++                return
++            raise UnrewindableBodyError(
++                "Unable to rewind request body for redirect/retry: "
++                "the body doesn't support seek()."
++            )
++        if body_pos < 0:
++            raise UnrewindableBodyError(
++                "Unable to rewind request body for redirect/retry: "
++                f"invalid position {body_pos}."
++            )
+         try:
+             body_seek(body_pos)
+-        except OSError as e:
++        except (OSError, OverflowError, ValueError) as e:
+             raise UnrewindableBodyError(
+                 "An error occurred when rewinding request body for redirect/retry."
+             ) from e
+diff --git a/src/urllib3/util/response.py b/src/urllib3/util/response.py
+index 0f45786..404f877 100644
+--- a/src/urllib3/util/response.py
++++ b/src/urllib3/util/response.py
+@@ -1,11 +1,33 @@
+ from __future__ import annotations
+ 
+ import http.client as httplib
++import re
+ from email.errors import MultipartInvariantViolationDefect, StartBoundaryNotFoundDefect
+ 
+ from ..exceptions import HeaderParsingError
+ 
+ 
++# obs-fold = OWS CRLF RWS (RFC 9112, Section 5.2). The parser of the standard
++# library keeps line breaks of folded field lines as they were received.
++_OBS_FOLD_RE = re.compile(r"[ \t]*(?:\r\n|\r|\n)[ \t]+")
++# Characters a field value can't contain: CTLs other than HTAB, including
++# CR, LF and NUL (RFC 9110, Section 5.5).
++_INVALID_FIELD_VALUE_CHARS_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
++
++
++def normalize_field_value(value: str) -> str:
++    """
++    Normalizes a field value received from the wire as RFC 9110 and RFC 9112
++    require: each obsolete line folding is replaced with a single space,
++    characters that a field value can't contain (such as CR, LF and NUL)
++    are replaced with a space, and leading and trailing whitespace is
++    removed.
++    """
++    value = _OBS_FOLD_RE.sub(" ", value)
++    value = _INVALID_FIELD_VALUE_CHARS_RE.sub(" ", value)
++    return value.strip(" \t")
++
++
+ def is_fp_closed(obj: object) -> bool:
+     """
+     Checks whether a given file-like object is closed.
+diff --git a/src/urllib3/util/retry.py b/src/urllib3/util/retry.py
+index 0dca7a5..34fb7f9 100644
+--- a/src/urllib3/util/retry.py
++++ b/src/urllib3/util/retry.py
+@@ -1,9 +1,11 @@
+ from __future__ import annotations
+ 
+-import email
++import email.utils
+ import logging
++import math
+ import random
+ import re
++import threading
+ import time
+ import typing
+ import warnings
+@@ -40,6 +42,172 @@ class RequestHistory(typing.NamedTuple):
+     redirect_location: str | None
+ 
+ 
++_DELAY_SECONDS_RE = re.compile(r"[0-9]+")
++
++_DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
++_LONG_DAY_NAMES = (
++    "monday",
++    "tuesday",
++    "wednesday",
++    "thursday",
++    "friday",
++    "saturday",
++    "sunday",
++)
++_MONTHS = {
++    name: index
++    for index, name in enumerate(
++        (
++            "jan",
++            "feb",
++            "mar",
++            "apr",
++            "may",
++            "jun",
++            "jul",
++            "aug",
++            "sep",
++            "oct",
++            "nov",
++            "dec",
++        ),
++        start=1,
++    )
++}
++_TIME = r"(?P<hour>[0-9]{1,2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
++# HTTP-date = IMF-fixdate / obs-date (RFC 9110, Section 5.6.7). The day may
++# have one digit and UTC may be named "UTC" or "UT", as some servers do.
++_IMF_FIXDATE_RE = re.compile(
++    r"(?:(?P<dayname>[A-Za-z]{3}),[ \t]*)?(?P<day>[0-9]{1,2})[ \t]+"
++    r"(?P<month>[A-Za-z]{3})[ \t]+(?P<year>[0-9]{4})[ \t]+" + _TIME + r"[ \t]+"
++    r"(?P<zone>GMT|UTC|UT|Z)",
++    re.IGNORECASE,
++)
++_RFC850_DATE_RE = re.compile(
++    r"(?:(?P<dayname>[A-Za-z]{6,9}),[ \t]*)?(?P<day>[0-9]{1,2})-"
++    r"(?P<month>[A-Za-z]{3})-(?P<year>[0-9]{2})[ \t]+" + _TIME + r"[ \t]+"
++    r"(?P<zone>GMT|UTC|UT|Z)",
++    re.IGNORECASE,
++)
++_ASCTIME_DATE_RE = re.compile(
++    r"(?:(?P<dayname>[A-Za-z]{3})[ \t]+)?(?P<month>[A-Za-z]{3})[ \t]+"
++    r"(?P<day>[0-9]{1,2})[ \t]+" + _TIME + r"[ \t]+(?P<year>[0-9]{4})",
++    re.IGNORECASE,
++)
++
++
++def _sleep_duration(seconds: float) -> float:
++    """Limits a duration to what ``time.sleep()`` accepts without overflowing."""
++    if seconds > threading.TIMEOUT_MAX:
++        return threading.TIMEOUT_MAX
++    return seconds
++
++
++def _days_from_civil(year: int, month: int, day: int) -> int:
++    """Days since 1970-01-01 in the proleptic Gregorian calendar."""
++    year -= month <= 2
++    era = year // 400
++    yoe = year - era * 400
++    doy = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + day - 1
++    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
++    return era * 146097 + doe - 719468
++
++
++def _parse_http_date(value: str) -> int | None:
++    """
++    Parses an HTTP-date (RFC 9110, Section 5.6.7) into a POSIX timestamp.
++
++    All three formats (IMF-fixdate, RFC 850 and asctime) are accepted and
++    always represent UTC. Returns ``None`` when the value is not a valid date.
++    """
++    match = None
++    two_digit_year = False
++    for regex in (_IMF_FIXDATE_RE, _RFC850_DATE_RE, _ASCTIME_DATE_RE):
++        match = regex.fullmatch(value)
++        if match is not None:
++            two_digit_year = regex is _RFC850_DATE_RE
++            break
++    if match is None:
++        return _parse_other_date(value)
++
++    dayname = match.group("dayname")
++    if dayname is not None:
++        names = _LONG_DAY_NAMES if two_digit_year else _DAY_NAMES
++        if dayname.lower() not in names:
++            return None
++
++    month = _MONTHS.get(match.group("month").lower())
++    if month is None:
++        return None
++    year = int(match.group("year"))
++    day = int(match.group("day"))
++    hour = int(match.group("hour"))
++    minute = int(match.group("minute"))
++    second = int(match.group("second"))
++
++    if two_digit_year:
++        # A recipient of an rfc850-date that appears to be more than 50 years
++        # in the future interprets it as the most recent year in the past
++        # with the same last two digits (RFC 9110, Section 5.6.7).
++        current_year = time.gmtime().tm_year
++        year += current_year - current_year % 100
++        if year > current_year + 50:
++            year -= 100
++
++    if month == 2:
++        leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
++        days_in_month = 29 if leap else 28
++    else:
++        days_in_month = 30 if month in (4, 6, 9, 11) else 31
++    return _timestamp(year, month, day, hour, minute, second)
++
++
++def _timestamp(
++    year: int, month: int, day: int, hour: int, minute: int, second: int
++) -> int | None:
++    """
++    Converts a UTC date to a POSIX timestamp, or returns ``None`` if the date
++    doesn't exist.
++    """
++    if not 1 <= month <= 12:
++        return None
++    if month == 2:
++        leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
++        days_in_month = 29 if leap else 28
++    else:
++        days_in_month = 30 if month in (4, 6, 9, 11) else 31
++    # second can be 60 for a leap second.
++    if not (
++        1 <= day <= days_in_month
++        and 0 <= hour <= 23
++        and 0 <= minute <= 59
++        and 0 <= second <= 60
++    ):
++        return None
++
++    days = _days_from_civil(year, month, day)
++    return days * 86400 + hour * 3600 + minute * 60 + second
++
++
++def _parse_other_date(value: str) -> int | None:
++    """
++    Parses dates in formats other than HTTP-date, such as ones with a numeric
++    time zone, as recipients are encouraged to be robust (RFC 9110,
++    Section 5.6.7). Dates without a time zone are taken as UTC.
++    """
++    date_tuple = email.utils.parsedate_tz(value)
++    if date_tuple is None:
++        return None
++    year, month, day, hour, minute, second = date_tuple[:6]
++    offset = date_tuple[9] or 0
++    if not 1 <= year <= 9999 or abs(offset) >= 86400:
++        return None
++    timestamp = _timestamp(year, month, day, hour, minute, second)
++    if timestamp is None:
++        return None
++    return timestamp - offset
++
++
+ class Retry:
+     """Retry configuration.
+ 
+@@ -334,7 +502,17 @@ class Retry:
+         if consecutive_errors_len <= 1:
+             return 0
+ 
+-        backoff_value = self.backoff_factor * (2 ** (consecutive_errors_len - 1))
++        backoff_value: float
++        if self.backoff_factor == 0:
++            backoff_value = 0
++        else:
++            try:
++                backoff_value = self.backoff_factor * (
++                    2.0 ** (consecutive_errors_len - 1)
++                )
++            except OverflowError:
++                # The value is way larger than any sensible backoff_max.
++                backoff_value = math.inf if self.backoff_factor > 0 else 0
+         if self.backoff_jitter != 0.0:
+             backoff_value += random.random() * self.backoff_jitter
+         return float(max(0, min(self.backoff_max, backoff_value)))
+@@ -342,14 +520,20 @@ class Retry:
+     def parse_retry_after(self, retry_after: str) -> float:
+         seconds: float
+         # Whitespace: https://tools.ietf.org/html/rfc7230#section-3.2.4
+-        if re.match(r"^\s*[0-9]+\s*$", retry_after):
+-            seconds = int(retry_after)
++        value = retry_after.strip(" \t")
++        if _DELAY_SECONDS_RE.fullmatch(value):
++            # delay-seconds = 1*DIGIT (RFC 9110, Section 10.2.3)
++            digits = value.lstrip("0") or "0"
++            if len(digits) > 18:
++                # Too large to matter (and maybe to convert), as the value is
++                # limited to retry_after_max anyway.
++                seconds = math.inf
++            else:
++                seconds = int(digits)
+         else:
+-            retry_date_tuple = email.utils.parsedate_tz(retry_after)
+-            if retry_date_tuple is None:
++            retry_date = _parse_http_date(value)
++            if retry_date is None:
+                 raise InvalidHeader(f"Invalid Retry-After header: {retry_after}")
+-
+-            retry_date = email.utils.mktime_tz(retry_date_tuple)
+             seconds = retry_date - time.time()
+ 
+         seconds = max(seconds, 0)
+@@ -373,7 +557,7 @@ class Retry:
+     def sleep_for_retry(self, response: BaseHTTPResponse) -> bool:
+         retry_after = self.get_retry_after(response)
+         if retry_after:
+-            time.sleep(retry_after)
++            time.sleep(_sleep_duration(retry_after))
+             return True
+ 
+         return False
+@@ -382,7 +566,7 @@ class Retry:
+         backoff = self.get_backoff_time()
+         if backoff <= 0:
+             return
+-        time.sleep(backoff)
++        time.sleep(_sleep_duration(backoff))
+ 
+     def sleep(self, response: BaseHTTPResponse | None = None) -> None:
+         """Sleep between retry attempts.
+diff --git a/src/urllib3/util/ssl_.py b/src/urllib3/util/ssl_.py
+index 72e8858..3c17c23 100644
+--- a/src/urllib3/util/ssl_.py
++++ b/src/urllib3/util/ssl_.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import hashlib
+ import hmac
+ import os
++import re
+ import socket
+ import sys
+ import typing
+@@ -21,6 +22,8 @@ ALPN_PROTOCOLS = ["http/1.1"]
+ _TYPE_VERSION_INFO = tuple[int, int, int, str, int]
+ 
+ # Maps the length of a digest to a possible hash function producing this digest
++_HEX_DIGITS_RE = re.compile(r"[0-9a-fA-F]*")
++
+ HASHFUNC_MAP = {
+     length: getattr(hashlib, algorithm, None)
+     for length, algorithm in ((32, "md5"), (40, "sha1"), (64, "sha256"))
+@@ -121,6 +124,10 @@ def assert_fingerprint(cert: bytes | None, fingerprint: str) -> None:
+     digest_length = len(fingerprint)
+     if digest_length not in HASHFUNC_MAP:
+         raise SSLError(f"Fingerprint of invalid length: {fingerprint}")
++    if not _HEX_DIGITS_RE.fullmatch(fingerprint):
++        raise SSLError(
++            f"Fingerprint contains non-hexadecimal characters: {fingerprint}"
++        )
+     hashfunc = HASHFUNC_MAP.get(digest_length)
+     if hashfunc is None:
+         raise SSLError(
