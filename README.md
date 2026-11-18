@@ -26,6 +26,7 @@ because that's how I got to the ones that work.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
+| [`tasks/packaging-spec-edge-cases`](tasks/packaging-spec-edge-cases) | [packaging](https://github.com/pypa/packaging) | Bug hunt: nine spec edge cases (PEP 440/508, wheel tags, metadata), no oracle | **Accepted**: 0 of 3 attempts passed (47 / 48 each) |
 | [`tasks/flask-werkzeug-rare-inputs`](tasks/flask-werkzeug-rare-inputs) | [flask](https://github.com/pallets/flask) + [werkzeug](https://github.com/pallets/werkzeug) | Bug hunt across two repos: thirteen rare-input bugs, no oracle | **Accepted**: 0 of 3 attempts passed (66 / 68 each) |
 | [`tasks/aiohttp-http-edge-cases`](tasks/aiohttp-http-edge-cases) | [aiohttp](https://github.com/aio-libs/aiohttp) | Bug hunt: nine HTTP edge cases with unusual triggers, client and server, no oracle | **Accepted**: 0 of 2 attempts passed (87 / 90, 89 / 90) |
 | [`tasks/tomlkit-conformance`](tasks/tomlkit-conformance) | [tomlkit](https://github.com/python-poetry/tomlkit) | Bug hunt, v3: fifteen bugs with rare triggers, one symptom in the report | **Accepted: 0 of 2 attempts solved it** |

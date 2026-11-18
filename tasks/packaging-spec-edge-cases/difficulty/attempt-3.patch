@@ -1,0 +1,767 @@
+diff --git a/src/packaging/_parser.py b/src/packaging/_parser.py
+index 6948ee7..6287c33 100644
+--- a/src/packaging/_parser.py
++++ b/src/packaging/_parser.py
+@@ -74,7 +74,27 @@ class Value(Node):
+     __slots__ = ()
+ 
+     def serialize(self) -> str:
+-        return f'"{self}"'
++        value = self.value
++        # Tabs are whitespace that a quoted string may hold as is.
++        if "\\" not in value and value.replace("\t", " ").isprintable():
++            if '"' not in value:
++                return f'"{value}"'
++            if "'" not in value:
++                return f"'{value}'"
++        # Escape whatever a plain quoted string cannot hold, so that the result
++        # parses back to the same value.
++        return '"' + "".join(_escape_char(char) for char in value) + '"'
++
++
++def _escape_char(char: str) -> str:
++    if char == "\\":
++        return "\\\\"
++    if char == '"':
++        return "\\x22"
++    if char.isprintable() or char == "\t":
++        return char
++    # repr() gives a Python escape sequence for a non-printable character.
++    return repr(char)[1:-1]
+ 
+ 
+ class Op(Node):
+@@ -376,37 +396,55 @@ def _parse_full_marker(tokenizer: Tokenizer) -> MarkerList:
+ def _parse_marker(tokenizer: Tokenizer) -> MarkerList:
+     """
+     marker = marker_atom (BOOLOP marker_atom)+
+-    """
+-    expression: MarkerList = [_parse_marker_atom(tokenizer)]
+-    while tokenizer.check("BOOLOP"):
+-        token = tokenizer.read()
+-        expr_right = _parse_marker_atom(tokenizer)
+-        expression.extend((cast("MarkerLogical", token.text), expr_right))
+-    return expression
+-
+-
+-def _parse_marker_atom(tokenizer: Tokenizer) -> MarkerAtom:
+-    """
+     marker_atom = WS? LEFT_PARENTHESIS WS? marker WS? RIGHT_PARENTHESIS WS?
+                 | WS? marker_item WS?
++
++    Parenthesized groups are parsed with an explicit stack rather than by
++    recursion, so deeply nested input cannot exhaust the interpreter's stack.
+     """
++    custom_rules = tokenizer.rules is not DEFAULT_RULES
++    # Enclosing expressions, with the position of the parenthesis that opened
++    # the group being parsed inside each of them.
++    stack: list[tuple[MarkerList, int]] = []
++    expression: MarkerList = []
+ 
+-    tokenizer.consume("WS")
+-    if tokenizer.check("LEFT_PARENTHESIS"):
+-        with tokenizer.enclosing_tokens(
+-            "LEFT_PARENTHESIS",
+-            "RIGHT_PARENTHESIS",
+-            around="marker expression",
+-        ):
+-            if tokenizer.rules is not DEFAULT_RULES:
++    while True:
++        # Start of a marker_atom.
++        tokenizer.consume("WS")
++        if tokenizer.check("LEFT_PARENTHESIS"):
++            open_position = tokenizer.position
++            tokenizer.read()
++            if custom_rules:
+                 tokenizer.consume("WS")
+-            marker: MarkerAtom = _parse_marker(tokenizer)
+-            if tokenizer.rules is not DEFAULT_RULES:
++            stack.append((expression, open_position))
++            expression = []
++            continue
++
++        expression.append(_parse_marker_item(tokenizer))
++        tokenizer.consume("WS")
++
++        # End of a marker_atom: continue the expression, or close groups.
++        while True:
++            if tokenizer.check("BOOLOP"):
++                token = tokenizer.read()
++                expression.append(cast("MarkerLogical", token.text))
++                break
++            if not stack:
++                return expression
++
++            if custom_rules:
+                 tokenizer.consume("WS")
+-    else:
+-        marker = _parse_marker_item(tokenizer)
+-    tokenizer.consume("WS")
+-    return marker
++            parent, open_position = stack.pop()
++            if not tokenizer.check("RIGHT_PARENTHESIS"):
++                tokenizer.raise_syntax_error(
++                    "Expected matching RIGHT_PARENTHESIS for LEFT_PARENTHESIS, "
++                    "after marker expression",
++                    span_start=open_position,
++                )
++            tokenizer.read()
++            parent.append(expression)
++            expression = parent
++            tokenizer.consume("WS")
+ 
+ 
+ def _parse_marker_item(tokenizer: Tokenizer) -> MarkerItem:
+diff --git a/src/packaging/_ranges.py b/src/packaging/_ranges.py
+index 9fe59c0..4de006b 100644
+--- a/src/packaging/_ranges.py
++++ b/src/packaging/_ranges.py
+@@ -13,7 +13,7 @@ from typing import (
+     Final,
+ )
+ 
+-from .version import InvalidVersion, Version
++from .version import InvalidVersion, Version, _VersionNumberTooLarge
+ 
+ if TYPE_CHECKING:
+     from collections.abc import Callable, Iterable, Iterator, Sequence
+@@ -408,6 +408,9 @@ def coerce_version(version: Version | str) -> Version | None:
+     if not isinstance(version, Version):
+         try:
+             version = Version(version)
++        except _VersionNumberTooLarge:
++            # Not a malformed version: let the caller see the int limit error.
++            raise
+         except InvalidVersion:
+             return None
+     return version
+diff --git a/src/packaging/_tokenizer.py b/src/packaging/_tokenizer.py
+index c6ce134..e4a713c 100644
+--- a/src/packaging/_tokenizer.py
++++ b/src/packaging/_tokenizer.py
+@@ -82,15 +82,18 @@ DEFAULT_RULES: dict[str, re.Pattern[str]] = {
+         re.VERBOSE | re.IGNORECASE,
+     ),
+     "AT": re.compile(r"\@"),
+-    "URL": re.compile(r"[^ \t]+"),
+-    "IDENTIFIER": re.compile(r"\b[a-zA-Z0-9][a-zA-Z0-9._-]*\b"),
++    # A URL runs until whitespace; control characters are never part of one.
++    "URL": re.compile(r"[^\s\x00-\x1f\x7f]+"),
++    # PEP 508 identifiers start and end with a letter or digit.
++    "IDENTIFIER": re.compile(r"\b[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?\b"),
+     # A whole specifier list, for SpecifierSet to parse in one pass. It accepts
+     # only printable ASCII and tabs, and must end at ``;``, ``)``, or the end.
+     "SPECIFIER_LIST": re.compile(r"[\t\x20-\x28\x2a-\x3a\x3c-\x7e]*(?=[;)]|\Z)"),
+     "VERSION_PREFIX_TRAIL": re.compile(r"\.\*"),
+     "VERSION_LOCAL_LABEL_TRAIL": re.compile(r"\+[a-z0-9]+(?:[-_\.][a-z0-9]+)*"),
+     "WS": re.compile(r"[ \t]+"),
+-    "END": re.compile(r"$"),
++    # ``$`` would also match before a trailing newline, so match the true end.
++    "END": re.compile(r"\Z"),
+ }
+ 
+ 
+diff --git a/src/packaging/dependency_groups.py b/src/packaging/dependency_groups.py
+index d177037..64fb9f6 100644
+--- a/src/packaging/dependency_groups.py
++++ b/src/packaging/dependency_groups.py
+@@ -10,7 +10,7 @@ __lazy_modules__ = {
+ }
+ 
+ import re
+-from collections.abc import Mapping, Sequence
++from collections.abc import Iterator, Mapping, Sequence
+ 
+ from .errors import _ErrorCollector
+ from .requirements import InvalidRequirement, Requirement
+@@ -165,7 +165,12 @@ class DependencyGroupResolver:
+             ) as errors:
+                 self._validate(group, group, [], set(), errors)
+ 
+-        return self._resolve(group)
++        try:
++            return self._resolve(group)
++        except RecursionError:
++            # The include chain is too long to resolve recursively.
++            self._fill_resolve_cache(group)
++            return self._resolve(group)
+ 
+     def _validate(
+         self,
+@@ -186,20 +191,69 @@ class DependencyGroupResolver:
+         :param visited: The groups which were already validated in this call.
+         :param errors: An error collector in active use.
+         """
++        # Depth-first, with an explicit stack of item iterators instead of
++        # recursion, so long include chains cannot exhaust the interpreter.
+         visited.add(group)
+         stack.append(group)
+-        for item in self._parse_group(group, errors):
+-            if isinstance(item, DependencyGroupInclude):
++        on_stack = set(stack)
++        items = [iter(self._parse_group(group, errors))]
++        while items:
++            for item in items[-1]:
++                if isinstance(item, DependencyGroupInclude):
++                    include_group = _normalize_name(item.include_group)
++                    if include_group in on_stack:
++                        errors.error(
++                            CyclicDependencyGroup(
++                                requested_group, stack[-1], include_group
++                            )
++                        )
++                    elif include_group not in visited:
++                        visited.add(include_group)
++                        stack.append(include_group)
++                        on_stack.add(include_group)
++                        items.append(iter(self._parse_group(include_group, errors)))
++                        break
++            else:
++                items.pop()
++                on_stack.discard(stack.pop())
++
++    def _fill_resolve_cache(self, group: str) -> None:
++        """
++        Resolve every group reachable from ``group`` into the cache, includes
++        first, using an explicit stack rather than recursion. This handles
++        include chains too long for :meth:`_resolve`.
++
++        :param group: The normalized name of a group which ``_validate`` accepted.
++        """
++        cache = self._resolve_cache
++        if group in cache:
++            return
++        work: list[
++            tuple[
++                str,
++                Iterator[Requirement | DependencyGroupInclude],
++                list[Requirement],
++            ]
++        ] = [(group, iter(self._parsed_groups[group]), [])]
++        while work:
++            current, items, resolved = work[-1]
++            for item in items:
++                if isinstance(item, Requirement):
++                    resolved.append(item)
++                    continue
+                 include_group = _normalize_name(item.include_group)
+-                if include_group in stack:
+-                    errors.error(
+-                        CyclicDependencyGroup(requested_group, group, include_group)
+-                    )
+-                elif include_group not in visited:
+-                    self._validate(
+-                        include_group, requested_group, stack, visited, errors
++                if include_group in cache:
++                    resolved.extend(cache[include_group])
++                else:
++                    work.append(
++                        (include_group, iter(self._parsed_groups[include_group]), [])
+                     )
+-        stack.pop()
++                    break
++            else:
++                work.pop()
++                cache[current] = tuple(resolved)
++                if work:
++                    work[-1][2].extend(cache[current])
+ 
+     def _resolve(self, group: str) -> tuple[Requirement, ...]:
+         """
+diff --git a/src/packaging/direct_url.py b/src/packaging/direct_url.py
+index 87c2669..b7e27a9 100644
+--- a/src/packaging/direct_url.py
++++ b/src/packaging/direct_url.py
+@@ -81,7 +81,7 @@ def _get_object(
+ 
+ 
+ _PEP610_USER_PASS_ENV_VARS_REGEX = re.compile(
+-    r"^\$\{[A-Za-z0-9-_]+\}(:\$\{[A-Za-z0-9-_]+\})?$"
++    r"\$\{[A-Za-z0-9_-]+\}(?::\$\{[A-Za-z0-9_-]+\})?"
+ )
+ 
+ 
+@@ -91,7 +91,7 @@ def _strip_auth_from_netloc(netloc: str, safe_user_passwords: Collection[str]) -
+     user_pass, netloc_no_user_pass = netloc.rsplit("@", 1)
+     if user_pass in safe_user_passwords:
+         return netloc
+-    if _PEP610_USER_PASS_ENV_VARS_REGEX.match(user_pass):
++    if _PEP610_USER_PASS_ENV_VARS_REGEX.fullmatch(user_pass):
+         return netloc
+     return netloc_no_user_pass
+ 
+diff --git a/src/packaging/licenses/__init__.py b/src/packaging/licenses/__init__.py
+index 6387485..2a60918 100644
+--- a/src/packaging/licenses/__init__.py
++++ b/src/packaging/licenses/__init__.py
+@@ -52,6 +52,9 @@ def __dir__() -> list[str]:
+ 
+ license_ref_allowed = re.compile("^[A-Za-z0-9.-]+$")
+ 
++# License expressions are ASCII, so only ASCII whitespace separates tokens.
++_ASCII_WHITESPACE = re.compile(r"[ \t\n\r\f\v]+")
++
+ # Match CPython's tokenizer limit for nested parentheses.
+ _MAX_PARENTHESIS_DEPTH = 200
+ 
+@@ -157,9 +160,15 @@ def canonicalize_license_expression(
+     # variants of one ref use the spelling of the first occurrence.
+     license_refs: dict[str, str] = {}
+     tokens = []
+-    for ref in license_expression.split():
++    # Whether each token is ASCII: lower() maps some non-ASCII characters
++    # (such as the Kelvin sign) to ASCII letters, which must not match an id.
++    ascii_tokens = []
++    for ref in _ASCII_WHITESPACE.split(license_expression):
++        if not ref:
++            continue
+         normalized = ref.lower()
+         tokens.append(normalized)
++        ascii_tokens.append(ref.isascii())
+         if normalized.startswith("licenseref-"):
+             if not ref.isascii():
+                 message = f"Invalid licenseref (non-ASCII): {ref!r}"
+@@ -187,7 +196,7 @@ def canonicalize_license_expression(
+             continue
+ 
+         if normalized_tokens and normalized_tokens[-1] == "WITH":
+-            if token not in EXCEPTIONS:
++            if not ascii_tokens[index] or token not in EXCEPTIONS:
+                 message = f"Unknown license exception: {token!r}"
+                 raise InvalidLicenseExpression(message)
+ 
+@@ -203,12 +212,12 @@ def canonicalize_license_expression(
+ 
+             if final_token.startswith("licenseref-"):
+                 license_ref_id = final_token[len("licenseref-") :]
+-                if suffix or not license_ref_allowed.match(license_ref_id):
++                if suffix or not license_ref_allowed.fullmatch(license_ref_id):
+                     message = f"Invalid licenseref: {token!r}"
+                     raise InvalidLicenseExpression(message)
+                 normalized_tokens.append(license_refs[final_token])
+             else:
+-                if final_token not in LICENSES:
++                if not ascii_tokens[index] or final_token not in LICENSES:
+                     message = f"Unknown license: {final_token!r}"
+                     raise InvalidLicenseExpression(message)
+                 normalized_tokens.append(LICENSES[final_token]["id"] + suffix)
+diff --git a/src/packaging/markers.py b/src/packaging/markers.py
+index b230c76..ab8ae8f 100644
+--- a/src/packaging/markers.py
++++ b/src/packaging/markers.py
+@@ -21,7 +21,15 @@ from collections.abc import Callable
+ from collections.abc import Set as AbstractSet
+ from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
+ 
+-from ._parser import MarkerAtom, MarkerList, MarkerLogical, Op, Value, Variable
++from ._parser import (
++    MarkerAtom,
++    MarkerItem,
++    MarkerList,
++    MarkerLogical,
++    Op,
++    Value,
++    Variable,
++)
+ from ._parser import parse_marker as _parse_marker
+ from ._tokenizer import ParserSyntaxError
+ from .specifiers import InvalidSpecifier, Specifier
+@@ -198,7 +206,7 @@ def _normalize_extras(
+     result: MarkerAtom | MarkerLogical,
+ ) -> MarkerAtom | MarkerLogical:
+     if isinstance(result, list):
+-        return [_normalize_extras(r) for r in result]
++        return _normalize_extra_values(result)
+     if not isinstance(result, tuple):
+         return result
+ 
+@@ -229,31 +237,73 @@ def _normalize_extra_values(results: MarkerList) -> MarkerList:
+     Normalize extra values.
+     """
+ 
+-    return [_normalize_extras(r) for r in results]
++    # Walk nested groups with an explicit stack instead of recursion, so that
++    # deeply nested markers cannot exhaust the interpreter's stack.
++    normalized: MarkerList = []
++    stack: list[tuple[MarkerList, MarkerList]] = [(results, normalized)]
++    while stack:
++        source, target = stack.pop()
++        for item in source:
++            if isinstance(item, list):
++                group: MarkerList = []
++                target.append(group)
++                stack.append((item, group))
++            else:
++                target.append(_normalize_extras(item))
++    return normalized
+ 
+ 
+ _GROUP_TYPES: Final = (list, tuple)
+ 
+ 
+-def _format_marker(
+-    marker: MarkerAtom | MarkerLogical, first: bool | None = True
+-) -> str:
++def _format_marker_leaf(marker: MarkerItem | MarkerLogical) -> str:
+     if isinstance(marker, tuple):
+         lhs, op, rhs = marker
+         return f"{lhs.serialize()} {op.serialize()} {rhs.serialize()}"
++    return marker
+ 
+-    if isinstance(marker, str):
+-        return marker
+ 
++def _unwrap_marker(
++    marker: MarkerAtom | MarkerLogical,
++) -> MarkerAtom | MarkerLogical:
+     # Unwrap a redundant [[...]] wrapper, but keep the nesting context so a
+     # nested group keeps the parentheses its and/or precedence needs.
+-    if len(marker) == 1 and isinstance(marker[0], _GROUP_TYPES):
+-        return _format_marker(marker[0], first=first)
++    while (
++        isinstance(marker, list)
++        and len(marker) == 1
++        and isinstance(marker[0], _GROUP_TYPES)
++    ):
++        marker = marker[0]
++    return marker
+ 
+-    inner = [_format_marker(m, first=False) for m in marker]
+-    if first:
+-        return " ".join(inner)
+-    return "(" + " ".join(inner) + ")"
++
++def _format_marker(
++    marker: MarkerAtom | MarkerLogical, first: bool | None = True
++) -> str:
++    marker = _unwrap_marker(marker)
++    if not isinstance(marker, list):
++        return _format_marker_leaf(marker)
++
++    # Format nested groups with an explicit stack instead of recursion, so that
++    # deeply nested markers cannot exhaust the interpreter's stack.
++    stack: list[tuple[MarkerList, bool | None, list[str]]] = [(marker, first, [])]
++    while True:
++        group, group_first, parts = stack[-1]
++        if len(parts) < len(group):
++            item = _unwrap_marker(group[len(parts)])
++            if isinstance(item, list):
++                stack.append((item, False, []))
++            else:
++                parts.append(_format_marker_leaf(item))
++            continue
++
++        stack.pop()
++        text = " ".join(parts)
++        if not group_first:
++            text = f"({text})"
++        if not stack:
++            return text
++        stack[-1][2].append(text)
+ 
+ 
+ def _splice_operand(markers: MarkerList, op: MarkerLogical) -> MarkerList:
+@@ -363,11 +413,28 @@ def _prepare_extra(extra: str | AbstractSet[str] | None) -> str | AbstractSet[st
+ def _evaluate_markers(
+     markers: MarkerList, environment: Mapping[str, str | AbstractSet[str]]
+ ) -> bool:
+-    groups: list[list[bool]] = [[]]
++    # Evaluate nested groups with an explicit stack instead of recursion, so
++    # that deeply nested markers cannot exhaust the interpreter's stack. Each
++    # frame holds a group, the index of its next item, and its "or" groups.
++    stack: list[tuple[MarkerList, list[int], list[list[bool]]]] = [
++        (markers, [0], [[]])
++    ]
++
++    while True:
++        group, index, groups = stack[-1]
++        if index[0] == len(group):
++            stack.pop()
++            result = any(all(item) for item in groups)
++            if not stack:
++                return result
++            stack[-1][2][-1].append(result)
++            continue
++
++        marker = group[index[0]]
++        index[0] += 1
+ 
+-    for marker in markers:
+         if isinstance(marker, list):
+-            groups[-1].append(_evaluate_markers(marker, environment))
++            stack.append((marker, [0], [[]]))
+         elif isinstance(marker, tuple):
+             lhs, op, rhs = marker
+ 
+@@ -408,8 +475,6 @@ def _evaluate_markers(
+         else:  # pragma: nocover
+             raise TypeError(f"Unexpected marker {marker!r}")
+ 
+-    return any(all(item) for item in groups)
+-
+ 
+ def _format_full_version(info: sys._version_info) -> str:
+     version = f"{info.major}.{info.minor}.{info.micro}"
+diff --git a/src/packaging/metadata.py b/src/packaging/metadata.py
+index b096761..0783288 100644
+--- a/src/packaging/metadata.py
++++ b/src/packaging/metadata.py
+@@ -15,6 +15,7 @@ import email.parser
+ import email.policy
+ import keyword
+ import pathlib
++import re
+ import typing
+ from typing import (
+     Any,
+@@ -313,6 +314,10 @@ _EMAIL_TO_RAW_MAPPING = {
+ _RAW_TO_EMAIL_MAPPING = {raw: email for email, raw in _EMAIL_TO_RAW_MAPPING.items()}
+ 
+ 
++# The line boundaries recognized by ``str.splitlines()``.
++_LINE_BOUNDARY_RE = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
++
++
+ # This class is for writing RFC822 messages
+ class RFC822Policy(email.policy.EmailPolicy):
+     """
+@@ -328,7 +333,10 @@ class RFC822Policy(email.policy.EmailPolicy):
+ 
+     def header_store_parse(self, name: str, value: str) -> tuple[str, str]:
+         size = len(name) + 2
+-        value = value.replace("\n", "\n" + " " * size)
++        # Writing splits the value with ``str.splitlines()``, so indent after
++        # every line boundary it knows; otherwise the text after one of them
++        # (``\r``, ``\x85``, ``\u2028``, ...) could start a new header.
++        value = _LINE_BOUNDARY_RE.sub("\n" + " " * size, value)
+         return (name, value)
+ 
+ 
+@@ -645,8 +653,8 @@ class _Validator(Generic[T]):
+             ) from exc
+ 
+     def _process_summary(self, value: str) -> str:
+-        """Check the field contains no newlines."""
+-        if "\n" in value:
++        """Check the field contains no newlines (or other line boundaries)."""
++        if _LINE_BOUNDARY_RE.search(value):
+             raise self._invalid_metadata(f"{self.raw_name!r} must be a single line")
+         return value
+ 
+diff --git a/src/packaging/tags.py b/src/packaging/tags.py
+index f60db31..d3ca34f 100644
+--- a/src/packaging/tags.py
++++ b/src/packaging/tags.py
+@@ -84,6 +84,10 @@ A ``(major, minor)`` integer pair describing an Apple OS version.
+ """
+ _T = TypeVar("_T")
+ 
++# ABI and platform tags only hold ASCII letters, digits and underscores (the
++# platform tag replaces every other character with an underscore).
++_TAG_COMPONENT_RE = re.compile(r"[A-Za-z0-9_]+")
++
+ INTERPRETER_SHORT_NAMES: dict[str, str] = {
+     "python": "py",  # Generic.
+     "cpython": "cp",
+@@ -269,9 +273,11 @@ def parse_tag(
+     :param int | None limit: The maximum number of tags to parse.
+     :raises UnsortedTagsError: If **validate_order** is true and any compressed tag
+         set component is not in sorted order.
+-    :raises InvalidTag: If the interpreter field is not an identifier, or if the
+-        interpreter, ABI, or platform field (or any member of a compressed tag
+-        set) is empty.
++    :raises InvalidTag: If the tag does not have exactly three fields, if the
++        interpreter field is not an ASCII identifier, if the ABI or platform
++        field holds characters other than ASCII letters, digits and
++        underscores, or if the interpreter, ABI, or platform field (or any
++        member of a compressed tag set) is empty.
+     :raises TooManyTagsError: If **limit** is not ``None`` and the compressed tag
+         set would generate more than **limit** tags.
+     :raises ValueError: If **limit** is negative.
+@@ -299,6 +305,11 @@ def parse_tag(
+             raise UnsortedTagsError(
+                 f"Tag component {component!r} is not in sorted order per PEP 425"
+             )
++    if len(component_parts) != 3:
++        raise InvalidTag(
++            f"Tag {tag!r} must have exactly three components "
++            "(interpreter, ABI and platform)"
++        )
+ 
+     tag_count = 1
+     for parts in component_parts:
+@@ -312,8 +323,12 @@ def parse_tag(
+ 
+     interpreters, abis, platforms = component_parts
+     for interpreter in interpreters:
+-        if not interpreter.isidentifier():
++        if not (interpreter.isascii() and interpreter.isidentifier()):
+             raise InvalidTag(f"Tag {tag!r} has an invalid interpreter: {interpreter!r}")
++    for kind, values in (("ABI", abis), ("platform", platforms)):
++        for value in values:
++            if _TAG_COMPONENT_RE.fullmatch(value) is None:
++                raise InvalidTag(f"Tag {tag!r} has an invalid {kind}: {value!r}")
+     return frozenset(
+         Tag(interpreter, abi, platform_)
+         for interpreter in interpreters
+diff --git a/src/packaging/utils.py b/src/packaging/utils.py
+index a1e2bb6..c41e466 100644
+--- a/src/packaging/utils.py
++++ b/src/packaging/utils.py
+@@ -74,11 +74,26 @@ _validate_regex = re.compile(
+     r"[a-z0-9]|[a-z0-9][a-z0-9._-]*[a-z0-9]", re.IGNORECASE | re.ASCII
+ )
+ _normalized_regex = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.ASCII)
+-# PEP 427: The build number must start with a digit.
+-_build_tag_regex = re.compile(r"(\d+)(.*)", re.ASCII)
++# PEP 427: The build number must start with a digit. Like every escaped
++# component of a wheel filename, it holds only letters, digits and underscores.
++_build_tag_regex = re.compile(r"(\d+)(\w*)", re.ASCII)
+ # PEP 427: Valid characters for an escaped project name in a wheel filename.
+ # Requires at least one character so an empty project name is rejected.
+-_wheel_name_regex = re.compile(r"^[\w._]+$", re.UNICODE)
++_wheel_name_regex = re.compile(r"[\w._]+", re.UNICODE)
++# Valid characters for a project name in an sdist filename.
++_sdist_name_regex = re.compile(r"[\w.-]+", re.UNICODE)
++
++
++def _parse_filename_version(version: str) -> Version:
++    """Parse the version component of a distribution filename.
++
++    :class:`Version` tolerates surrounding whitespace, but a filename component
++    cannot hold any. Raises :class:`ValueError` (including
++    :class:`InvalidVersion`) for anything that is not a valid version.
++    """
++    if version != version.strip():
++        raise InvalidVersion(f"Invalid version: {version!r}")
++    return Version(version)
+ 
+ 
+ def canonicalize_name(name: str, *, validate: bool = False) -> NormalizedName:
+@@ -269,25 +284,33 @@ def parse_wheel_filename(
+     parts = filename.split("-", dashes - 2)
+     name_part = parts[0]
+     # See PEP 427 for the rules on escaping the project name.
+-    if "__" in name_part or _wheel_name_regex.match(name_part) is None:
++    if "__" in name_part or _wheel_name_regex.fullmatch(name_part) is None:
+         raise InvalidWheelFilename(f"Invalid project name: {filename!r}")
+     name = canonicalize_name(name_part)
+ 
+     try:
+-        version = Version(parts[1])
+-    except InvalidVersion as e:
++        version = _parse_filename_version(parts[1])
++    except ValueError as e:
++        # Also catches a release number too large to convert to an int.
+         raise InvalidWheelFilename(
+             f"Invalid wheel filename (invalid version): {filename!r}"
+         ) from e
+ 
+     if dashes == 5:
+         build_part = parts[2]
+-        build_match = _build_tag_regex.match(build_part)
++        build_match = _build_tag_regex.fullmatch(build_part)
+         if build_match is None:
+             raise InvalidWheelFilename(
+                 f"Invalid build number: {build_part} in {filename!r}"
+             )
+-        build = cast("BuildTag", (int(build_match.group(1)), build_match.group(2)))
++        try:
++            build_number = int(build_match.group(1))
++        except ValueError:
++            # The build number is too large to convert to an int.
++            raise InvalidWheelFilename(
++                f"Invalid build number: {build_part} in {filename!r}"
++            ) from None
++        build = cast("BuildTag", (build_number, build_match.group(2)))
+     else:
+         build = ()
+     tag_str = parts[-1]
+@@ -360,11 +383,17 @@ def parse_sdist_filename(filename: str) -> tuple[NormalizedName, Version]:
+             f"Invalid sdist filename (empty project name): {filename!r}"
+         )
+ 
++    if _sdist_name_regex.fullmatch(name_part) is None:
++        raise InvalidSdistFilename(
++            f"Invalid sdist filename (invalid project name): {filename!r}"
++        )
++
+     name = canonicalize_name(name_part)
+ 
+     try:
+-        version = Version(version_part)
+-    except InvalidVersion as e:
++        version = _parse_filename_version(version_part)
++    except ValueError as e:
++        # Also catches a release number too large to convert to an int.
+         raise InvalidSdistFilename(
+             f"Invalid sdist filename (invalid version): {filename!r}"
+         ) from e
+diff --git a/src/packaging/version.py b/src/packaging/version.py
+index 1c17a9d..e3ece2d 100644
+--- a/src/packaging/version.py
++++ b/src/packaging/version.py
+@@ -128,6 +128,15 @@ class InvalidVersion(ValueError):
+     """
+ 
+ 
++class _VersionNumberTooLarge(InvalidVersion):
++    """A number in the version exceeds the interpreter's int conversion limit.
++
++    It is an :class:`InvalidVersion`, so that parsing a version only raises
++    that, but code which treats unparsable versions as non-versions re-raises
++    it instead (see ``sys.set_int_max_str_digits``).
++    """
++
++
+ class _BaseVersion:
+     __slots__ = ()
+ 
+@@ -440,13 +449,12 @@ class Version(_BaseVersion):
+                 self._release = tuple(map(int, version.split(".")))
+             except AttributeError:
+                 raise InvalidVersion(f"Invalid version: {version!r}") from None
+-            except ValueError:
++            except ValueError as exc:
+                 # Empty parts (from "1..2", ".1", etc.) are invalid versions.
+-                # Any other ValueError (e.g. int str-digits limit) should
+-                # propagate to the caller.
+                 if "" in version.split("."):
+                     raise InvalidVersion(f"Invalid version: {version!r}") from None
+-                raise
++                # Any other ValueError is the int str-digits limit.
++                raise _VersionNumberTooLarge(str(exc)) from exc
+ 
+             self._epoch = 0
+             self._pre = None
+@@ -464,16 +472,20 @@ class Version(_BaseVersion):
+             raise InvalidVersion(f"Invalid version: {version!r}") from None
+         if not match:
+             raise InvalidVersion(f"Invalid version: {version!r}")
+-        self._epoch = int(match.group("epoch")) if match.group("epoch") else 0
+-        self._release = tuple(map(int, match.group("release").split(".")))
+-        # We can type ignore the assignments below because the regex guarantees
+-        # the correct strings
+-        self._pre = _parse_letter_version(match.group("pre_l"), match.group("pre_n"))  # type: ignore[assignment]
+-        self._post = _parse_letter_version(  # type: ignore[assignment]
+-            match.group("post_l"), match.group("post_n1") or match.group("post_n2")
+-        )
+-        self._dev = _parse_letter_version(match.group("dev_l"), match.group("dev_n"))  # type: ignore[assignment]
+-        self._local = _parse_local_version(match.group("local"))
++        try:
++            self._epoch = int(match.group("epoch")) if match.group("epoch") else 0
++            self._release = tuple(map(int, match.group("release").split(".")))
++            # We can type ignore the assignments below because the regex
++            # guarantees the correct strings
++            self._pre = _parse_letter_version(match.group("pre_l"), match.group("pre_n"))  # type: ignore[assignment]
++            self._post = _parse_letter_version(  # type: ignore[assignment]
++                match.group("post_l"), match.group("post_n1") or match.group("post_n2")
++            )
++            self._dev = _parse_letter_version(match.group("dev_l"), match.group("dev_n"))  # type: ignore[assignment]
++            self._local = _parse_local_version(match.group("local"))
++        except ValueError as exc:
++            # The regex guarantees the digits, so this is the int str-digits limit.
++            raise _VersionNumberTooLarge(str(exc)) from exc
+ 
+         # Key which will be used for sorting
+         self._key_cache = None

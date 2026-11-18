@@ -1,0 +1,205 @@
+diff --git a/src/packaging/_parser.py b/src/packaging/_parser.py
+index 6948ee7..0f59e28 100644
+--- a/src/packaging/_parser.py
++++ b/src/packaging/_parser.py
+@@ -294,8 +294,7 @@ def _try_parse_specifier_set(tokenizer: Tokenizer) -> SpecifierSet | None:
+     ``version_many``; the token loop then parses it or reports the error.
+     """
+     token = tokenizer.peek("SPECIFIER_LIST")
+-    # ``===`` versions can contain commas, which SpecifierSet splits on.
+-    if token is None or not token.text or "===" in token.text:
++    if token is None or not token.text:
+         return None
+ 
+     try:
+@@ -363,6 +362,12 @@ def _parse_version_many(tokenizer: Tokenizer) -> str | SpecifierSet:
+ # --------------------------------------------------------------------------------------
+ # Recursive descent parser for marker expression
+ # --------------------------------------------------------------------------------------
++# Parenthesized groups recurse, so cap their depth to report deeply nested input as
++# a syntax error instead of exhausting the interpreter's recursion limit. The limit
++# matches CPython's own parser, which allows 200 nested parentheses.
++_MAX_MARKER_NESTING = 200
++
++
+ def parse_marker(source: str) -> MarkerList:
+     return _parse_full_marker(Tokenizer(source, rules=DEFAULT_RULES))
+ 
+@@ -373,19 +378,19 @@ def _parse_full_marker(tokenizer: Tokenizer) -> MarkerList:
+     return retval
+ 
+ 
+-def _parse_marker(tokenizer: Tokenizer) -> MarkerList:
++def _parse_marker(tokenizer: Tokenizer, depth: int = 0) -> MarkerList:
+     """
+     marker = marker_atom (BOOLOP marker_atom)+
+     """
+-    expression: MarkerList = [_parse_marker_atom(tokenizer)]
++    expression: MarkerList = [_parse_marker_atom(tokenizer, depth)]
+     while tokenizer.check("BOOLOP"):
+         token = tokenizer.read()
+-        expr_right = _parse_marker_atom(tokenizer)
++        expr_right = _parse_marker_atom(tokenizer, depth)
+         expression.extend((cast("MarkerLogical", token.text), expr_right))
+     return expression
+ 
+ 
+-def _parse_marker_atom(tokenizer: Tokenizer) -> MarkerAtom:
++def _parse_marker_atom(tokenizer: Tokenizer, depth: int) -> MarkerAtom:
+     """
+     marker_atom = WS? LEFT_PARENTHESIS WS? marker WS? RIGHT_PARENTHESIS WS?
+                 | WS? marker_item WS?
+@@ -393,6 +398,11 @@ def _parse_marker_atom(tokenizer: Tokenizer) -> MarkerAtom:
+ 
+     tokenizer.consume("WS")
+     if tokenizer.check("LEFT_PARENTHESIS"):
++        if depth >= _MAX_MARKER_NESTING:
++            tokenizer.raise_syntax_error(
++                f"Marker expression is nested more than {_MAX_MARKER_NESTING} "
++                "levels deep"
++            )
+         with tokenizer.enclosing_tokens(
+             "LEFT_PARENTHESIS",
+             "RIGHT_PARENTHESIS",
+@@ -400,7 +410,7 @@ def _parse_marker_atom(tokenizer: Tokenizer) -> MarkerAtom:
+         ):
+             if tokenizer.rules is not DEFAULT_RULES:
+                 tokenizer.consume("WS")
+-            marker: MarkerAtom = _parse_marker(tokenizer)
++            marker: MarkerAtom = _parse_marker(tokenizer, depth + 1)
+             if tokenizer.rules is not DEFAULT_RULES:
+                 tokenizer.consume("WS")
+     else:
+diff --git a/src/packaging/_tokenizer.py b/src/packaging/_tokenizer.py
+index c6ce134..7fbc14a 100644
+--- a/src/packaging/_tokenizer.py
++++ b/src/packaging/_tokenizer.py
+@@ -82,7 +82,7 @@ DEFAULT_RULES: dict[str, re.Pattern[str]] = {
+         re.VERBOSE | re.IGNORECASE,
+     ),
+     "AT": re.compile(r"\@"),
+-    "URL": re.compile(r"[^ \t]+"),
++    "URL": re.compile(r"\S+"),
+     "IDENTIFIER": re.compile(r"\b[a-zA-Z0-9][a-zA-Z0-9._-]*\b"),
+     # A whole specifier list, for SpecifierSet to parse in one pass. It accepts
+     # only printable ASCII and tabs, and must end at ``;``, ``)``, or the end.
+@@ -90,7 +90,7 @@ DEFAULT_RULES: dict[str, re.Pattern[str]] = {
+     "VERSION_PREFIX_TRAIL": re.compile(r"\.\*"),
+     "VERSION_LOCAL_LABEL_TRAIL": re.compile(r"\+[a-z0-9]+(?:[-_\.][a-z0-9]+)*"),
+     "WS": re.compile(r"[ \t]+"),
+-    "END": re.compile(r"$"),
++    "END": re.compile(r"\Z"),
+ }
+ 
+ 
+diff --git a/src/packaging/metadata.py b/src/packaging/metadata.py
+index b096761..4360971 100644
+--- a/src/packaging/metadata.py
++++ b/src/packaging/metadata.py
+@@ -15,6 +15,7 @@ import email.parser
+ import email.policy
+ import keyword
+ import pathlib
++import re
+ import typing
+ from typing import (
+     Any,
+@@ -313,6 +314,12 @@ _EMAIL_TO_RAW_MAPPING = {
+ _RAW_TO_EMAIL_MAPPING = {raw: email for email, raw in _EMAIL_TO_RAW_MAPPING.items()}
+ 
+ 
++# A bare "\r" makes the email generator raise ``HeaderWriteError``, and on
++# CPython releases without the CVE-2024-6923 fix any ``str.splitlines``
++# boundary ends the header line, so fold all of them, not just "\n".
++_LINE_BOUNDARY_RE = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
++
++
+ # This class is for writing RFC822 messages
+ class RFC822Policy(email.policy.EmailPolicy):
+     """
+@@ -328,7 +335,7 @@ class RFC822Policy(email.policy.EmailPolicy):
+ 
+     def header_store_parse(self, name: str, value: str) -> tuple[str, str]:
+         size = len(name) + 2
+-        value = value.replace("\n", "\n" + " " * size)
++        value = _LINE_BOUNDARY_RE.sub("\n" + " " * size, value)
+         return (name, value)
+ 
+ 
+@@ -645,8 +652,8 @@ class _Validator(Generic[T]):
+             ) from exc
+ 
+     def _process_summary(self, value: str) -> str:
+-        """Check the field contains no newlines."""
+-        if "\n" in value:
++        """Check the field contains no line breaks."""
++        if _LINE_BOUNDARY_RE.search(value):
+             raise self._invalid_metadata(f"{self.raw_name!r} must be a single line")
+         return value
+ 
+diff --git a/src/packaging/tags.py b/src/packaging/tags.py
+index f60db31..cbd74b6 100644
+--- a/src/packaging/tags.py
++++ b/src/packaging/tags.py
+@@ -116,8 +116,8 @@ class UnsortedTagsError(ValueError):
+ 
+ class InvalidTag(ValueError):
+     """
+-    Raised when an interpreter component is not an identifier, or a tag
+-    component is empty.
++    Raised when an interpreter component is not an identifier, a tag component
++    is empty, or a tag does not have exactly three components.
+ 
+     .. versionadded:: 26.3
+     """
+@@ -269,9 +269,9 @@ def parse_tag(
+     :param int | None limit: The maximum number of tags to parse.
+     :raises UnsortedTagsError: If **validate_order** is true and any compressed tag
+         set component is not in sorted order.
+-    :raises InvalidTag: If the interpreter field is not an identifier, or if the
++    :raises InvalidTag: If the interpreter field is not an identifier; if the
+         interpreter, ABI, or platform field (or any member of a compressed tag
+-        set) is empty.
++        set) is empty; or if the tag does not have exactly three components.
+     :raises TooManyTagsError: If **limit** is not ``None`` and the compressed tag
+         set would generate more than **limit** tags.
+     :raises ValueError: If **limit** is negative.
+@@ -281,7 +281,8 @@ def parse_tag(
+ 
+     .. versionadded:: 26.3
+        Raises :class:`InvalidTag` when an interpreter component is not an
+-       identifier, or a tag component is empty.
++       identifier, a tag component is empty, or a tag does not have exactly
++       three components.
+        Added the *limit* parameter. Raises :class:`TooManyTagsError` if the compressed
+        tag set would generate more than *limit* tags.
+     """
+@@ -310,7 +311,10 @@ def parse_tag(
+             f"limit {limit}"
+         )
+ 
+-    interpreters, abis, platforms = component_parts
++    try:
++        interpreters, abis, platforms = component_parts
++    except ValueError as exc:
++        raise InvalidTag(f"Tag {tag!r} must have exactly three components") from exc
+     for interpreter in interpreters:
+         if not interpreter.isidentifier():
+             raise InvalidTag(f"Tag {tag!r} has an invalid interpreter: {interpreter!r}")
+diff --git a/src/packaging/utils.py b/src/packaging/utils.py
+index a1e2bb6..bc31b32 100644
+--- a/src/packaging/utils.py
++++ b/src/packaging/utils.py
+@@ -75,10 +75,10 @@ _validate_regex = re.compile(
+ )
+ _normalized_regex = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.ASCII)
+ # PEP 427: The build number must start with a digit.
+-_build_tag_regex = re.compile(r"(\d+)(.*)", re.ASCII)
++_build_tag_regex = re.compile(r"(\d+)(.*)\Z", re.ASCII)
+ # PEP 427: Valid characters for an escaped project name in a wheel filename.
+ # Requires at least one character so an empty project name is rejected.
+-_wheel_name_regex = re.compile(r"^[\w._]+$", re.UNICODE)
++_wheel_name_regex = re.compile(r"^[\w._]+\Z", re.UNICODE)
+ 
+ 
+ def canonicalize_name(name: str, *, validate: bool = False) -> NormalizedName:

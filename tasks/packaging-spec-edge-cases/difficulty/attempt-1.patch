@@ -1,0 +1,345 @@
+diff --git a/src/packaging/_parser.py b/src/packaging/_parser.py
+index 6948ee7..0ea3635 100644
+--- a/src/packaging/_parser.py
++++ b/src/packaging/_parser.py
+@@ -74,7 +74,26 @@ class Value(Node):
+     __slots__ = ()
+ 
+     def serialize(self) -> str:
+-        return f'"{self}"'
++        value = self.value
++        # Plain strings keep their usual spelling.
++        if "\\" not in value and value.isprintable():
++            if '"' not in value:
++                return f'"{value}"'
++            if "'" not in value:
++                return f"'{value}'"
++        # Otherwise escape what a quoted string cannot hold as is, so the
++        # serialized marker parses back to the same value.
++        return '"' + "".join(_escape_char(char) for char in value) + '"'
++
++
++def _escape_char(char: str) -> str:
++    if char == "\\":
++        return "\\\\"
++    if char == '"':
++        return "\\x22"
++    if not char.isprintable():
++        return repr(char)[1:-1]
++    return char
+ 
+ 
+ class Op(Node):
+@@ -103,7 +122,26 @@ class ParsedRequirement(NamedTuple):
+ # Recursive descent parser for dependency specifier
+ # --------------------------------------------------------------------------------------
+ def parse_requirement(source: str) -> ParsedRequirement:
+-    return _parse_requirement(Tokenizer(source, rules=DEFAULT_RULES))
++    _check_source(source)
++    try:
++        return _parse_requirement(Tokenizer(source, rules=DEFAULT_RULES))
++    except RecursionError:
++        raise _nesting_error(source) from None
++
++
++def _check_source(source: object) -> None:
++    if not isinstance(source, str):
++        raise ParserSyntaxError(
++            f"Expected a string, got {type(source).__name__}",
++            source=repr(source),
++            span=(0, 0),
++        )
++
++
++def _nesting_error(source: str) -> ParserSyntaxError:
++    return ParserSyntaxError(
++        "Too deeply nested parentheses", source=source, span=(0, len(source))
++    )
+ 
+ 
+ def _parse_requirement(tokenizer: Tokenizer) -> ParsedRequirement:
+@@ -364,7 +402,11 @@ def _parse_version_many(tokenizer: Tokenizer) -> str | SpecifierSet:
+ # Recursive descent parser for marker expression
+ # --------------------------------------------------------------------------------------
+ def parse_marker(source: str) -> MarkerList:
+-    return _parse_full_marker(Tokenizer(source, rules=DEFAULT_RULES))
++    _check_source(source)
++    try:
++        return _parse_full_marker(Tokenizer(source, rules=DEFAULT_RULES))
++    except RecursionError:
++        raise _nesting_error(source) from None
+ 
+ 
+ def _parse_full_marker(tokenizer: Tokenizer) -> MarkerList:
+diff --git a/src/packaging/_tokenizer.py b/src/packaging/_tokenizer.py
+index c6ce134..d47bdac 100644
+--- a/src/packaging/_tokenizer.py
++++ b/src/packaging/_tokenizer.py
+@@ -77,20 +77,26 @@ DEFAULT_RULES: dict[str, re.Pattern[str]] = {
+         """,
+         re.VERBOSE,
+     ),
++    # An arbitrary (``===``) version cannot hold control characters.
+     "SPECIFIER": re.compile(
+-        Specifier._specifier_regex_str,
++        Specifier._specifier_regex_str.replace(
++            r"[^\s;)]", r"[^\s;)\x00-\x1f\x7f-\x9f]"
++        ),
+         re.VERBOSE | re.IGNORECASE,
+     ),
+     "AT": re.compile(r"\@"),
+-    "URL": re.compile(r"[^ \t]+"),
+-    "IDENTIFIER": re.compile(r"\b[a-zA-Z0-9][a-zA-Z0-9._-]*\b"),
++    # A URL cannot contain whitespace or control characters.
++    "URL": re.compile(r"[^\s\x00-\x1f\x7f-\x9f]+"),
++    # An identifier starts and ends with a letter or digit.
++    "IDENTIFIER": re.compile(r"\b[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?"),
+     # A whole specifier list, for SpecifierSet to parse in one pass. It accepts
+     # only printable ASCII and tabs, and must end at ``;``, ``)``, or the end.
+     "SPECIFIER_LIST": re.compile(r"[\t\x20-\x28\x2a-\x3a\x3c-\x7e]*(?=[;)]|\Z)"),
+     "VERSION_PREFIX_TRAIL": re.compile(r"\.\*"),
+     "VERSION_LOCAL_LABEL_TRAIL": re.compile(r"\+[a-z0-9]+(?:[-_\.][a-z0-9]+)*"),
+     "WS": re.compile(r"[ \t]+"),
+-    "END": re.compile(r"$"),
++    # ``$`` would also match before a trailing newline.
++    "END": re.compile(r"\Z"),
+ }
+ 
+ 
+diff --git a/src/packaging/direct_url.py b/src/packaging/direct_url.py
+index 87c2669..c8f2f04 100644
+--- a/src/packaging/direct_url.py
++++ b/src/packaging/direct_url.py
+@@ -91,7 +91,7 @@ def _strip_auth_from_netloc(netloc: str, safe_user_passwords: Collection[str]) -
+     user_pass, netloc_no_user_pass = netloc.rsplit("@", 1)
+     if user_pass in safe_user_passwords:
+         return netloc
+-    if _PEP610_USER_PASS_ENV_VARS_REGEX.match(user_pass):
++    if _PEP610_USER_PASS_ENV_VARS_REGEX.fullmatch(user_pass):
+         return netloc
+     return netloc_no_user_pass
+ 
+diff --git a/src/packaging/licenses/__init__.py b/src/packaging/licenses/__init__.py
+index 6387485..7195db6 100644
+--- a/src/packaging/licenses/__init__.py
++++ b/src/packaging/licenses/__init__.py
+@@ -51,6 +51,8 @@ def __dir__() -> list[str]:
+ 
+ 
+ license_ref_allowed = re.compile("^[A-Za-z0-9.-]+$")
++# The whitespace that separates the tokens of an expression.
++_WHITESPACE_RE = re.compile(r"[ \t\r\n]+")
+ 
+ # Match CPython's tokenizer limit for nested parentheses.
+ _MAX_PARENTHESIS_DEPTH = 200
+@@ -157,7 +159,9 @@ def canonicalize_license_expression(
+     # variants of one ref use the spelling of the first occurrence.
+     license_refs: dict[str, str] = {}
+     tokens = []
+-    for ref in license_expression.split():
++    for ref in _WHITESPACE_RE.split(license_expression):
++        if not ref:
++            continue
+         normalized = ref.lower()
+         tokens.append(normalized)
+         if normalized.startswith("licenseref-"):
+@@ -167,6 +171,11 @@ def canonicalize_license_expression(
+             license_refs.setdefault(
+                 normalized, licenseref_prefix + ref[len(licenseref_prefix) :]
+             )
++        elif not ref.isascii():
++            # Identifiers are ASCII; lower() could otherwise map a non-ASCII
++            # character (such as the Kelvin sign) onto a known identifier.
++            message = f"Unknown license: {ref!r}"
++            raise InvalidLicenseExpression(message)
+ 
+     _validate_expression_syntax(tokens, raw_license_expression)
+ 
+diff --git a/src/packaging/metadata.py b/src/packaging/metadata.py
+index b096761..a0a5090 100644
+--- a/src/packaging/metadata.py
++++ b/src/packaging/metadata.py
+@@ -15,6 +15,7 @@ import email.parser
+ import email.policy
+ import keyword
+ import pathlib
++import re
+ import typing
+ from typing import (
+     Any,
+@@ -313,6 +314,10 @@ _EMAIL_TO_RAW_MAPPING = {
+ _RAW_TO_EMAIL_MAPPING = {raw: email for email, raw in _EMAIL_TO_RAW_MAPPING.items()}
+ 
+ 
++# Every line boundary that str.splitlines() recognizes.
++_LINE_BREAK_RE = re.compile("\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
++
++
+ # This class is for writing RFC822 messages
+ class RFC822Policy(email.policy.EmailPolicy):
+     """
+@@ -328,7 +333,10 @@ class RFC822Policy(email.policy.EmailPolicy):
+ 
+     def header_store_parse(self, name: str, value: str) -> tuple[str, str]:
+         size = len(name) + 2
+-        value = value.replace("\n", "\n" + " " * size)
++        # Indent every line after the first, whatever line break starts it
++        # (the email module splits on all of them), so that no line of the
++        # value can start a new header.
++        value = ("\n" + " " * size).join(_LINE_BREAK_RE.split(value))
+         return (name, value)
+ 
+ 
+@@ -645,8 +653,8 @@ class _Validator(Generic[T]):
+             ) from exc
+ 
+     def _process_summary(self, value: str) -> str:
+-        """Check the field contains no newlines."""
+-        if "\n" in value:
++        """Check the field contains no line breaks."""
++        if _LINE_BREAK_RE.search(value):
+             raise self._invalid_metadata(f"{self.raw_name!r} must be a single line")
+         return value
+ 
+diff --git a/src/packaging/tags.py b/src/packaging/tags.py
+index f60db31..da7ebc8 100644
+--- a/src/packaging/tags.py
++++ b/src/packaging/tags.py
+@@ -106,6 +106,9 @@ def _compute_32_bit_interpreter() -> bool:
+ _32_BIT_INTERPRETER = _compute_32_bit_interpreter()
+ 
+ 
++_TAG_COMPONENT_RE = re.compile(r"[A-Za-z0-9_]+")
++
++
+ class UnsortedTagsError(ValueError):
+     """
+     Raised when a tag component is not in sorted order per PEP 425.
+@@ -289,7 +292,13 @@ def parse_tag(
+     if limit is not None and limit < 0:
+         raise ValueError("limit must be non-negative")
+ 
++    if not isinstance(tag, str):
++        raise InvalidTag(f"Invalid tag: {tag!r}")
+     component_parts = [component.split(".") for component in tag.split("-")]
++    if len(component_parts) != 3:
++        raise InvalidTag(
++            f"Tag {tag!r} must have three components (interpreter, ABI, platform)"
++        )
+     for parts in component_parts:
+         if "" in parts:
+             component = ".".join(parts)
+@@ -312,8 +321,17 @@ def parse_tag(
+ 
+     interpreters, abis, platforms = component_parts
+     for interpreter in interpreters:
+-        if not interpreter.isidentifier():
++        # An interpreter is an ASCII identifier.
++        if interpreter[0].isdigit() or not _TAG_COMPONENT_RE.fullmatch(interpreter):
+             raise InvalidTag(f"Tag {tag!r} has an invalid interpreter: {interpreter!r}")
++    for part in (*abis, *platforms):
++        # ABI and platform tags only hold ASCII letters, digits, and underscores.
++        if not _TAG_COMPONENT_RE.fullmatch(part):
++            raise InvalidTag(f"Tag {tag!r} has an invalid component: {part!r}")
++    # Repeated members produce the same tags, so only build each tag once.
++    interpreters = list(dict.fromkeys(part.lower() for part in interpreters))
++    abis = list(dict.fromkeys(part.lower() for part in abis))
++    platforms = list(dict.fromkeys(part.lower() for part in platforms))
+     return frozenset(
+         Tag(interpreter, abi, platform_)
+         for interpreter in interpreters
+diff --git a/src/packaging/utils.py b/src/packaging/utils.py
+index a1e2bb6..d600679 100644
+--- a/src/packaging/utils.py
++++ b/src/packaging/utils.py
+@@ -74,11 +74,14 @@ _validate_regex = re.compile(
+     r"[a-z0-9]|[a-z0-9][a-z0-9._-]*[a-z0-9]", re.IGNORECASE | re.ASCII
+ )
+ _normalized_regex = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.ASCII)
+-# PEP 427: The build number must start with a digit.
+-_build_tag_regex = re.compile(r"(\d+)(.*)", re.ASCII)
++# PEP 427: The build number must start with a digit, and like every other
++# component it is escaped, so it holds no whitespace or punctuation.
++_build_tag_regex = re.compile(r"([0-9]+)([\w.]*)")
+ # PEP 427: Valid characters for an escaped project name in a wheel filename.
+ # Requires at least one character so an empty project name is rejected.
+-_wheel_name_regex = re.compile(r"^[\w._]+$", re.UNICODE)
++_wheel_name_regex = re.compile(r"[\w.]+", re.UNICODE)
++# Older sdists may also have dashes in the project name.
++_sdist_name_regex = re.compile(r"[\w.-]+", re.UNICODE)
+ 
+ 
+ def canonicalize_name(name: str, *, validate: bool = False) -> NormalizedName:
+@@ -199,6 +202,13 @@ def canonicalize_version(
+     return str(version._trim_release() if strip_trailing_zero else version)
+ 
+ 
++def _parse_filename_version(version: str) -> Version:
++    # Version() ignores surrounding whitespace, which a file name cannot hold.
++    if not version or version[0].isspace() or version[-1].isspace():
++        raise InvalidVersion(f"Invalid version: {version!r}")
++    return Version(version)
++
++
+ def parse_wheel_filename(
+     filename: str,
+     *,
+@@ -254,7 +264,7 @@ def parse_wheel_filename(
+        not an identifier, a tag set component is empty, or the project name is
+        empty.
+     """
+-    if not filename.endswith(".whl"):
++    if not isinstance(filename, str) or not filename.endswith(".whl"):
+         raise InvalidWheelFilename(
+             f"Invalid wheel filename (extension must be '.whl'): {filename!r}"
+         )
+@@ -269,12 +279,12 @@ def parse_wheel_filename(
+     parts = filename.split("-", dashes - 2)
+     name_part = parts[0]
+     # See PEP 427 for the rules on escaping the project name.
+-    if "__" in name_part or _wheel_name_regex.match(name_part) is None:
++    if "__" in name_part or _wheel_name_regex.fullmatch(name_part) is None:
+         raise InvalidWheelFilename(f"Invalid project name: {filename!r}")
+     name = canonicalize_name(name_part)
+ 
+     try:
+-        version = Version(parts[1])
++        version = _parse_filename_version(parts[1])
+     except InvalidVersion as e:
+         raise InvalidWheelFilename(
+             f"Invalid wheel filename (invalid version): {filename!r}"
+@@ -282,7 +292,7 @@ def parse_wheel_filename(
+ 
+     if dashes == 5:
+         build_part = parts[2]
+-        build_match = _build_tag_regex.match(build_part)
++        build_match = _build_tag_regex.fullmatch(build_part)
+         if build_match is None:
+             raise InvalidWheelFilename(
+                 f"Invalid build number: {build_part} in {filename!r}"
+@@ -340,6 +350,8 @@ def parse_sdist_filename(filename: str) -> tuple[NormalizedName, Version]:
+ 
+     .. _Source distribution format: https://packaging.python.org/specifications/source-distribution-format/#source-distribution-file-name
+     """
++    if not isinstance(filename, str):
++        raise InvalidSdistFilename(f"Invalid sdist filename: {filename!r}")
+     if filename.endswith(".tar.gz"):
+         file_stem = filename[: -len(".tar.gz")]
+     elif filename.endswith(".zip"):
+@@ -359,11 +371,15 @@ def parse_sdist_filename(filename: str) -> tuple[NormalizedName, Version]:
+         raise InvalidSdistFilename(
+             f"Invalid sdist filename (empty project name): {filename!r}"
+         )
++    if _sdist_name_regex.fullmatch(name_part) is None:
++        raise InvalidSdistFilename(
++            f"Invalid sdist filename (invalid project name): {filename!r}"
++        )
+ 
+     name = canonicalize_name(name_part)
+ 
+     try:
+-        version = Version(version_part)
++        version = _parse_filename_version(version_part)
+     except InvalidVersion as e:
+         raise InvalidSdistFilename(
+             f"Invalid sdist filename (invalid version): {filename!r}"

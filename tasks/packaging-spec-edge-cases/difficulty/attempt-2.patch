@@ -1,0 +1,499 @@
+diff --git a/src/packaging/_parser.py b/src/packaging/_parser.py
+index 6948ee7..7b96b6a 100644
+--- a/src/packaging/_parser.py
++++ b/src/packaging/_parser.py
+@@ -8,11 +8,13 @@ from __future__ import annotations
+ 
+ __lazy_modules__ = {
+     "ast",
++    "re",
+     f"{__spec__.parent}._tokenizer",
+     f"{__spec__.parent}.specifiers",
+ }
+ 
+ import ast
++import re
+ from typing import Literal, NamedTuple, TypeAlias, cast
+ 
+ from ._tokenizer import DEFAULT_RULES, ParserSyntaxError, Tokenizer
+@@ -74,7 +76,32 @@ class Value(Node):
+     __slots__ = ()
+ 
+     def serialize(self) -> str:
+-        return f'"{self}"'
++        value = self.value
++        if "\\" not in value and value.isprintable():
++            if '"' not in value:
++                return f'"{value}"'
++            if "'" not in value:
++                return f"'{value}'"
++        # The value cannot be written verbatim: write a Python string literal
++        # that the parser decodes back to the same value. The tokenizer does
++        # not allow the delimiter inside the string, even escaped, so double
++        # quotes are written as hexadecimal escapes.
++        return '"' + "".join(_escape_char(char) for char in value) + '"'
++
++
++def _escape_char(char: str) -> str:
++    if char == "\\":
++        return "\\\\"
++    if char == '"':
++        return "\\x22"
++    if char.isprintable():
++        return char
++    code = ord(char)
++    if code <= 0xFF:
++        return f"\\x{code:02x}"
++    if code <= 0xFFFF:
++        return f"\\u{code:04x}"
++    return f"\\U{code:08x}"
+ 
+ 
+ class Op(Node):
+@@ -363,6 +390,11 @@ def _parse_version_many(tokenizer: Tokenizer) -> str | SpecifierSet:
+ # --------------------------------------------------------------------------------------
+ # Recursive descent parser for marker expression
+ # --------------------------------------------------------------------------------------
++# Limit the nesting of parentheses, like CPython's parser, so that deeply nested
++# input is rejected with a syntax error instead of exhausting the stack.
++MAX_MARKER_DEPTH = 200
++
++
+ def parse_marker(source: str) -> MarkerList:
+     return _parse_full_marker(Tokenizer(source, rules=DEFAULT_RULES))
+ 
+@@ -393,6 +425,12 @@ def _parse_marker_atom(tokenizer: Tokenizer) -> MarkerAtom:
+ 
+     tokenizer.consume("WS")
+     if tokenizer.check("LEFT_PARENTHESIS"):
++        if tokenizer.depth >= MAX_MARKER_DEPTH:
++            tokenizer.raise_syntax_error(
++                "Marker expression is nested too deeply",
++                span_end=tokenizer.position + 1,
++            )
++        tokenizer.depth += 1
+         with tokenizer.enclosing_tokens(
+             "LEFT_PARENTHESIS",
+             "RIGHT_PARENTHESIS",
+@@ -403,6 +441,7 @@ def _parse_marker_atom(tokenizer: Tokenizer) -> MarkerAtom:
+             marker: MarkerAtom = _parse_marker(tokenizer)
+             if tokenizer.rules is not DEFAULT_RULES:
+                 tokenizer.consume("WS")
++        tokenizer.depth -= 1
+     else:
+         marker = _parse_marker_item(tokenizer)
+     tokenizer.consume("WS")
+@@ -467,10 +506,24 @@ def process_python_str(python_str: str) -> Value:
+     if "\\" not in python_str and python_str.isprintable():
+         return Value(python_str[1:-1])
+ 
++    # Python only warns about an unknown escape sequence (and keeps the
++    # backslash), so reject those here to not depend on the warning filters.
++    for match in _ESCAPE_SEQUENCE.finditer(python_str):
++        octal, char = match.groups()
++        if octal is not None:
++            if int(octal, 8) > 0o377:
++                raise ValueError(f"invalid octal escape sequence: \\{octal}")
++        elif char not in _VALID_ESCAPES:
++            raise ValueError(f"invalid escape sequence: \\{char}")
++
+     value = ast.literal_eval(python_str)
+     return Value(str(value))
+ 
+ 
++_ESCAPE_SEQUENCE = re.compile(r"\\(?:([0-7]{1,3})|(.))", re.DOTALL)
++_VALID_ESCAPES = frozenset("\\'\"abfnrtvxNuU")
++
++
+ def _parse_marker_op(tokenizer: Tokenizer) -> Op:
+     """
+     marker_op = IN | NOT IN | OP
+diff --git a/src/packaging/_tokenizer.py b/src/packaging/_tokenizer.py
+index c6ce134..6f9c8a2 100644
+--- a/src/packaging/_tokenizer.py
++++ b/src/packaging/_tokenizer.py
+@@ -82,15 +82,18 @@ DEFAULT_RULES: dict[str, re.Pattern[str]] = {
+         re.VERBOSE | re.IGNORECASE,
+     ),
+     "AT": re.compile(r"\@"),
+-    "URL": re.compile(r"[^ \t]+"),
+-    "IDENTIFIER": re.compile(r"\b[a-zA-Z0-9][a-zA-Z0-9._-]*\b"),
++    # A URL cannot contain whitespace or control characters (RFC 3986).
++    "URL": re.compile(r"[^\s\x00-\x1f\x7f]+"),
++    # An identifier starts and ends with a letter or digit.
++    "IDENTIFIER": re.compile(r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?"),
+     # A whole specifier list, for SpecifierSet to parse in one pass. It accepts
+     # only printable ASCII and tabs, and must end at ``;``, ``)``, or the end.
+     "SPECIFIER_LIST": re.compile(r"[\t\x20-\x28\x2a-\x3a\x3c-\x7e]*(?=[;)]|\Z)"),
+     "VERSION_PREFIX_TRAIL": re.compile(r"\.\*"),
+     "VERSION_LOCAL_LABEL_TRAIL": re.compile(r"\+[a-z0-9]+(?:[-_\.][a-z0-9]+)*"),
+     "WS": re.compile(r"[ \t]+"),
+-    "END": re.compile(r"$"),
++    # ``\Z`` rather than ``$``, which would also match before a trailing newline.
++    "END": re.compile(r"\Z"),
+ }
+ 
+ 
+@@ -101,7 +104,7 @@ class Tokenizer:
+     matches.
+     """
+ 
+-    __slots__ = ("next_token", "position", "rules", "source")
++    __slots__ = ("depth", "next_token", "position", "rules", "source")
+ 
+     def __init__(
+         self,
+@@ -113,6 +116,8 @@ class Tokenizer:
+         self.rules = rules
+         self.next_token: Token | None = None
+         self.position = 0
++        # Nesting depth of parenthesized marker expressions.
++        self.depth = 0
+ 
+     def consume(self, name: str) -> None:
+         """Move beyond provided token name, if at current position."""
+diff --git a/src/packaging/dependency_groups.py b/src/packaging/dependency_groups.py
+index d177037..76972c8 100644
+--- a/src/packaging/dependency_groups.py
++++ b/src/packaging/dependency_groups.py
+@@ -186,20 +186,30 @@ class DependencyGroupResolver:
+         :param visited: The groups which were already validated in this call.
+         :param errors: An error collector in active use.
+         """
++        # Depth-first search with an explicit stack, so that long include
++        # chains cannot exhaust the interpreter's recursion limit.
+         visited.add(group)
+         stack.append(group)
+-        for item in self._parse_group(group, errors):
+-            if isinstance(item, DependencyGroupInclude):
++        pending = [iter(self._parse_group(group, errors))]
++        while pending:
++            for item in pending[-1]:
++                if not isinstance(item, DependencyGroupInclude):
++                    continue
+                 include_group = _normalize_name(item.include_group)
+                 if include_group in stack:
+                     errors.error(
+-                        CyclicDependencyGroup(requested_group, group, include_group)
++                        CyclicDependencyGroup(
++                            requested_group, stack[-1], include_group
++                        )
+                     )
+                 elif include_group not in visited:
+-                    self._validate(
+-                        include_group, requested_group, stack, visited, errors
+-                    )
+-        stack.pop()
++                    visited.add(include_group)
++                    stack.append(include_group)
++                    pending.append(iter(self._parse_group(include_group, errors)))
++                    break
++            else:
++                pending.pop()
++                stack.pop()
+ 
+     def _resolve(self, group: str) -> tuple[Requirement, ...]:
+         """
+@@ -208,14 +218,46 @@ class DependencyGroupResolver:
+         :param group: The normalized name of the group to resolve.
+         """
+         if group not in self._resolve_cache:
++            try:
++                resolved: list[Requirement] = []
++                for item in self._parsed_groups[group]:
++                    if isinstance(item, Requirement):
++                        resolved.append(item)
++                    else:
++                        resolved.extend(
++                            self._resolve(_normalize_name(item.include_group))
++                        )
++                self._resolve_cache[group] = tuple(resolved)
++            except RecursionError:
++                # The include chain is too deep to resolve recursively.
++                self._resolve_iteratively(group)
++        return self._resolve_cache[group]
++
++    def _resolve_iteratively(self, group: str) -> None:
++        """Fill the cache for ``group`` with an explicit stack (no recursion)."""
++        work: list[tuple[str, bool]] = [(group, False)]
++        while work:
++            current, expanded = work.pop()
++            if current in self._resolve_cache:
++                continue
++            items = self._parsed_groups[current]
++            if not expanded:
++                work.append((current, True))
++                for item in reversed(items):
++                    if isinstance(item, DependencyGroupInclude):
++                        include_group = _normalize_name(item.include_group)
++                        if include_group not in self._resolve_cache:
++                            work.append((include_group, False))
++                continue
+             resolved: list[Requirement] = []
+-            for item in self._parsed_groups[group]:
++            for item in items:
+                 if isinstance(item, Requirement):
+                     resolved.append(item)
+                 else:
+-                    resolved.extend(self._resolve(_normalize_name(item.include_group)))
+-            self._resolve_cache[group] = tuple(resolved)
+-        return self._resolve_cache[group]
++                    resolved.extend(
++                        self._resolve_cache[_normalize_name(item.include_group)]
++                    )
++            self._resolve_cache[current] = tuple(resolved)
+ 
+     def _parse_group(
+         self, group: str, errors: _ErrorCollector
+diff --git a/src/packaging/direct_url.py b/src/packaging/direct_url.py
+index 87c2669..5280c86 100644
+--- a/src/packaging/direct_url.py
++++ b/src/packaging/direct_url.py
+@@ -81,7 +81,7 @@ def _get_object(
+ 
+ 
+ _PEP610_USER_PASS_ENV_VARS_REGEX = re.compile(
+-    r"^\$\{[A-Za-z0-9-_]+\}(:\$\{[A-Za-z0-9-_]+\})?$"
++    r"\$\{[A-Za-z0-9-_]+\}(:\$\{[A-Za-z0-9-_]+\})?"
+ )
+ 
+ 
+@@ -91,7 +91,7 @@ def _strip_auth_from_netloc(netloc: str, safe_user_passwords: Collection[str]) -
+     user_pass, netloc_no_user_pass = netloc.rsplit("@", 1)
+     if user_pass in safe_user_passwords:
+         return netloc
+-    if _PEP610_USER_PASS_ENV_VARS_REGEX.match(user_pass):
++    if _PEP610_USER_PASS_ENV_VARS_REGEX.fullmatch(user_pass):
+         return netloc
+     return netloc_no_user_pass
+ 
+diff --git a/src/packaging/licenses/__init__.py b/src/packaging/licenses/__init__.py
+index 6387485..e6c7372 100644
+--- a/src/packaging/licenses/__init__.py
++++ b/src/packaging/licenses/__init__.py
+@@ -50,7 +50,9 @@ def __dir__() -> list[str]:
+     return __all__
+ 
+ 
+-license_ref_allowed = re.compile("^[A-Za-z0-9.-]+$")
++license_ref_allowed = re.compile("[A-Za-z0-9.-]+")
++# SPDX expressions are ASCII; tokens are separated by ASCII whitespace.
++_whitespace = re.compile("[ \t\n\r\f\v]+")
+ 
+ # Match CPython's tokenizer limit for nested parentheses.
+ _MAX_PARENTHESIS_DEPTH = 200
+@@ -157,13 +159,20 @@ def canonicalize_license_expression(
+     # variants of one ref use the spelling of the first occurrence.
+     license_refs: dict[str, str] = {}
+     tokens = []
+-    for ref in license_expression.split():
++    for ref in _whitespace.split(license_expression):
++        if not ref:
++            continue
++        if not ref.isascii():
++            # Lowercasing could map a non-ASCII character (such as the Kelvin
++            # sign) onto an ASCII one, so check before normalizing.
++            if ref.lower().startswith("licenseref-"):
++                message = f"Invalid licenseref (non-ASCII): {ref!r}"
++            else:
++                message = f"Invalid license expression: {raw_license_expression!r}"
++            raise InvalidLicenseExpression(message)
+         normalized = ref.lower()
+         tokens.append(normalized)
+         if normalized.startswith("licenseref-"):
+-            if not ref.isascii():
+-                message = f"Invalid licenseref (non-ASCII): {ref!r}"
+-                raise InvalidLicenseExpression(message)
+             license_refs.setdefault(
+                 normalized, licenseref_prefix + ref[len(licenseref_prefix) :]
+             )
+@@ -203,7 +212,7 @@ def canonicalize_license_expression(
+ 
+             if final_token.startswith("licenseref-"):
+                 license_ref_id = final_token[len("licenseref-") :]
+-                if suffix or not license_ref_allowed.match(license_ref_id):
++                if suffix or not license_ref_allowed.fullmatch(license_ref_id):
+                     message = f"Invalid licenseref: {token!r}"
+                     raise InvalidLicenseExpression(message)
+                 normalized_tokens.append(license_refs[final_token])
+diff --git a/src/packaging/metadata.py b/src/packaging/metadata.py
+index b096761..d4e9028 100644
+--- a/src/packaging/metadata.py
++++ b/src/packaging/metadata.py
+@@ -328,6 +328,9 @@ class RFC822Policy(email.policy.EmailPolicy):
+ 
+     def header_store_parse(self, name: str, value: str) -> tuple[str, str]:
+         size = len(name) + 2
++        # Any line break would end the header, so indent every line after the
++        # first. The email parser also breaks lines on a lone carriage return.
++        value = value.replace("\r\n", "\n").replace("\r", "\n")
+         value = value.replace("\n", "\n" + " " * size)
+         return (name, value)
+ 
+@@ -646,7 +649,7 @@ class _Validator(Generic[T]):
+ 
+     def _process_summary(self, value: str) -> str:
+         """Check the field contains no newlines."""
+-        if "\n" in value:
++        if "\n" in value or "\r" in value:
+             raise self._invalid_metadata(f"{self.raw_name!r} must be a single line")
+         return value
+ 
+diff --git a/src/packaging/tags.py b/src/packaging/tags.py
+index f60db31..50bf2fd 100644
+--- a/src/packaging/tags.py
++++ b/src/packaging/tags.py
+@@ -12,6 +12,7 @@ __lazy_modules__ = {
+     "struct",
+     "subprocess",
+     "sysconfig",
++    "unicodedata",
+     f"{__spec__.parent}",
+ }
+ 
+@@ -23,6 +24,7 @@ import struct
+ import subprocess
+ import sys
+ import sysconfig
++import unicodedata
+ from collections.abc import Iterable, Iterator, Sequence
+ from importlib.machinery import EXTENSION_SUFFIXES
+ from typing import (
+@@ -246,6 +248,19 @@ class Tag:
+         raise TypeError(f"Cannot restore Tag from {state!r}")
+ 
+ 
++def _is_tag_char(char: str) -> bool:
++    """Whether a character may appear in an ABI or platform tag.
++
++    Tags are escaped so that they only contain letters, digits and underscores
++    (combining marks are allowed since lowercasing can produce them).
++    """
++    return (
++        char == "_"
++        or char.isalnum()
++        or unicodedata.category(char) in {"Mn", "Mc", "Me"}
++    )
++
++
+ def parse_tag(
+     tag: str, *, validate_order: bool = False, limit: int | None = None
+ ) -> frozenset[Tag]:
+@@ -290,6 +305,10 @@ def parse_tag(
+         raise ValueError("limit must be non-negative")
+ 
+     component_parts = [component.split(".") for component in tag.split("-")]
++    if len(component_parts) != 3:
++        raise InvalidTag(
++            f"Tag {tag!r} must have exactly three dash-separated components"
++        )
+     for parts in component_parts:
+         if "" in parts:
+             component = ".".join(parts)
+@@ -314,6 +333,14 @@ def parse_tag(
+     for interpreter in interpreters:
+         if not interpreter.isidentifier():
+             raise InvalidTag(f"Tag {tag!r} has an invalid interpreter: {interpreter!r}")
++    for part in (*abis, *platforms):
++        if not all(_is_tag_char(char) for char in part):
++            raise InvalidTag(f"Tag {tag!r} has an invalid component: {part!r}")
++
++    # Repeated members generate the same tags, so skip them.
++    interpreters = list(dict.fromkeys(interpreters))
++    abis = list(dict.fromkeys(abis))
++    platforms = list(dict.fromkeys(platforms))
+     return frozenset(
+         Tag(interpreter, abi, platform_)
+         for interpreter in interpreters
+diff --git a/src/packaging/utils.py b/src/packaging/utils.py
+index a1e2bb6..44f030e 100644
+--- a/src/packaging/utils.py
++++ b/src/packaging/utils.py
+@@ -75,10 +75,10 @@ _validate_regex = re.compile(
+ )
+ _normalized_regex = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.ASCII)
+ # PEP 427: The build number must start with a digit.
+-_build_tag_regex = re.compile(r"(\d+)(.*)", re.ASCII)
++_build_tag_regex = re.compile(r"([0-9]+)(\w*)")
+ # PEP 427: Valid characters for an escaped project name in a wheel filename.
+ # Requires at least one character so an empty project name is rejected.
+-_wheel_name_regex = re.compile(r"^[\w._]+$", re.UNICODE)
++_wheel_name_regex = re.compile(r"[\w.]+")
+ 
+ 
+ def canonicalize_name(name: str, *, validate: bool = False) -> NormalizedName:
+@@ -199,6 +199,17 @@ def canonicalize_version(
+     return str(version._trim_release() if strip_trailing_zero else version)
+ 
+ 
++def _parse_filename_version(version: str) -> Version:
++    """Parse the version component of a distribution filename.
++
++    :class:`~packaging.version.Version` ignores surrounding whitespace, but a
++    filename component cannot contain any.
++    """
++    if any(char.isspace() for char in version):
++        raise InvalidVersion(f"Invalid version: {version!r}")
++    return Version(version)
++
++
+ def parse_wheel_filename(
+     filename: str,
+     *,
+@@ -269,25 +280,32 @@ def parse_wheel_filename(
+     parts = filename.split("-", dashes - 2)
+     name_part = parts[0]
+     # See PEP 427 for the rules on escaping the project name.
+-    if "__" in name_part or _wheel_name_regex.match(name_part) is None:
++    if "__" in name_part or _wheel_name_regex.fullmatch(name_part) is None:
+         raise InvalidWheelFilename(f"Invalid project name: {filename!r}")
+     name = canonicalize_name(name_part)
+ 
+     try:
+-        version = Version(parts[1])
+-    except InvalidVersion as e:
++        version = _parse_filename_version(parts[1])
++    except ValueError as e:
+         raise InvalidWheelFilename(
+             f"Invalid wheel filename (invalid version): {filename!r}"
+         ) from e
+ 
+     if dashes == 5:
+         build_part = parts[2]
+-        build_match = _build_tag_regex.match(build_part)
++        build_match = _build_tag_regex.fullmatch(build_part)
+         if build_match is None:
+             raise InvalidWheelFilename(
+                 f"Invalid build number: {build_part} in {filename!r}"
+             )
+-        build = cast("BuildTag", (int(build_match.group(1)), build_match.group(2)))
++        try:
++            build_number = int(build_match.group(1))
++        except ValueError:
++            # The build number exceeds the integer string conversion limit.
++            raise InvalidWheelFilename(
++                f"Invalid build number: {build_part} in {filename!r}"
++            ) from None
++        build = cast("BuildTag", (build_number, build_match.group(2)))
+     else:
+         build = ()
+     tag_str = parts[-1]
+@@ -360,11 +378,16 @@ def parse_sdist_filename(filename: str) -> tuple[NormalizedName, Version]:
+             f"Invalid sdist filename (empty project name): {filename!r}"
+         )
+ 
++    if not name_part.isprintable() or any(char.isspace() for char in name_part):
++        raise InvalidSdistFilename(
++            f"Invalid sdist filename (invalid project name): {filename!r}"
++        )
++
+     name = canonicalize_name(name_part)
+ 
+     try:
+-        version = Version(version_part)
+-    except InvalidVersion as e:
++        version = _parse_filename_version(version_part)
++    except ValueError as e:
+         raise InvalidSdistFilename(
+             f"Invalid sdist filename (invalid version): {filename!r}"
+         ) from e
