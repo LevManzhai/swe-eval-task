@@ -14,6 +14,7 @@ on:
         default: tomlkit-conformance
         type: choice
         options:
+          - starlette-spec-edge-cases
           - urllib3-response-edge-cases
           - packaging-spec-edge-cases
           - flask-werkzeug-rare-inputs

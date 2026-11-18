@@ -26,6 +26,7 @@ because that's how I got to the ones that work.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
+| [`tasks/starlette-spec-edge-cases`](tasks/starlette-spec-edge-cases) | [starlette](https://github.com/Kludex/starlette) | Bug hunt: seventeen RFC 9110, ASGI and documented-API bugs, no oracle | **Accepted**: 0 of 3 attempts passed (40, 43, 42 / 44) |
 | [`tasks/urllib3-response-edge-cases`](tasks/urllib3-response-edge-cases) | [urllib3](https://github.com/urllib3/urllib3) | Bug hunt: thirteen response, retry and redirect bugs, no oracle | **Accepted**: 0 of 3 attempts passed (90, 89, 88 / 92) |
 | [`tasks/packaging-spec-edge-cases`](tasks/packaging-spec-edge-cases) | [packaging](https://github.com/pypa/packaging) | Bug hunt: nine spec edge cases (PEP 440/508, wheel tags, metadata), no oracle | **Accepted**: 0 of 3 attempts passed (47 / 48 each) |
 | [`tasks/flask-werkzeug-rare-inputs`](tasks/flask-werkzeug-rare-inputs) | [flask](https://github.com/pallets/flask) + [werkzeug](https://github.com/pallets/werkzeug) | Bug hunt across two repos: thirteen rare-input bugs, no oracle | **Accepted**: 0 of 3 attempts passed (66 / 68 each) |

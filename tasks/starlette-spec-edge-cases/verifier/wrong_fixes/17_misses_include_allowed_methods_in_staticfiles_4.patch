@@ -1,0 +1,308 @@
+diff --git a/starlette/config.py b/starlette/config.py
+index 56c25ca..1883212 100644
+--- a/starlette/config.py
++++ b/starlette/config.py
+@@ -116,7 +116,9 @@ class Config:
+                 if "=" in line and not line.startswith("#"):
+                     key, value = line.split("=", 1)
+                     key = key.strip()
+-                    value = value.strip().strip("\"'")
++                    value = value.strip()
++                    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
++                        value = value[1:-1]
+                     file_values[key] = value
+         return file_values
+ 
+@@ -137,4 +139,5 @@ class Config:
+         try:
+             return cast(value)
+         except (TypeError, ValueError):
+-            raise ValueError(f"Config '{key}' has value '{value}'. Not a valid {cast.__name__}.")
++            cast_name = getattr(cast, "__name__", type(cast).__name__)
++            raise ValueError(f"Config '{key}' has value '{value}'. Not a valid {cast_name}.")
+diff --git a/starlette/datastructures.py b/starlette/datastructures.py
+index e2be10a..79da210 100644
+--- a/starlette/datastructures.py
++++ b/starlette/datastructures.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import ipaddress
+ from collections.abc import ItemsView, Iterable, Iterator, KeysView, Mapping, MutableMapping, Sequence, ValuesView
++from operator import itemgetter
+ from shlex import shlex
+ from typing import Any, BinaryIO, Literal, NamedTuple, TypeVar, cast
+ from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit
+@@ -35,7 +36,7 @@ class URL:
+             assert not components, 'Cannot set both "scope" and "**components".'
+             scheme = scope.get("scheme", "http")
+             server = scope.get("server", None)
+-            path = scope["path"]
++            path = scope["path"].replace("?", "%3F").replace("#", "%23").replace("\\", "%5C")
+             query_string = scope.get("query_string", b"")
+ 
+             host_header = None
+@@ -60,6 +61,9 @@ class URL:
+             if netloc is not None:
+                 url = SplitResult(scheme=scheme, netloc=netloc, path=path, query=query, fragment="").geturl()
+             else:
++                if path.startswith("//"):
++                    # Without a host, a leading `//` would be parsed as the authority.
++                    path = "/%2F" + path[2:]
+                 url = f"{path}?{query}" if query else path
+         elif components:
+             assert not url, 'Cannot set both "url" and "**components".'
+@@ -196,6 +200,10 @@ class URLPath(str):
+ 
+     def __new__(cls, path: str, protocol: Literal["http", "websocket", ""] = "", host: str = "") -> URLPath:
+         assert protocol in ("http", "websocket", "")
++        path = path.replace("\\", "%5C")
++        if path.startswith("//"):
++            # A leading `//` would be parsed as the authority.
++            path = "/%2F" + path[2:]
+         return str.__new__(cls, path)
+ 
+     def __init__(self, path: str, protocol: Literal["http", "websocket", ""] = "", host: str = "") -> None:
+@@ -327,7 +335,7 @@ class ImmutableMultiDict(Mapping[_KeyType, _CovariantValueType]):
+     def __eq__(self, other: Any) -> bool:
+         if not isinstance(other, self.__class__):
+             return False
+-        return sorted(self._list) == sorted(other._list)
++        return sorted(self._list, key=itemgetter(0)) == sorted(other._list, key=itemgetter(0))
+ 
+     def __repr__(self) -> str:
+         class_name = self.__class__.__name__
+@@ -671,10 +679,7 @@ class MutableHeaders(Headers):
+         self._list.append((append_key, append_value))
+ 
+     def add_vary_header(self, vary: str) -> None:
+-        existing = self.get("vary")
+-        if existing is not None:
+-            vary = ", ".join([existing, vary])
+-        self["vary"] = vary
++        self["vary"] = ", ".join([*self.getlist("vary"), vary])
+ 
+ 
+ class State:
+diff --git a/starlette/endpoints.py b/starlette/endpoints.py
+index cc3ede3..02a8647 100644
+--- a/starlette/endpoints.py
++++ b/starlette/endpoints.py
+@@ -24,6 +24,7 @@ class HTTPEndpoint:
+             method
+             for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "QUERY")
+             if getattr(self, method.lower(), None) is not None
++            or (method == "HEAD" and getattr(self, "get", None) is not None)
+         ]
+ 
+     def __await__(self) -> Generator[Any, None, None]:
+@@ -34,7 +35,7 @@ class HTTPEndpoint:
+         handler_name = "get" if request.method == "HEAD" and not hasattr(self, "head") else request.method.lower()
+ 
+         handler: Callable[[Request], Any]
+-        if request.method in self._allowed_methods or (request.method == "HEAD" and "GET" in self._allowed_methods):
++        if request.method in self._allowed_methods:
+             handler = getattr(self, handler_name)
+         else:
+             handler = self.method_not_allowed
+diff --git a/starlette/formparsers.py b/starlette/formparsers.py
+index 0185a06..b4d03f0 100644
+--- a/starlette/formparsers.py
++++ b/starlette/formparsers.py
+@@ -125,10 +125,8 @@ class FormParser:
+         parser = multipart.QuerystringParser(callbacks)
+ 
+         async for chunk in self.stream:
+-            if chunk:
+-                parser.write(chunk)
+-            else:
+-                parser.finalize()
++            parser.write(chunk)
++        parser.finalize()
+ 
+         return FormData(self._items)
+ 
+diff --git a/starlette/middleware/base.py b/starlette/middleware/base.py
+index 2f7e201..4912a87 100644
+--- a/starlette/middleware/base.py
++++ b/starlette/middleware/base.py
+@@ -194,7 +194,7 @@ class BaseHTTPMiddleware:
+                         break
+ 
+             response = _StreamingResponse(status_code=message["status"], content=body_stream(), info=info)
+-            response.raw_headers = message["headers"]
++            response.raw_headers = message.get("headers", [])
+             return response
+ 
+         send_stream, recv_stream = anyio.create_memory_object_stream[Message]()
+diff --git a/starlette/middleware/gzip.py b/starlette/middleware/gzip.py
+index 0f5aafc..8204a88 100644
+--- a/starlette/middleware/gzip.py
++++ b/starlette/middleware/gzip.py
+@@ -109,6 +109,7 @@ class IdentityResponder:
+             # Don't send the initial message until we've determined how to
+             # modify the outgoing headers correctly.
+             self.initial_message = message
++            message.setdefault("headers", [])
+             headers = Headers(raw=self.initial_message["headers"])
+             self.content_encoding_set = "content-encoding" in headers
+             self.partial_response = message["status"] == 206
+@@ -117,12 +118,11 @@ class IdentityResponder:
+             if media_type.startswith("application/grpc+"):
+                 media_types.add("application/grpc")
+             self.content_type_is_excluded = not media_types.isdisjoint(self.exclude_content_types)
+-        elif message_type == "http.response.body" and (
++            if self.content_encoding_set or self.partial_response or self.content_type_is_excluded:
++                await self.send(self.initial_message)
++        elif message_type in ("http.response.body", "http.response.pathsend") and (
+             self.content_encoding_set or self.partial_response or self.content_type_is_excluded
+         ):
+-            if not self.started:
+-                self.started = True
+-                await self.send(self.initial_message)
+             await self.send(message)
+         elif message_type == "http.response.body" and not self.started:
+             self.started = True
+diff --git a/starlette/middleware/sessions.py b/starlette/middleware/sessions.py
+index 177d01a..eb2ba78 100644
+--- a/starlette/middleware/sessions.py
++++ b/starlette/middleware/sessions.py
+@@ -61,6 +61,7 @@ class SessionMiddleware:
+         async def send_wrapper(message: Message) -> None:
+             if message["type"] == "http.response.start":
+                 session: Session = scope["session"]
++                message.setdefault("headers", [])
+                 headers = MutableHeaders(scope=message)
+                 if session.accessed:
+                     headers.add_vary_header("Cookie")
+@@ -72,7 +73,7 @@ class SessionMiddleware:
+                         session_cookie=self.session_cookie,
+                         data=data.decode("utf-8"),
+                         path=self.path,
+-                        max_age=f"Max-Age={self.max_age}; " if self.max_age else "",
++                        max_age=f"Max-Age={self.max_age}; " if self.max_age is not None else "",
+                         security_flags=self.security_flags,
+                     )
+                     headers.append("Set-Cookie", header_value)
+diff --git a/starlette/middleware/trustedhost.py b/starlette/middleware/trustedhost.py
+index c57aa9a..7f11d3b 100644
+--- a/starlette/middleware/trustedhost.py
++++ b/starlette/middleware/trustedhost.py
+@@ -25,7 +25,7 @@ class TrustedHostMiddleware:
+             if pattern.startswith("*") and pattern != "*":
+                 assert pattern.startswith("*."), ENFORCE_DOMAIN_WILDCARD
+         self.app = app
+-        self.allowed_hosts = list(allowed_hosts)
++        self.allowed_hosts = [pattern.lower() for pattern in allowed_hosts]
+         self.allow_any = "*" in allowed_hosts
+         self.www_redirect = www_redirect
+ 
+@@ -42,7 +42,7 @@ class TrustedHostMiddleware:
+         if parsed_host is None:
+             await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
+             return
+-        host = parsed_host.host
++        host = parsed_host.host.lower()
+ 
+         is_valid_host = False
+         found_www_redirect = False
+diff --git a/starlette/middleware/wsgi.py b/starlette/middleware/wsgi.py
+index 0871926..793e333 100644
+--- a/starlette/middleware/wsgi.py
++++ b/starlette/middleware/wsgi.py
+@@ -30,7 +30,7 @@ def build_environ(scope: Scope, body: bytes) -> dict[str, Any]:
+ 
+     script_name = scope.get("root_path", "").encode("utf8").decode("latin1")
+     path_info = scope["path"].encode("utf8").decode("latin1")
+-    if path_info.startswith(script_name):
++    if path_info == script_name or path_info.startswith(script_name.rstrip("/") + "/"):
+         path_info = path_info[len(script_name) :]
+ 
+     environ = {
+diff --git a/starlette/responses.py b/starlette/responses.py
+index 4568eed..b503590 100644
+--- a/starlette/responses.py
++++ b/starlette/responses.py
+@@ -49,7 +49,9 @@ class Response:
+     def render(self, content: Any) -> bytes | memoryview:
+         if content is None:
+             return b""
+-        if isinstance(content, bytes | memoryview):
++        if isinstance(content, memoryview):
++            return content.cast("B") if content.c_contiguous else content.tobytes()
++        if isinstance(content, bytes):
+             return content
+         return content.encode(self.charset)  # type: ignore
+ 
+@@ -251,7 +253,9 @@ class StreamingResponse(Response):
+     async def stream_response(self, send: Send) -> None:
+         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+         async for chunk in self.body_iterator:
+-            if not isinstance(chunk, bytes | memoryview):
++            if isinstance(chunk, memoryview):
++                chunk = chunk.cast("B") if chunk.c_contiguous else chunk.tobytes()
++            elif not isinstance(chunk, bytes):
+                 chunk = chunk.encode(self.charset)
+             await send({"type": "http.response.body", "body": chunk, "more_body": True})
+ 
+@@ -368,6 +372,7 @@ class FileResponse(Response):
+         if (
+             self.status_code != 200
+             or http_range is None
++            or (scope_type == "http" and scope["method"].upper() not in ("GET", "HEAD"))
+             or (http_if_range is not None and not self._should_use_range(http_if_range))
+         ):
+             send_file = partial(self._handle_simple, send, send_header_only, send_pathsend)
+diff --git a/starlette/routing.py b/starlette/routing.py
+index e0fb8e4..cfcda04 100644
+--- a/starlette/routing.py
++++ b/starlette/routing.py
+@@ -95,17 +95,22 @@ def replace_params(
+     param_convertors: dict[str, Convertor[Any]],
+     path_params: dict[str, str],
+ ) -> tuple[str, dict[str, str]]:
+-    for key, value in list(path_params.items()):
+-        if "{" + key + "}" in path:
+-            convertor = param_convertors[key]
+-            value = convertor.to_string(value)
+-            path = path.replace("{" + key + "}", value)
+-            path_params.pop(key)
+-    return path, path_params
++    if not path_params:
++        return path, path_params
++    parts = PARAM_FORMAT_REGEX.split(path)
++    for i in range(1, len(parts), 2):
++        key = parts[i]
++        if key in path_params:
++            parts[i] = param_convertors[key].to_string(path_params.pop(key))
++        else:
++            parts[i] = "{" + key + "}"
++    return "".join(parts), path_params
+ 
+ 
+ # Match parameters in URL paths, eg. '{param}', and '{param:int}'
+ PARAM_REGEX = re.compile("{([a-zA-Z_][a-zA-Z0-9_]*)(:[a-zA-Z_][a-zA-Z0-9_]*)?}")
++# Match parameters in path formats, eg. '{param}'
++PARAM_FORMAT_REGEX = re.compile("{([a-zA-Z_][a-zA-Z0-9_]*)}")
+ 
+ 
+ def compile_path(
+@@ -163,7 +168,9 @@ def compile_path(
+ 
+     path_format += path[idx:]
+ 
+-    return re.compile(path_regex), path_format, param_convertors
++    # Host names are case-insensitive (RFC 9110, section 4.2.3).
++    flags = re.IGNORECASE if is_host else 0
++    return re.compile(path_regex, flags), path_format, param_convertors
+ 
+ 
+ class BaseRoute:
+@@ -483,7 +490,7 @@ class Host(BaseRoute):
+             parsed_host = parse_host_header(headers.get("host"))
+             if parsed_host is None:
+                 return Match.NONE, {}
+-            host = parsed_host.host
++            host = parsed_host.host.lower()
+ 
+             match = self.host_regex.match(host)
+             if match:

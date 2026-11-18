@@ -1,0 +1,840 @@
+diff --git a/docs/release-notes.md b/docs/release-notes.md
+index d5ea539..4b60a19 100644
+--- a/docs/release-notes.md
++++ b/docs/release-notes.md
+@@ -6,7 +6,6 @@ toc_depth: 2
+ 
+ #### Changed
+ 
+-* Compare multidicts such as `FormData` and `QueryParams` by key while keeping the order of values under a repeated key, so `FormData` with repeated uploads no longer raises `TypeError`. `QueryParams("a=1&a=2")` and `QueryParams("a=2&a=1")` are no longer equal [#3619](https://github.com/Kludex/starlette/pull/3619).
+ * Build URL-encoded form fields in the parser callbacks, lowering memory and CPU usage for forms with many fields [#3724](https://github.com/Kludex/starlette/pull/3724).
+ * Compare `Match` members by identity during routing [#3665](https://github.com/Kludex/starlette/pull/3665) and [#3722](https://github.com/Kludex/starlette/pull/3722).
+ 
+@@ -16,14 +15,8 @@ toc_depth: 2
+ 
+ #### Fixed
+ 
+-* Parse the last URL-encoded form field when the request stream ends without an empty chunk [#3599](https://github.com/Kludex/starlette/pull/3599).
+-* Keep path parameter values that look like another placeholder in `url_path_for()` [#3725](https://github.com/Kludex/starlette/pull/3725).
+-* Default omitted `http.response.start` headers in `BaseHTTPMiddleware`, `GZipMiddleware` and `SessionMiddleware` instead of raising `KeyError` [#3721](https://github.com/Kludex/starlette/pull/3721).
+ * Clear the traceback of handled exceptions, so reused exception instances no longer keep per-request objects alive [#3205](https://github.com/Kludex/starlette/pull/3205).
+-* Strip only one pair of matching outer quotes from `Config` env file values [#3720](https://github.com/Kludex/starlette/pull/3720).
+-* Strip `root_path` from `PATH_INFO` only at a path segment boundary in `WSGIMiddleware` [#3718](https://github.com/Kludex/starlette/pull/3718).
+ * Report NaN and infinity correctly in `FloatConvertor.to_string()` [#3716](https://github.com/Kludex/starlette/pull/3716).
+-* Ignore `Range` on requests other than `GET` and `HEAD` in `FileResponse` [#3679](https://github.com/Kludex/starlette/pull/3679).
+ 
+ ## 1.9.0 (October 18, 2026)
+ 
+@@ -33,11 +26,6 @@ toc_depth: 2
+ 
+ #### Fixed
+ 
+-* Percent-encode `?`, `#`, `\` and a leading `//` in the request path when building `request.url`, and `\` and a leading `//` in `url_path_for` [#3671](https://github.com/Kludex/starlette/pull/3671).
+-* Use the byte length for `Content-Length` when the response body is a typed or multidimensional `memoryview` [#3622](https://github.com/Kludex/starlette/pull/3622).
+-* Include `HEAD` in the `Allow` header of `HTTPEndpoint` 405 responses when `GET` is defined [#3585](https://github.com/Kludex/starlette/pull/3585).
+-* Match host names case-insensitively in `Host` routing and `TrustedHostMiddleware` [#3542](https://github.com/Kludex/starlette/pull/3542).
+-* Preserve every existing `Vary` header in `MutableHeaders.add_vary_header()`, used by `GZipMiddleware` and `SessionMiddleware` [#3675](https://github.com/Kludex/starlette/pull/3675).
+ 
+ ## 1.8.0 (October 13, 2026)
+ 
+@@ -51,7 +39,6 @@ This release drops Python 3.10 support and adds HTTP 103 Early Hints.
+ 
+ * Require Python 3.11 or later, dropping support for Python 3.10 [#3592](https://github.com/Kludex/starlette/pull/3592).
+ * Exclude native gRPC media types (`application/grpc` and `application/grpc+...`) from `GZipMiddleware` compression by default [#3565](https://github.com/Kludex/starlette/pull/3565).
+-* Send `http.response.start` immediately in `GZipMiddleware` for responses with an existing `Content-Encoding`, status `206`, or an excluded content type, instead of waiting for the first body chunk [#3631](https://github.com/Kludex/starlette/pull/3631).
+ * Resolve the multipart charset once per request instead of once per field [#3618](https://github.com/Kludex/starlette/pull/3618).
+ 
+ #### Fixed
+@@ -60,10 +47,8 @@ This release drops Python 3.10 support and adds HTTP 103 Early Hints.
+ * Stop `FileResponse` transfers when the client disconnects [#3523](https://github.com/Kludex/starlette/pull/3523).
+ * Stop multipart range responses when the file ends before a range is complete, instead of looping forever [#3583](https://github.com/Kludex/starlette/pull/3583).
+ * Ignore `Range` when `If-Range` contains a weak ETag [#3567](https://github.com/Kludex/starlette/pull/3567).
+-* Include `Allow: GET, HEAD` in `StaticFiles` `405` responses [#3640](https://github.com/Kludex/starlette/pull/3640).
+ * Close `Request.stream()` generators deterministically, avoiding "Exception ignored" errors with stacked `BaseHTTPMiddleware` [#3628](https://github.com/Kludex/starlette/pull/3628).
+ * Add `Vary: Cookie` when `Session.pop()` removes an existing key [#3186](https://github.com/Kludex/starlette/pull/3186).
+-* Emit `Max-Age=0` on the session cookie when `SessionMiddleware` uses `max_age=0` [#3651](https://github.com/Kludex/starlette/pull/3651).
+ * Bracket IPv6 hostnames in `URL.replace()` [#3617](https://github.com/Kludex/starlette/pull/3617).
+ 
+ ## 1.7.0 (September 23, 2026)
+diff --git a/starlette/config.py b/starlette/config.py
+index 1883212..56c25ca 100644
+--- a/starlette/config.py
++++ b/starlette/config.py
+@@ -116,9 +116,7 @@ class Config:
+                 if "=" in line and not line.startswith("#"):
+                     key, value = line.split("=", 1)
+                     key = key.strip()
+-                    value = value.strip()
+-                    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+-                        value = value[1:-1]
++                    value = value.strip().strip("\"'")
+                     file_values[key] = value
+         return file_values
+ 
+@@ -139,5 +137,4 @@ class Config:
+         try:
+             return cast(value)
+         except (TypeError, ValueError):
+-            cast_name = getattr(cast, "__name__", type(cast).__name__)
+-            raise ValueError(f"Config '{key}' has value '{value}'. Not a valid {cast_name}.")
++            raise ValueError(f"Config '{key}' has value '{value}'. Not a valid {cast.__name__}.")
+diff --git a/starlette/datastructures.py b/starlette/datastructures.py
+index 79da210..e2be10a 100644
+--- a/starlette/datastructures.py
++++ b/starlette/datastructures.py
+@@ -2,7 +2,6 @@ from __future__ import annotations
+ 
+ import ipaddress
+ from collections.abc import ItemsView, Iterable, Iterator, KeysView, Mapping, MutableMapping, Sequence, ValuesView
+-from operator import itemgetter
+ from shlex import shlex
+ from typing import Any, BinaryIO, Literal, NamedTuple, TypeVar, cast
+ from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit
+@@ -36,7 +35,7 @@ class URL:
+             assert not components, 'Cannot set both "scope" and "**components".'
+             scheme = scope.get("scheme", "http")
+             server = scope.get("server", None)
+-            path = scope["path"].replace("?", "%3F").replace("#", "%23").replace("\\", "%5C")
++            path = scope["path"]
+             query_string = scope.get("query_string", b"")
+ 
+             host_header = None
+@@ -61,9 +60,6 @@ class URL:
+             if netloc is not None:
+                 url = SplitResult(scheme=scheme, netloc=netloc, path=path, query=query, fragment="").geturl()
+             else:
+-                if path.startswith("//"):
+-                    # Without a host, a leading `//` would be parsed as the authority.
+-                    path = "/%2F" + path[2:]
+                 url = f"{path}?{query}" if query else path
+         elif components:
+             assert not url, 'Cannot set both "url" and "**components".'
+@@ -200,10 +196,6 @@ class URLPath(str):
+ 
+     def __new__(cls, path: str, protocol: Literal["http", "websocket", ""] = "", host: str = "") -> URLPath:
+         assert protocol in ("http", "websocket", "")
+-        path = path.replace("\\", "%5C")
+-        if path.startswith("//"):
+-            # A leading `//` would be parsed as the authority.
+-            path = "/%2F" + path[2:]
+         return str.__new__(cls, path)
+ 
+     def __init__(self, path: str, protocol: Literal["http", "websocket", ""] = "", host: str = "") -> None:
+@@ -335,7 +327,7 @@ class ImmutableMultiDict(Mapping[_KeyType, _CovariantValueType]):
+     def __eq__(self, other: Any) -> bool:
+         if not isinstance(other, self.__class__):
+             return False
+-        return sorted(self._list, key=itemgetter(0)) == sorted(other._list, key=itemgetter(0))
++        return sorted(self._list) == sorted(other._list)
+ 
+     def __repr__(self) -> str:
+         class_name = self.__class__.__name__
+@@ -679,7 +671,10 @@ class MutableHeaders(Headers):
+         self._list.append((append_key, append_value))
+ 
+     def add_vary_header(self, vary: str) -> None:
+-        self["vary"] = ", ".join([*self.getlist("vary"), vary])
++        existing = self.get("vary")
++        if existing is not None:
++            vary = ", ".join([existing, vary])
++        self["vary"] = vary
+ 
+ 
+ class State:
+diff --git a/starlette/endpoints.py b/starlette/endpoints.py
+index 02a8647..cc3ede3 100644
+--- a/starlette/endpoints.py
++++ b/starlette/endpoints.py
+@@ -24,7 +24,6 @@ class HTTPEndpoint:
+             method
+             for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "QUERY")
+             if getattr(self, method.lower(), None) is not None
+-            or (method == "HEAD" and getattr(self, "get", None) is not None)
+         ]
+ 
+     def __await__(self) -> Generator[Any, None, None]:
+@@ -35,7 +34,7 @@ class HTTPEndpoint:
+         handler_name = "get" if request.method == "HEAD" and not hasattr(self, "head") else request.method.lower()
+ 
+         handler: Callable[[Request], Any]
+-        if request.method in self._allowed_methods:
++        if request.method in self._allowed_methods or (request.method == "HEAD" and "GET" in self._allowed_methods):
+             handler = getattr(self, handler_name)
+         else:
+             handler = self.method_not_allowed
+diff --git a/starlette/formparsers.py b/starlette/formparsers.py
+index b4d03f0..0185a06 100644
+--- a/starlette/formparsers.py
++++ b/starlette/formparsers.py
+@@ -125,8 +125,10 @@ class FormParser:
+         parser = multipart.QuerystringParser(callbacks)
+ 
+         async for chunk in self.stream:
+-            parser.write(chunk)
+-        parser.finalize()
++            if chunk:
++                parser.write(chunk)
++            else:
++                parser.finalize()
+ 
+         return FormData(self._items)
+ 
+diff --git a/starlette/middleware/base.py b/starlette/middleware/base.py
+index 4912a87..2f7e201 100644
+--- a/starlette/middleware/base.py
++++ b/starlette/middleware/base.py
+@@ -194,7 +194,7 @@ class BaseHTTPMiddleware:
+                         break
+ 
+             response = _StreamingResponse(status_code=message["status"], content=body_stream(), info=info)
+-            response.raw_headers = message.get("headers", [])
++            response.raw_headers = message["headers"]
+             return response
+ 
+         send_stream, recv_stream = anyio.create_memory_object_stream[Message]()
+diff --git a/starlette/middleware/gzip.py b/starlette/middleware/gzip.py
+index 8204a88..0f5aafc 100644
+--- a/starlette/middleware/gzip.py
++++ b/starlette/middleware/gzip.py
+@@ -109,7 +109,6 @@ class IdentityResponder:
+             # Don't send the initial message until we've determined how to
+             # modify the outgoing headers correctly.
+             self.initial_message = message
+-            message.setdefault("headers", [])
+             headers = Headers(raw=self.initial_message["headers"])
+             self.content_encoding_set = "content-encoding" in headers
+             self.partial_response = message["status"] == 206
+@@ -118,11 +117,12 @@ class IdentityResponder:
+             if media_type.startswith("application/grpc+"):
+                 media_types.add("application/grpc")
+             self.content_type_is_excluded = not media_types.isdisjoint(self.exclude_content_types)
+-            if self.content_encoding_set or self.partial_response or self.content_type_is_excluded:
+-                await self.send(self.initial_message)
+-        elif message_type in ("http.response.body", "http.response.pathsend") and (
++        elif message_type == "http.response.body" and (
+             self.content_encoding_set or self.partial_response or self.content_type_is_excluded
+         ):
++            if not self.started:
++                self.started = True
++                await self.send(self.initial_message)
+             await self.send(message)
+         elif message_type == "http.response.body" and not self.started:
+             self.started = True
+diff --git a/starlette/middleware/sessions.py b/starlette/middleware/sessions.py
+index eb2ba78..177d01a 100644
+--- a/starlette/middleware/sessions.py
++++ b/starlette/middleware/sessions.py
+@@ -61,7 +61,6 @@ class SessionMiddleware:
+         async def send_wrapper(message: Message) -> None:
+             if message["type"] == "http.response.start":
+                 session: Session = scope["session"]
+-                message.setdefault("headers", [])
+                 headers = MutableHeaders(scope=message)
+                 if session.accessed:
+                     headers.add_vary_header("Cookie")
+@@ -73,7 +72,7 @@ class SessionMiddleware:
+                         session_cookie=self.session_cookie,
+                         data=data.decode("utf-8"),
+                         path=self.path,
+-                        max_age=f"Max-Age={self.max_age}; " if self.max_age is not None else "",
++                        max_age=f"Max-Age={self.max_age}; " if self.max_age else "",
+                         security_flags=self.security_flags,
+                     )
+                     headers.append("Set-Cookie", header_value)
+diff --git a/starlette/middleware/trustedhost.py b/starlette/middleware/trustedhost.py
+index 7f11d3b..c57aa9a 100644
+--- a/starlette/middleware/trustedhost.py
++++ b/starlette/middleware/trustedhost.py
+@@ -25,7 +25,7 @@ class TrustedHostMiddleware:
+             if pattern.startswith("*") and pattern != "*":
+                 assert pattern.startswith("*."), ENFORCE_DOMAIN_WILDCARD
+         self.app = app
+-        self.allowed_hosts = [pattern.lower() for pattern in allowed_hosts]
++        self.allowed_hosts = list(allowed_hosts)
+         self.allow_any = "*" in allowed_hosts
+         self.www_redirect = www_redirect
+ 
+@@ -42,7 +42,7 @@ class TrustedHostMiddleware:
+         if parsed_host is None:
+             await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
+             return
+-        host = parsed_host.host.lower()
++        host = parsed_host.host
+ 
+         is_valid_host = False
+         found_www_redirect = False
+diff --git a/starlette/middleware/wsgi.py b/starlette/middleware/wsgi.py
+index 793e333..0871926 100644
+--- a/starlette/middleware/wsgi.py
++++ b/starlette/middleware/wsgi.py
+@@ -30,7 +30,7 @@ def build_environ(scope: Scope, body: bytes) -> dict[str, Any]:
+ 
+     script_name = scope.get("root_path", "").encode("utf8").decode("latin1")
+     path_info = scope["path"].encode("utf8").decode("latin1")
+-    if path_info == script_name or path_info.startswith(script_name.rstrip("/") + "/"):
++    if path_info.startswith(script_name):
+         path_info = path_info[len(script_name) :]
+ 
+     environ = {
+diff --git a/starlette/responses.py b/starlette/responses.py
+index b503590..4568eed 100644
+--- a/starlette/responses.py
++++ b/starlette/responses.py
+@@ -49,9 +49,7 @@ class Response:
+     def render(self, content: Any) -> bytes | memoryview:
+         if content is None:
+             return b""
+-        if isinstance(content, memoryview):
+-            return content.cast("B") if content.c_contiguous else content.tobytes()
+-        if isinstance(content, bytes):
++        if isinstance(content, bytes | memoryview):
+             return content
+         return content.encode(self.charset)  # type: ignore
+ 
+@@ -253,9 +251,7 @@ class StreamingResponse(Response):
+     async def stream_response(self, send: Send) -> None:
+         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+         async for chunk in self.body_iterator:
+-            if isinstance(chunk, memoryview):
+-                chunk = chunk.cast("B") if chunk.c_contiguous else chunk.tobytes()
+-            elif not isinstance(chunk, bytes):
++            if not isinstance(chunk, bytes | memoryview):
+                 chunk = chunk.encode(self.charset)
+             await send({"type": "http.response.body", "body": chunk, "more_body": True})
+ 
+@@ -372,7 +368,6 @@ class FileResponse(Response):
+         if (
+             self.status_code != 200
+             or http_range is None
+-            or (scope_type == "http" and scope["method"].upper() not in ("GET", "HEAD"))
+             or (http_if_range is not None and not self._should_use_range(http_if_range))
+         ):
+             send_file = partial(self._handle_simple, send, send_header_only, send_pathsend)
+diff --git a/starlette/routing.py b/starlette/routing.py
+index cfcda04..e0fb8e4 100644
+--- a/starlette/routing.py
++++ b/starlette/routing.py
+@@ -95,22 +95,17 @@ def replace_params(
+     param_convertors: dict[str, Convertor[Any]],
+     path_params: dict[str, str],
+ ) -> tuple[str, dict[str, str]]:
+-    if not path_params:
+-        return path, path_params
+-    parts = PARAM_FORMAT_REGEX.split(path)
+-    for i in range(1, len(parts), 2):
+-        key = parts[i]
+-        if key in path_params:
+-            parts[i] = param_convertors[key].to_string(path_params.pop(key))
+-        else:
+-            parts[i] = "{" + key + "}"
+-    return "".join(parts), path_params
++    for key, value in list(path_params.items()):
++        if "{" + key + "}" in path:
++            convertor = param_convertors[key]
++            value = convertor.to_string(value)
++            path = path.replace("{" + key + "}", value)
++            path_params.pop(key)
++    return path, path_params
+ 
+ 
+ # Match parameters in URL paths, eg. '{param}', and '{param:int}'
+ PARAM_REGEX = re.compile("{([a-zA-Z_][a-zA-Z0-9_]*)(:[a-zA-Z_][a-zA-Z0-9_]*)?}")
+-# Match parameters in path formats, eg. '{param}'
+-PARAM_FORMAT_REGEX = re.compile("{([a-zA-Z_][a-zA-Z0-9_]*)}")
+ 
+ 
+ def compile_path(
+@@ -168,9 +163,7 @@ def compile_path(
+ 
+     path_format += path[idx:]
+ 
+-    # Host names are case-insensitive (RFC 9110, section 4.2.3).
+-    flags = re.IGNORECASE if is_host else 0
+-    return re.compile(path_regex, flags), path_format, param_convertors
++    return re.compile(path_regex), path_format, param_convertors
+ 
+ 
+ class BaseRoute:
+@@ -490,7 +483,7 @@ class Host(BaseRoute):
+             parsed_host = parse_host_header(headers.get("host"))
+             if parsed_host is None:
+                 return Match.NONE, {}
+-            host = parsed_host.host.lower()
++            host = parsed_host.host
+ 
+             match = self.host_regex.match(host)
+             if match:
+diff --git a/starlette/staticfiles.py b/starlette/staticfiles.py
+index 2cf1f43..77b62e1 100644
+--- a/starlette/staticfiles.py
++++ b/starlette/staticfiles.py
+@@ -117,7 +117,7 @@ class StaticFiles:
+         Returns an HTTP response, given the incoming path, method and request headers.
+         """
+         if scope["method"] not in ("GET", "HEAD"):
+-            raise HTTPException(status_code=405, headers={"Allow": "GET, HEAD"})
++            raise HTTPException(status_code=405)
+ 
+         try:
+             full_path, stat_result = await anyio.to_thread.run_sync(self.lookup_path, path)
+diff --git a/tests/middleware/test_gzip.py b/tests/middleware/test_gzip.py
+index a132e45..f68b95e 100644
+--- a/tests/middleware/test_gzip.py
++++ b/tests/middleware/test_gzip.py
+@@ -4,7 +4,6 @@ import hashlib
+ import zlib
+ from pathlib import Path
+ 
+-import anyio
+ import pytest
+ 
+ from starlette.applications import Starlette
+@@ -35,23 +34,6 @@ def test_gzip_responses(test_client_factory: TestClientFactory) -> None:
+     assert int(response.headers["Content-Length"]) < 4000
+ 
+ 
+-def test_gzip_preserves_multiple_vary_headers(test_client_factory: TestClientFactory) -> None:
+-    def homepage(request: Request) -> PlainTextResponse:
+-        response = PlainTextResponse("x" * 4000, headers={"Vary": "Accept-Language"})
+-        response.headers.append("Vary", "Cookie")
+-        return response
+-
+-    app = Starlette(
+-        routes=[Route("/", endpoint=homepage)],
+-        middleware=[Middleware(GZipMiddleware)],
+-    )
+-
+-    client = test_client_factory(app)
+-    response = client.get("/", headers={"accept-encoding": "gzip"})
+-    assert response.headers["Content-Encoding"] == "gzip"
+-    assert response.headers["Vary"] == "Accept-Language, Cookie, Accept-Encoding"
+-
+-
+ def test_gzip_not_in_accept_encoding(test_client_factory: TestClientFactory) -> None:
+     def homepage(request: Request) -> PlainTextResponse:
+         return PlainTextResponse("x" * 4000, status_code=200)
+@@ -519,28 +501,3 @@ def test_gzip_excluded_content_type_trailers(test_client_factory: TestClientFact
+     assert response.content == b"x" * 4000
+     assert "content-encoding" not in response.headers
+     assert response.extensions["http.response.trailers"] == [(b"grpc-status", b"0")]
+-
+-
+-@pytest.mark.anyio
+-async def test_gzip_sends_response_start_before_first_body_when_not_compressed() -> None:
+-    events: list[Message] = []
+-    start_sent = anyio.Event()
+-
+-    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+-        await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})
+-        await start_sent.wait()
+-        await send({"type": "http.response.body", "body": b"data: hello\n\n"})
+-
+-    async def send(message: Message) -> None:
+-        events.append(message)
+-        start_sent.set()
+-
+-    async def receive() -> Message:
+-        raise NotImplementedError
+-
+-    scope: Scope = {"type": "http", "method": "GET", "path": "/", "headers": [(b"accept-encoding", b"gzip")]}
+-
+-    with anyio.fail_after(1):
+-        await GZipMiddleware(app)(scope, receive, send)
+-
+-    assert [event["type"] for event in events] == ["http.response.start", "http.response.body"]
+diff --git a/tests/middleware/test_middleware.py b/tests/middleware/test_middleware.py
+index 61b8710..c6cf1fa 100644
+--- a/tests/middleware/test_middleware.py
++++ b/tests/middleware/test_middleware.py
+@@ -1,15 +1,5 @@
+-from collections.abc import Callable
+-
+-import pytest
+-
+ from starlette.middleware import Middleware
+-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+-from starlette.middleware.gzip import GZipMiddleware
+-from starlette.middleware.sessions import SessionMiddleware
+-from starlette.requests import Request
+-from starlette.responses import Response
+ from starlette.types import ASGIApp, Receive, Scope, Send
+-from tests.types import TestClientFactory
+ 
+ 
+ class CustomMiddleware:  # pragma: no cover
+@@ -30,28 +20,3 @@ def test_middleware_repr() -> None:
+ def test_middleware_iter() -> None:
+     cls, args, kwargs = Middleware(CustomMiddleware, "foo", bar=123)
+     assert (cls, args, kwargs) == (CustomMiddleware, ("foo",), {"bar": 123})
+-
+-
+-async def passthrough(request: Request, call_next: RequestResponseEndpoint) -> Response:
+-    return await call_next(request)
+-
+-
+-@pytest.mark.parametrize(
+-    "wrap",
+-    [
+-        lambda app: SessionMiddleware(app, secret_key="secret"),
+-        lambda app: GZipMiddleware(app, minimum_size=1),
+-        lambda app: BaseHTTPMiddleware(app, dispatch=passthrough),
+-    ],
+-    ids=["session", "gzip", "base"],
+-)
+-def test_response_start_without_headers(
+-    test_client_factory: TestClientFactory, wrap: Callable[[ASGIApp], ASGIApp]
+-) -> None:
+-    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+-        await send({"type": "http.response.start", "status": 200})
+-        await send({"type": "http.response.body", "body": b"Hello, world!"})
+-
+-    response = test_client_factory(wrap(app)).get("/")
+-    assert response.status_code == 200
+-    assert response.text == "Hello, world!"
+diff --git a/tests/middleware/test_session.py b/tests/middleware/test_session.py
+index 6a2479a..920b031 100644
+--- a/tests/middleware/test_session.py
++++ b/tests/middleware/test_session.py
+@@ -223,17 +223,6 @@ def test_session_cookie(test_client_factory: TestClientFactory) -> None:
+     assert response.json() == {"session": {}}
+ 
+ 
+-def test_session_zero_max_age(test_client_factory: TestClientFactory) -> None:
+-    app = Starlette(
+-        routes=[Route("/update_session", endpoint=update_session, methods=["POST"])],
+-        middleware=[Middleware(SessionMiddleware, secret_key="example", max_age=0)],
+-    )
+-    client = test_client_factory(app)
+-
+-    response = client.post("/update_session", json={"some": "data"})
+-    assert "; Max-Age=0; " in response.headers["set-cookie"]
+-
+-
+ def test_domain_cookie(test_client_factory: TestClientFactory) -> None:
+     app = Starlette(
+         routes=[
+diff --git a/tests/middleware/test_trusted_host.py b/tests/middleware/test_trusted_host.py
+index 2f5fc76..0a8a185 100644
+--- a/tests/middleware/test_trusted_host.py
++++ b/tests/middleware/test_trusted_host.py
+@@ -96,10 +96,3 @@ def test_www_redirect(test_client_factory: TestClientFactory) -> None:
+     response = client.get("/")
+     assert response.status_code == 200
+     assert response.url == "https://www.example.com/"
+-
+-
+-def test_trusted_host_middleware_is_case_insensitive(test_client_factory: TestClientFactory) -> None:
+-    app = TrustedHostMiddleware(PlainTextResponse("OK"), allowed_hosts=["Example.com"])
+-
+-    response = test_client_factory(app).get("/", headers={"host": "example.COM"})
+-    assert response.status_code == 200
+diff --git a/tests/middleware/test_wsgi.py b/tests/middleware/test_wsgi.py
+index 9d924d0..6b1f1b9 100644
+--- a/tests/middleware/test_wsgi.py
++++ b/tests/middleware/test_wsgi.py
+@@ -162,25 +162,3 @@ def test_build_environ_encoding() -> None:
+     environ = build_environ(scope, b"")
+     assert environ["SCRIPT_NAME"] == "/中国".encode().decode("latin-1")
+     assert environ["PATH_INFO"] == "/小星".encode().decode("latin-1")
+-
+-
+-@pytest.mark.parametrize(
+-    "root_path, path, path_info",
+-    [
+-        ("/app", "/application", "/application"),
+-        ("/app", "/app/users", "/users"),
+-        ("/app/", "/app/users", "users"),
+-    ],
+-)
+-def test_build_environ_root_path(root_path: str, path: str, path_info: str) -> None:
+-    scope = {
+-        "type": "http",
+-        "http_version": "1.1",
+-        "method": "GET",
+-        "path": path,
+-        "root_path": root_path,
+-        "query_string": b"",
+-        "headers": [],
+-    }
+-    environ = build_environ(scope, b"")
+-    assert environ["PATH_INFO"] == path_info
+diff --git a/tests/test_config.py b/tests/test_config.py
+index 4eda1ad..3bcccec 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -1,5 +1,4 @@
+ import os
+-from functools import partial
+ from pathlib import Path
+ from typing import Any, assert_type
+ 
+@@ -102,13 +101,6 @@ def test_config(tmpdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+         config.get("BOOL_AS_INT", cast=bool)
+ 
+ 
+-def test_config_cast_without_name() -> None:
+-    config = Config(environ={"INVALID": "not-hex"})
+-
+-    with pytest.raises(ValueError, match="Config 'INVALID' has value 'not-hex'. Not a valid partial."):
+-        config("INVALID", cast=partial(int, base=16))
+-
+-
+ def test_missing_env_file_raises(tmpdir: Path) -> None:
+     path = os.path.join(tmpdir, ".env")
+ 
+@@ -154,14 +146,3 @@ def test_config_with_encoding(tmpdir: Path) -> None:
+     path.write_text("MESSAGE=Hello 世界\n", encoding="utf-8")
+     config = Config(path, encoding="utf-8")
+     assert config.get("MESSAGE") == "Hello 世界"
+-
+-
+-def test_config_strips_matching_quotes(tmp_path: Path) -> None:
+-    path = tmp_path / ".env"
+-    path.write_text('SINGLE=\'say "hi"\'\nDOUBLE="it\'s"\nTRAILING="secret\'"\nUNQUOTED=abc\nQUOTE="\n')
+-    config = Config(path)
+-    assert config.get("SINGLE") == 'say "hi"'
+-    assert config.get("DOUBLE") == "it's"
+-    assert config.get("TRAILING") == "secret'"
+-    assert config.get("UNQUOTED") == "abc"
+-    assert config.get("QUOTE") == '"'
+diff --git a/tests/test_datastructures.py b/tests/test_datastructures.py
+index 46fdf82..0a5b90f 100644
+--- a/tests/test_datastructures.py
++++ b/tests/test_datastructures.py
+@@ -211,22 +211,6 @@ def test_url_from_scope() -> None:
+     assert u.port == 80
+ 
+ 
+-def test_url_from_scope_with_delimiters_in_path() -> None:
+-    u = URL(scope={"path": "/a?b#c", "query_string": b"d=e", "headers": [(b"host", b"example.org")]})
+-    assert u == "http://example.org/a%3Fb%23c?d=e"
+-    assert u.path == "/a%3Fb%23c"
+-    assert u.query == "d=e"
+-
+-    u = URL(scope={"path": "/\\example.org/a", "query_string": b"", "headers": []})
+-    assert u == "/%5Cexample.org/a"
+-
+-
+-def test_url_from_scope_with_double_slash_path_and_no_host() -> None:
+-    u = URL(scope={"path": "//example.org/a", "query_string": b"", "headers": []})
+-    assert u == "/%2Fexample.org/a"
+-    assert u.netloc == ""
+-
+-
+ @pytest.mark.parametrize(
+     "host",
+     [
+@@ -542,17 +526,6 @@ def test_formdata() -> None:
+     assert FormData({"a": "123", "b": "789"}) != {"a": "123", "b": "789"}
+ 
+ 
+-def test_formdata_equality_with_multiple_uploads() -> None:
+-    with io.BytesIO(b"a") as stream_a, io.BytesIO(b"b") as stream_b:
+-        file_a = UploadFile(stream_a, filename="a.txt")
+-        file_b = UploadFile(stream_b, filename="b.txt")
+-        form = FormData([("files", file_a), ("files", file_b), ("name", "x")])
+-
+-        assert form == FormData(form)
+-        assert form == FormData([("name", "x"), ("files", file_a), ("files", file_b)])
+-        assert form != FormData([("files", file_b), ("files", file_a), ("name", "x")])
+-
+-
+ @pytest.mark.anyio
+ async def test_upload_file_repr() -> None:
+     stream = io.BytesIO(b"data")
+diff --git a/tests/test_endpoints.py b/tests/test_endpoints.py
+index b0937bb..3ad5001 100644
+--- a/tests/test_endpoints.py
++++ b/tests/test_endpoints.py
+@@ -49,8 +49,6 @@ def test_http_endpoint_route_method(client: TestClient) -> None:
+     response = client.post("/")
+     assert response.status_code == 405
+     assert response.text == "Method Not Allowed"
+-    assert response.headers["allow"] == "GET, HEAD, QUERY"
+-    assert client.head("/").status_code == 200
+ 
+ 
+ def test_http_endpoint_route_query_method(client: TestClient) -> None:
+@@ -104,19 +102,6 @@ def test_http_endpoint_does_not_dispatch_non_verb_method(test_client_factory: Te
+     response = client.request("_DO_DELETE", "/")
+     assert response.status_code == 405
+     assert response.text == "Method Not Allowed"
+-    assert response.headers["allow"] == "GET, HEAD"
+-
+-
+-def test_http_endpoint_allow_header_omits_head_without_get(test_client_factory: TestClientFactory) -> None:
+-    class Endpoint(HTTPEndpoint):
+-        async def post(self, request: Request) -> PlainTextResponse:
+-            return PlainTextResponse("Hello, world!")  # pragma: no cover
+-
+-    client = test_client_factory(Router(routes=[Route("/", endpoint=Endpoint)]))
+-
+-    response = client.head("/")
+-    assert response.status_code == 405
+-    assert response.headers["allow"] == "POST"
+ 
+ 
+ def test_websocket_endpoint_on_connect(test_client_factory: TestClientFactory) -> None:
+diff --git a/tests/test_formparsers.py b/tests/test_formparsers.py
+index 1b552ee..01d73c8 100644
+--- a/tests/test_formparsers.py
++++ b/tests/test_formparsers.py
+@@ -14,7 +14,7 @@ from unittest import mock
+ import pytest
+ 
+ from starlette.applications import Starlette
+-from starlette.datastructures import FormData, Headers, UploadFile
++from starlette.datastructures import Headers, UploadFile
+ from starlette.exceptions import StarletteDeprecationWarning
+ from starlette.formparsers import FormMessage, FormParser, MultiPartException, MultiPartParser
+ from starlette.requests import Request
+@@ -1111,12 +1111,3 @@ def test_multipart_closes_tempfile_on_oserror(
+ def test_form_message_is_deprecated() -> None:
+     with pytest.warns(StarletteDeprecationWarning, match="`FormMessage` is deprecated"):
+         FormMessage(1)
+-
+-
+-@pytest.mark.anyio
+-async def test_urlencoded_stream_without_empty_final_chunk() -> None:
+-    async def stream() -> AsyncGenerator[bytes, None]:
+-        yield b"first=one&second=two"
+-
+-    parser = FormParser(Headers({"content-type": "application/x-www-form-urlencoded"}), stream())
+-    assert await parser.parse() == FormData([("first", "one"), ("second", "two")])
+diff --git a/tests/test_responses.py b/tests/test_responses.py
+index 5c23d23..b3b9c9a 100644
+--- a/tests/test_responses.py
++++ b/tests/test_responses.py
+@@ -755,22 +755,6 @@ def test_response_memoryview(test_client_factory: TestClientFactory) -> None:
+     assert response.content == b"\xc0"
+ 
+ 
+-def test_response_typed_memoryview(test_client_factory: TestClientFactory) -> None:
+-    app = Response(content=memoryview(b"01234567").cast("I"))
+-    client: TestClient = test_client_factory(app)
+-    response = client.get("/")
+-    assert response.content == b"01234567"
+-    assert response.headers["content-length"] == "8"
+-
+-
+-def test_response_non_contiguous_memoryview(test_client_factory: TestClientFactory) -> None:
+-    app = Response(content=memoryview(b"01234567")[::2])
+-    client: TestClient = test_client_factory(app)
+-    response = client.get("/")
+-    assert response.content == b"0246"
+-    assert response.headers["content-length"] == "4"
+-
+-
+ def test_streaming_response_memoryview(test_client_factory: TestClientFactory) -> None:
+     app = StreamingResponse(content=iter([memoryview(b"\xc0"), memoryview(b"\xf5")]))
+     client: TestClient = test_client_factory(app)
+@@ -778,40 +762,6 @@ def test_streaming_response_memoryview(test_client_factory: TestClientFactory) -
+     assert response.content == b"\xc0\xf5"
+ 
+ 
+-@pytest.mark.anyio
+-async def test_streaming_response_typed_memoryview() -> None:
+-    bodies: list[bytes | memoryview] = []
+-
+-    async def receive() -> Message:
+-        await anyio.sleep_forever()
+-        raise NotImplementedError
+-
+-    async def send(message: Message) -> None:
+-        if message["type"] == "http.response.body" and message["more_body"]:
+-            bodies.append(message["body"])
+-
+-    await StreamingResponse(iter([memoryview(b"01234567").cast("I")]))({"type": "http"}, receive, send)
+-    assert len(bodies[0]) == 8
+-    assert bytes(bodies[0]) == b"01234567"
+-
+-
+-@pytest.mark.anyio
+-async def test_streaming_response_non_contiguous_memoryview() -> None:
+-    bodies: list[bytes | memoryview] = []
+-
+-    async def receive() -> Message:
+-        await anyio.sleep_forever()
+-        raise NotImplementedError
+-
+-    async def send(message: Message) -> None:
+-        if message["type"] == "http.response.body" and message["more_body"]:
+-            bodies.append(message["body"])
+-
+-    await StreamingResponse(iter([memoryview(b"01234567")[::2]]))({"type": "http"}, receive, send)
+-    assert memoryview(bodies[0]).contiguous
+-    assert bytes(bodies[0]) == b"0246"
+-
+-
+ @pytest.mark.anyio
+ async def test_streaming_response_stops_if_receiving_http_disconnect() -> None:
+     streamed = 0
+@@ -956,14 +906,6 @@ def test_file_response_ignores_range_for_non_success_status(
+     assert head_response.content == b""
+ 
+ 
+-def test_file_response_ignores_range_for_non_get_methods(file_response_client: TestClient) -> None:
+-    response = file_response_client.post("/", headers={"Range": "bytes=0-100"})
+-    assert response.status_code == 200
+-    assert "content-range" not in response.headers
+-    assert response.headers["content-length"] == str(len(README.encode("utf8")))
+-    assert response.text == README
+-
+-
+ def test_file_response_head(file_response_client: TestClient) -> None:
+     response = file_response_client.head("/")
+     assert response.status_code == 200
+diff --git a/tests/test_routing.py b/tests/test_routing.py
+index d6694f5..3e6bb25 100644
+--- a/tests/test_routing.py
++++ b/tests/test_routing.py
+@@ -276,22 +276,6 @@ def test_url_path_for() -> None:
+         app.url_path_for("user", username="")
+ 
+ 
+-def test_url_path_for_with_double_slash_path() -> None:
+-    router = Router([Route("/{path:path}", endpoint=homepage, name="catchall")])
+-    assert router.url_path_for("catchall", path="/example.org/a") == "/%2Fexample.org/a"
+-    assert router.url_path_for("catchall", path="\\example.org/a") == "/%5Cexample.org/a"
+-
+-
+-def test_url_path_for_with_placeholder_like_value() -> None:
+-    route = Route("/{category}/{id}", endpoint=homepage, name="route")
+-    assert route.url_path_for("route", category="{id}", id="42") == "/{id}/42"
+-
+-
+-def test_url_path_for_mount_keeps_missing_params() -> None:
+-    mount = Mount("/{tenant}", routes=[Route("/users", endpoint=homepage, name="users")])
+-    assert mount.url_path_for("users") == "/{tenant}/users"
+-
+-
+ def test_url_for() -> None:
+     assert app.url_path_for("homepage").make_absolute_url(base_url="https://example.org") == "https://example.org/"
+     assert (
+@@ -1253,14 +1237,3 @@ def test_paths_with_root_path(test_client_factory: TestClientFactory) -> None:
+         "path": "/root/root-queue/path",
+         "root_path": "/root",
+     }
+-
+-
+-def test_host_routing_is_case_insensitive(test_client_factory: TestClientFactory) -> None:
+-    async def endpoint(request: Request) -> PlainTextResponse:
+-        return PlainTextResponse(request.path_params["subdomain"])
+-
+-    router = Router(routes=[Host("{subdomain}.Example.org", app=Router(routes=[Route("/", endpoint)]))])
+-
+-    response = test_client_factory(router).get("/", headers={"host": "Sub.example.ORG"})
+-    assert response.status_code == 200
+-    assert response.text == "sub"
+diff --git a/tests/test_staticfiles.py b/tests/test_staticfiles.py
+index 00b47af..625a315 100644
+--- a/tests/test_staticfiles.py
++++ b/tests/test_staticfiles.py
+@@ -102,7 +102,6 @@ def test_staticfiles_post(tmpdir: Path, test_client_factory: TestClientFactory)
+ 
+     response = client.post("/example.txt")
+     assert response.status_code == 405
+-    assert response.headers["allow"] == "GET, HEAD"
+     assert response.text == "Method Not Allowed"
+ 
+ 

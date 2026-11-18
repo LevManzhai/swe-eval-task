@@ -1,0 +1,1021 @@
+diff --git a/starlette/config.py b/starlette/config.py
+index 56c25ca..b6b2bb1 100644
+--- a/starlette/config.py
++++ b/starlette/config.py
+@@ -112,11 +112,14 @@ class Config:
+         file_values: dict[str, str] = {}
+         with open(file_name, encoding=encoding) as input_file:
+             for line in input_file.readlines():
+-                line = line.strip()
++                line = line.lstrip("\ufeff").strip()
+                 if "=" in line and not line.startswith("#"):
+                     key, value = line.split("=", 1)
+                     key = key.strip()
+-                    value = value.strip().strip("\"'")
++                    value = value.strip()
++                    # Remove a single pair of matching surrounding quotes.
++                    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
++                        value = value[1:-1]
+                     file_values[key] = value
+         return file_values
+ 
+@@ -130,11 +133,11 @@ class Config:
+             return value
+         elif cast is bool and isinstance(value, str):
+             mapping = {"true": True, "1": True, "false": False, "0": False}
+-            value = value.lower()
+-            if value not in mapping:
++            if value.lower() not in mapping:
+                 raise ValueError(f"Config '{key}' has value '{value}'. Not a valid bool.")
+-            return mapping[value]
++            return mapping[value.lower()]
+         try:
+             return cast(value)
+         except (TypeError, ValueError):
+-            raise ValueError(f"Config '{key}' has value '{value}'. Not a valid {cast.__name__}.")
++            cast_name = getattr(cast, "__name__", None) or type(cast).__name__
++            raise ValueError(f"Config '{key}' has value '{value}'. Not a valid {cast_name}.")
+diff --git a/starlette/convertors.py b/starlette/convertors.py
+index 760a7d2..6a8300a 100644
+--- a/starlette/convertors.py
++++ b/starlette/convertors.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import decimal
+ import math
+ import uuid
+ from typing import Any, ClassVar, Generic, TypeVar
+@@ -63,7 +64,12 @@ class FloatConvertor(Convertor[float]):
+         assert not math.isnan(value), "NaN values are not supported"
+         assert not math.isinf(value), "Infinite values are not supported"
+         assert value >= 0.0, "Negative floats are not supported"
+-        return ("%0.20f" % value).rstrip("0").rstrip(".")
++        value = abs(value)  # Normalize -0.0.
++        # Use the shortest representation that round-trips, without an exponent.
++        text = format(decimal.Decimal(repr(value)), "f")
++        if "." in text:
++            text = text.rstrip("0").rstrip(".")
++        return text
+ 
+ 
+ class UUIDConvertor(Convertor[uuid.UUID]):
+diff --git a/starlette/datastructures.py b/starlette/datastructures.py
+index e2be10a..78e1628 100644
+--- a/starlette/datastructures.py
++++ b/starlette/datastructures.py
+@@ -39,7 +39,7 @@ class URL:
+             query_string = scope.get("query_string", b"")
+ 
+             host_header = None
+-            for key, value in scope["headers"]:
++            for key, value in scope.get("headers", ()):
+                 if key == b"host":
+                     host_header = value.decode("latin-1")
+                     break
+@@ -56,7 +56,13 @@ class URL:
+             else:
+                 netloc = None
+ 
+-            query = query_string.decode()
++            # `scope["path"]` is percent-decoded: escape the characters that would
++            # otherwise be read as a query, a fragment or an escape sequence.
++            path = path.replace("%", "%25").replace("?", "%3F").replace("#", "%23")
++            if netloc is None and path.startswith("//"):
++                # Without an authority, a leading "//" would be read as one.
++                path = "/%2F" + path[2:]
++            query = query_string.decode("latin-1")
+             if netloc is not None:
+                 url = SplitResult(scheme=scheme, netloc=netloc, path=path, query=query, fragment="").geturl()
+             else:
+@@ -327,7 +333,19 @@ class ImmutableMultiDict(Mapping[_KeyType, _CovariantValueType]):
+     def __eq__(self, other: Any) -> bool:
+         if not isinstance(other, self.__class__):
+             return False
+-        return sorted(self._list) == sorted(other._list)
++        if len(self._list) != len(other._list):
++            return False
++        # Compare as multisets, without requiring the values to be orderable
++        # or hashable (e.g. `UploadFile` instances in `FormData`).
++        remaining = list(other._list)
++        for item in self._list:
++            for idx, other_item in enumerate(remaining):
++                if item == other_item:
++                    del remaining[idx]
++                    break
++            else:
++                return False
++        return True
+ 
+     def __repr__(self) -> str:
+         class_name = self.__class__.__name__
+@@ -465,7 +483,7 @@ class UploadFile:
+         return bool(future_size > self._max_mem_size) if self._max_mem_size else False
+ 
+     async def write(self, data: bytes) -> None:
+-        new_data_len = len(data)
++        new_data_len = memoryview(data).nbytes
+         if self.size is not None:
+             self.size += new_data_len
+ 
+@@ -535,7 +553,8 @@ class Headers(Mapping[str, str]):
+         elif scope is not None:
+             # scope["headers"] isn't necessarily a list
+             # it might be a tuple or other iterable
+-            self._list = scope["headers"] = list(scope["headers"])
++            # (`headers` is optional in some ASGI messages, defaulting to empty)
++            self._list = scope["headers"] = list(scope.get("headers", ()))
+ 
+     @property
+     def raw(self) -> list[tuple[bytes, bytes]]:
+@@ -671,9 +690,15 @@ class MutableHeaders(Headers):
+         self._list.append((append_key, append_value))
+ 
+     def add_vary_header(self, vary: str) -> None:
+-        existing = self.get("vary")
+-        if existing is not None:
+-            vary = ", ".join([existing, vary])
++        # "Vary" may appear more than once; combine every existing value.
++        existing = [value for value in self.getlist("vary") if value.strip()]
++        if existing:
++            present = {token.strip().lower() for value in existing for token in value.split(",")}
++            new_tokens = [token.strip() for token in vary.split(",") if token.strip()]
++            if "*" in present or all(token.lower() in present for token in new_tokens):
++                vary = ", ".join(existing)
++            else:
++                vary = ", ".join([*existing, vary])
+         self["vary"] = vary
+ 
+ 
+diff --git a/starlette/endpoints.py b/starlette/endpoints.py
+index cc3ede3..56335ed 100644
+--- a/starlette/endpoints.py
++++ b/starlette/endpoints.py
+@@ -25,6 +25,8 @@ class HTTPEndpoint:
+             for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "QUERY")
+             if getattr(self, method.lower(), None) is not None
+         ]
++        if "GET" in self._allowed_methods and "HEAD" not in self._allowed_methods:
++            self._allowed_methods.insert(self._allowed_methods.index("GET") + 1, "HEAD")
+ 
+     def __await__(self) -> Generator[Any, None, None]:
+         return self.dispatch().__await__()
+@@ -34,7 +36,7 @@ class HTTPEndpoint:
+         handler_name = "get" if request.method == "HEAD" and not hasattr(self, "head") else request.method.lower()
+ 
+         handler: Callable[[Request], Any]
+-        if request.method in self._allowed_methods or (request.method == "HEAD" and "GET" in self._allowed_methods):
++        if request.method in self._allowed_methods:
+             handler = getattr(self, handler_name)
+         else:
+             handler = self.method_not_allowed
+diff --git a/starlette/formparsers.py b/starlette/formparsers.py
+index 0185a06..5418e19 100644
+--- a/starlette/formparsers.py
++++ b/starlette/formparsers.py
+@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
+ from enum import Enum
+ from tempfile import SpooledTemporaryFile
+ from typing import TYPE_CHECKING
+-from urllib.parse import unquote_plus
++from urllib.parse import unquote_to_bytes
+ 
+ from starlette.datastructures import FormData, Headers, UploadFile
+ from starlette.exceptions import StarletteDeprecationWarning
+@@ -65,6 +65,12 @@ def _user_safe_decode(src: bytes | bytearray, codec: str) -> str:
+         return src.decode("latin-1")
+ 
+ 
++def _decode_urlencoded(src: bytes | bytearray) -> str:
++    # application/x-www-form-urlencoded: "+" means space, percent-escapes and
++    # raw bytes are both UTF-8 encoded.
++    return unquote_to_bytes(bytes(src).replace(b"+", b" ")).decode("utf-8", errors="replace")
++
++
+ class MultiPartException(Exception):
+     def __init__(self, message: str) -> None:
+         self.message = message
+@@ -111,8 +117,8 @@ class FormParser:
+         self._current_fields += 1
+         if self._current_fields > self.max_fields:
+             raise MultiPartException(f"Too many fields. Maximum number of fields is {self.max_fields}.")
+-        name = unquote_plus(self._field_name.decode("latin-1"))
+-        value = unquote_plus(self._field_value.decode("latin-1"))
++        name = _decode_urlencoded(self._field_name)
++        value = _decode_urlencoded(self._field_value)
+         self._items.append((name, value))
+ 
+     async def parse(self) -> FormData:
+@@ -127,8 +133,7 @@ class FormParser:
+         async for chunk in self.stream:
+             if chunk:
+                 parser.write(chunk)
+-            else:
+-                parser.finalize()
++        parser.finalize()
+ 
+         return FormData(self._items)
+ 
+@@ -236,7 +241,7 @@ class MultiPartParser:
+ 
+     async def parse(self) -> FormData:
+         # Parse the Content-Type header to get the multipart boundary.
+-        _, params = parse_options_header(self.headers["Content-Type"])
++        _, params = parse_options_header(self.headers.get("Content-Type"))
+         charset = params.get(b"charset", "utf-8")
+         if isinstance(charset, bytes):
+             charset = charset.decode("latin-1")
+diff --git a/starlette/middleware/base.py b/starlette/middleware/base.py
+index 2f7e201..030435e 100644
+--- a/starlette/middleware/base.py
++++ b/starlette/middleware/base.py
+@@ -129,15 +129,26 @@ class BaseHTTPMiddleware:
+ 
+                 return message
+ 
++            app_trailers_expected = False
++
+             async def send_no_error(message: Message) -> None:
++                nonlocal app_trailers_expected
++                if message["type"] == "http.response.start":
++                    app_trailers_expected = bool(message.get("trailers", False))
+                 try:
+                     await send_stream.send(message)
+                 except anyio.BrokenResourceError:
+                     # recv_stream has been closed, i.e. response_sent has been set.
+                     return
+ 
+-                if message["type"] == "http.response.pathsend" or (
+-                    message["type"] == "http.response.body" and not message.get("more_body", False)
++                if (
++                    message["type"] == "http.response.pathsend"
++                    or (
++                        message["type"] == "http.response.body"
++                        and not message.get("more_body", False)
++                        and not app_trailers_expected
++                    )
++                    or (message["type"] == "http.response.trailers" and not message.get("more_trailers", False))
+                 ):
+                     await response_sent.wait()
+ 
+@@ -181,20 +192,34 @@ class BaseHTTPMiddleware:
+ 
+             assert message["type"] == "http.response.start"
+ 
++            trailers_expected = bool(message.get("trailers", False))
++
+             async def body_stream() -> BodyStreamGenerator:
++                body_complete = False
+                 async for message in recv_stream:
+                     if message["type"] == "http.response.pathsend":
+                         yield message
+                         break
++                    if message["type"] == "http.response.trailers":
++                        # Forward the trailers unchanged.
++                        yield message
++                        if not message.get("more_trailers", False):
++                            break
++                        continue
+                     assert message["type"] == "http.response.body", f"Unexpected message: {message}"
++                    assert not body_complete, f"Unexpected message: {message}"
+                     body = message.get("body", b"")
+                     if body:
+                         yield body
+                     if not message.get("more_body", False):
+-                        break
++                        if not trailers_expected:
++                            break
++                        body_complete = True
++                        yield {"type": "http.response.body", "body": b"", "more_body": False}
+ 
+             response = _StreamingResponse(status_code=message["status"], content=body_stream(), info=info)
+-            response.raw_headers = message["headers"]
++            response.raw_headers = list(message.get("headers", []))
++            response.trailers = trailers_expected
+             return response
+ 
+         send_stream, recv_stream = anyio.create_memory_object_stream[Message]()
+@@ -226,25 +251,31 @@ class _StreamingResponse(Response):
+         self.media_type = media_type
+         self.init_headers(headers)
+         self.background = None
++        self.trailers = False
+ 
+     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+         if self.info is not None:
+             await send({"type": "http.response.debug", "info": self.info})
+-        await send(
+-            {
+-                "type": "http.response.start",
+-                "status": self.status_code,
+-                "headers": self.raw_headers,
+-            }
+-        )
++        start_message: Message = {
++            "type": "http.response.start",
++            "status": self.status_code,
++            "headers": self.raw_headers,
++        }
++        if self.trailers:
++            start_message["trailers"] = True
++        await send(start_message)
+ 
+         should_close_body = True
+         async for chunk in self.body_iterator:
+             if isinstance(chunk, dict):
+-                # We got an ASGI message which is not response body (eg: pathsend)
++                # We got an ASGI message which is not response body (eg: pathsend, trailers)
+                 should_close_body = False
+                 await send(chunk)
+                 continue
++            if isinstance(chunk, str):
++                chunk = chunk.encode(self.charset)
++            elif isinstance(chunk, memoryview):
++                chunk = chunk.tobytes()
+             await send({"type": "http.response.body", "body": chunk, "more_body": True})
+ 
+         if should_close_body:
+diff --git a/starlette/middleware/body_limit.py b/starlette/middleware/body_limit.py
+index 159c70d..906591c 100644
+--- a/starlette/middleware/body_limit.py
++++ b/starlette/middleware/body_limit.py
+@@ -123,10 +123,12 @@ class RequestBodyLimitResponder:
+ 
+ 
+ def _get_content_length(scope: Scope) -> int | None:
+-    content_length = Headers(scope=scope).get("content-length")
+-    if content_length is None:
++    # Content-Length is 1*DIGIT; a list of identical values is accepted (RFC 9110, section 8.6).
++    values = [
++        value.strip() for header in Headers(scope=scope).getlist("content-length") for value in header.split(",")
++    ]
++    if not values or any(not (value.isascii() and value.isdigit()) for value in values):
+         return None
+-    try:
+-        return int(content_length)
+-    except ValueError:
++    if len({int(value) for value in values}) != 1:
+         return None
++    return int(values[0])
+diff --git a/starlette/middleware/cors.py b/starlette/middleware/cors.py
+index fe4c234..08c7e9a 100644
+--- a/starlette/middleware/cors.py
++++ b/starlette/middleware/cors.py
+@@ -102,7 +102,9 @@ class CORSMiddleware:
+     def preflight_response(self, request_headers: Headers) -> Response:
+         requested_origin = request_headers["origin"]
+         requested_method = request_headers["access-control-request-method"]
+-        requested_headers = request_headers.get("access-control-request-headers")
++        # The header may be repeated: combine every occurrence (RFC 9110, section 5.3).
++        requested_headers_list = request_headers.getlist("access-control-request-headers")
++        requested_headers = ", ".join(requested_headers_list) if requested_headers_list else None
+         requested_private_network = request_headers.get("access-control-request-private-network")
+ 
+         headers = dict(self.preflight_headers)
+@@ -125,7 +127,7 @@ class CORSMiddleware:
+             headers["Access-Control-Allow-Headers"] = requested_headers
+         elif requested_headers is not None:
+             for header in [h.lower() for h in requested_headers.split(",")]:
+-                if header.strip() not in self.allow_headers:
++                if header.strip() and header.strip() not in self.allow_headers:
+                     failures.append("headers")
+                     break
+ 
+@@ -157,7 +159,12 @@ class CORSMiddleware:
+         headers = MutableHeaders(scope=message)
+         origin = request_headers.get("Origin")
+         if origin is not None:
+-            headers.update(self.simple_headers)
++            for key, value in self.simple_headers.items():
++                existing = headers.getlist(key)
++                if key == "Access-Control-Expose-Headers" and existing:
++                    # A list-based header set by the application is combined, not overwritten.
++                    value = ", ".join([*existing, value])
++                headers[key] = value
+ 
+         # If credentials are allowed, then we must respond with the specific origin instead of '*'.
+         if origin is not None and self.allow_all_origins and self.allow_credentials:
+diff --git a/starlette/middleware/errors.py b/starlette/middleware/errors.py
+index e0ebd65..b682dda 100644
+--- a/starlette/middleware/errors.py
++++ b/starlette/middleware/errors.py
+@@ -247,7 +247,7 @@ class ServerErrorMiddleware:
+         return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+ 
+     def debug_response(self, request: Request, exc: Exception) -> Response:
+-        accept = request.headers.get("accept", "")
++        accept = ", ".join(request.headers.getlist("accept"))
+ 
+         if "text/html" in accept:
+             content = self.generate_html(exc)
+diff --git a/starlette/middleware/gzip.py b/starlette/middleware/gzip.py
+index 0f5aafc..17f5645 100644
+--- a/starlette/middleware/gzip.py
++++ b/starlette/middleware/gzip.py
+@@ -65,7 +65,7 @@ class GZipMiddleware:
+ 
+         headers = Headers(scope=scope)
+         responder: ASGIApp
+-        if "gzip" in headers.get("Accept-Encoding", ""):
++        if _accepts_gzip(headers.getlist("Accept-Encoding")):
+             responder = GZipResponder(
+                 self.app,
+                 self.minimum_size,
+@@ -109,7 +109,7 @@ class IdentityResponder:
+             # Don't send the initial message until we've determined how to
+             # modify the outgoing headers correctly.
+             self.initial_message = message
+-            headers = Headers(raw=self.initial_message["headers"])
++            headers = Headers(raw=list(self.initial_message.get("headers", [])))
+             self.content_encoding_set = "content-encoding" in headers
+             self.partial_response = message["status"] == 206
+             media_type = headers.get("content-type", "").partition(";")[0].strip().lower()
+@@ -117,6 +117,10 @@ class IdentityResponder:
+             if media_type.startswith("application/grpc+"):
+                 media_types.add("application/grpc")
+             self.content_type_is_excluded = not media_types.isdisjoint(self.exclude_content_types)
++            if self.content_encoding_set or self.partial_response or self.content_type_is_excluded:
++                # The response is passed through unchanged, so don't hold it back.
++                self.started = True
++                await self.send(self.initial_message)
+         elif message_type == "http.response.body" and (
+             self.content_encoding_set or self.partial_response or self.content_type_is_excluded
+         ):
+@@ -128,6 +132,8 @@ class IdentityResponder:
+             self.started = True
+             body = message.get("body", b"")
+             more_body = message.get("more_body", False)
++            message = {**message, "body": body}
++            self.initial_message = {**self.initial_message, "headers": list(self.initial_message.get("headers", []))}
+             if len(body) < self.minimum_size and not more_body:
+                 # Don't apply compression to small outgoing responses.
+                 await self.send(self.initial_message)
+@@ -173,7 +179,9 @@ class IdentityResponder:
+             await self.send(message)
+         elif message_type == "http.response.pathsend":  # pragma: no branch
+             # Don't apply GZip to pathsend responses
+-            await self.send(self.initial_message)
++            if not self.started:
++                self.started = True
++                await self.send(self.initial_message)
+             await self.send(message)
+ 
+     async def apply_compression(self, body: bytes, *, more_body: bool) -> bytes:
+@@ -228,3 +236,27 @@ async def unattached_send(message: Message) -> NoReturn:
+ 
+ def _normalize_content_types(content_types: tuple[str, ...]) -> tuple[str, ...]:
+     return tuple(content_type.partition(";")[0].strip().lower() for content_type in content_types)
++
++
++def _accepts_gzip(accept_encoding: list[str]) -> bool:
++    """Whether the (possibly repeated) Accept-Encoding header allows gzip (RFC 9110, section 12.5.3)."""
++    qualities: dict[str, float] = {}
++    for header_value in accept_encoding:
++        for item in header_value.split(","):
++            coding, *params = item.split(";")
++            coding = coding.strip().lower()
++            if not coding:
++                continue
++            quality = 1.0
++            for param in params:
++                name, _, value = param.partition("=")
++                if name.strip().lower() == "q":
++                    try:
++                        quality = float(value.strip())
++                    except ValueError:
++                        quality = 0.0
++            qualities[coding] = max(quality, qualities.get(coding, quality))
++    for coding in ("gzip", "x-gzip"):
++        if coding in qualities:
++            return qualities[coding] > 0
++    return qualities.get("*", 0.0) > 0
+diff --git a/starlette/middleware/sessions.py b/starlette/middleware/sessions.py
+index 177d01a..19ea2ad 100644
+--- a/starlette/middleware/sessions.py
++++ b/starlette/middleware/sessions.py
+@@ -72,7 +72,7 @@ class SessionMiddleware:
+                         session_cookie=self.session_cookie,
+                         data=data.decode("utf-8"),
+                         path=self.path,
+-                        max_age=f"Max-Age={self.max_age}; " if self.max_age else "",
++                        max_age=f"Max-Age={self.max_age}; " if self.max_age is not None else "",
+                         security_flags=self.security_flags,
+                     )
+                     headers.append("Set-Cookie", header_value)
+diff --git a/starlette/middleware/trustedhost.py b/starlette/middleware/trustedhost.py
+index c57aa9a..08d01a2 100644
+--- a/starlette/middleware/trustedhost.py
++++ b/starlette/middleware/trustedhost.py
+@@ -42,11 +42,13 @@ class TrustedHostMiddleware:
+         if parsed_host is None:
+             await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
+             return
+-        host = parsed_host.host
++        # Host names are case-insensitive (RFC 9110, section 4.2.3 / RFC 3986, section 3.2.2).
++        host = parsed_host.host.lower()
+ 
+         is_valid_host = False
+         found_www_redirect = False
+         for pattern in self.allowed_hosts:
++            pattern = pattern.lower()
+             if host == pattern or (pattern.startswith("*") and host.endswith(pattern[1:])):
+                 is_valid_host = True
+                 break
+diff --git a/starlette/middleware/wsgi.py b/starlette/middleware/wsgi.py
+index 0871926..6237e07 100644
+--- a/starlette/middleware/wsgi.py
++++ b/starlette/middleware/wsgi.py
+@@ -30,15 +30,18 @@ def build_environ(scope: Scope, body: bytes) -> dict[str, Any]:
+ 
+     script_name = scope.get("root_path", "").encode("utf8").decode("latin1")
+     path_info = scope["path"].encode("utf8").decode("latin1")
+-    if path_info.startswith(script_name):
+-        path_info = path_info[len(script_name) :]
++    # Only strip the root path at a path segment boundary.
++    if script_name and path_info.startswith(script_name):
++        remainder = path_info[len(script_name) :]
++        if remainder == "" or remainder.startswith("/") or script_name.endswith("/"):
++            path_info = remainder
+ 
+     environ = {
+         "REQUEST_METHOD": scope["method"],
+         "SCRIPT_NAME": script_name,
+         "PATH_INFO": path_info,
+-        "QUERY_STRING": scope["query_string"].decode("ascii"),
+-        "SERVER_PROTOCOL": f"HTTP/{scope['http_version']}",
++        "QUERY_STRING": scope.get("query_string", b"").decode("latin1"),
++        "SERVER_PROTOCOL": f"HTTP/{scope.get('http_version', '1.1')}",
+         "wsgi.version": (1, 0),
+         "wsgi.url_scheme": scope.get("scheme", "http"),
+         "wsgi.input": io.BytesIO(body),
+@@ -51,7 +54,7 @@ def build_environ(scope: Scope, body: bytes) -> dict[str, Any]:
+     # Get server name and port - required in WSGI, not in ASGI
+     server = scope.get("server") or ("localhost", 80)
+     environ["SERVER_NAME"] = server[0]
+-    environ["SERVER_PORT"] = server[1]
++    environ["SERVER_PORT"] = server[1] if server[1] is not None else ""
+ 
+     # Get client IP address
+     if scope.get("client"):
+@@ -70,7 +73,10 @@ def build_environ(scope: Scope, body: bytes) -> dict[str, Any]:
+         # case
+         value = value.decode("latin1")
+         if corrected_name in environ:
+-            value = environ[corrected_name] + "," + value
++            # Multiple cookie headers are combined with "; " (RFC 9113, section 8.2.3),
++            # other repeated headers with "," (RFC 9110, section 5.3).
++            separator = "; " if corrected_name == "HTTP_COOKIE" else ","
++            value = environ[corrected_name] + separator + value
+         environ[corrected_name] = value
+     return environ
+ 
+@@ -96,6 +102,8 @@ class WSGIResponder:
+         self.response_headers = None
+         self.stream_send, self.stream_receive = anyio.create_memory_object_stream(math.inf)
+         self.response_started = False
++        self.headers_sent = False
++        self.start_message: dict[str, Any] | None = None
+         self.exc_info: Any = None
+ 
+     async def __call__(self, receive: Receive, send: Send) -> None:
+@@ -124,34 +132,56 @@ class WSGIResponder:
+         status: str,
+         response_headers: list[tuple[str, str]],
+         exc_info: Any = None,
+-    ) -> None:
++    ) -> Callable[[bytes], None]:
+         self.exc_info = exc_info
+-        if not self.response_started:  # pragma: no branch
++        if exc_info is not None and self.headers_sent:
++            # PEP 3333: the headers were already sent, so re-raise the error.
++            raise exc_info[1].with_traceback(exc_info[2])
++        if not self.response_started or exc_info is not None:
+             self.response_started = True
+-            status_code_string, _ = status.split(" ", 1)
++            status_code_string = status.split(None, 1)[0]
+             status_code = int(status_code_string)
++            # PEP 3333: header names and values are latin-1 "native strings".
+             headers = [
+-                (name.strip().encode("ascii").lower(), value.strip().encode("ascii"))
++                (name.strip().encode("latin-1").lower(), value.strip().encode("latin-1"))
+                 for name, value in response_headers
+             ]
+-            anyio.from_thread.run(
+-                self.stream_send.send,
+-                {
+-                    "type": "http.response.start",
+-                    "status": status_code,
+-                    "headers": headers,
+-                },
+-            )
++            self.start_message = {
++                "type": "http.response.start",
++                "status": status_code,
++                "headers": headers,
++            }
++        return self.write
++
++    def send_headers(self) -> None:
++        if not self.headers_sent and self.start_message is not None:
++            self.headers_sent = True
++            anyio.from_thread.run(self.stream_send.send, self.start_message)
++
++    def write(self, data: bytes) -> None:
++        # PEP 3333: the headers are sent with the first non-empty body chunk.
++        if not data:
++            return
++        self.send_headers()
++        anyio.from_thread.run(
++            self.stream_send.send,
++            {"type": "http.response.body", "body": bytes(data), "more_body": True},
++        )
+ 
+     def wsgi(
+         self,
+         environ: dict[str, Any],
+         start_response: Callable[..., Any],
+     ) -> None:
+-        for chunk in self.app(environ, start_response):
+-            anyio.from_thread.run(
+-                self.stream_send.send,
+-                {"type": "http.response.body", "body": chunk, "more_body": True},
+-            )
+-
++        iterable = self.app(environ, start_response)
++        try:
++            for chunk in iterable:
++                self.write(chunk)
++        finally:
++            # PEP 3333: the server must call `close()` on the iterable, if present.
++            close = getattr(iterable, "close", None)
++            if close is not None:
++                close()
++
++        self.send_headers()
+         anyio.from_thread.run(self.stream_send.send, {"type": "http.response.body", "body": b""})
+diff --git a/starlette/responses.py b/starlette/responses.py
+index 4568eed..b710232 100644
+--- a/starlette/responses.py
++++ b/starlette/responses.py
+@@ -70,7 +70,8 @@ class Response:
+             and populate_content_length
+             and not (self.status_code < 200 or self.status_code in (204, 304))
+         ):
+-            content_length = str(len(body))
++            # The Content-Length is a number of bytes, not of memoryview items.
++            content_length = str(body.nbytes if isinstance(body, memoryview) else len(body))
+             raw_headers.append((b"content-length", content_length.encode("latin-1")))
+ 
+         content_type = self.media_type
+@@ -167,7 +168,11 @@ class Response:
+         if scope["type"] == "websocket":
+             send = self._wrap_websocket_denial_send(send)
+         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+-        await send({"type": "http.response.body", "body": self.body})
++        body = self.body
++        if isinstance(body, memoryview):
++            # The ASGI spec requires the body to be a byte string.
++            body = body.tobytes()
++        await send({"type": "http.response.body", "body": body})
+ 
+         if self.background is not None:
+             await self.background()
+@@ -251,7 +256,10 @@ class StreamingResponse(Response):
+     async def stream_response(self, send: Send) -> None:
+         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+         async for chunk in self.body_iterator:
+-            if not isinstance(chunk, bytes | memoryview):
++            if isinstance(chunk, memoryview):
++                # The ASGI spec requires the body to be a byte string.
++                chunk = chunk.tobytes()
++            elif not isinstance(chunk, bytes):
+                 chunk = chunk.encode(self.charset)
+             await send({"type": "http.response.body", "body": chunk, "more_body": True})
+ 
+@@ -364,9 +372,13 @@ class FileResponse(Response):
+         headers = Headers(scope=scope)
+         http_range = headers.get("range")
+         http_if_range = headers.get("if-range")
++        # Range handling is only defined for GET (RFC 9110, section 14.2),
++        # and HEAD mirrors the GET response.
++        range_method = scope_type == "http" and scope["method"].upper() in ("GET", "HEAD")
+ 
+         if (
+             self.status_code != 200
++            or not range_method
+             or http_range is None
+             or (http_if_range is not None and not self._should_use_range(http_if_range))
+         ):
+@@ -517,8 +529,12 @@ class FileResponse(Response):
+         if len(ranges) == 0:
+             raise MalformedRangeHeader("Range header: range must be requested")
+ 
+-        if any(not (0 <= start < file_size) for start, _ in ranges):
++        # A range set is satisfiable if any of its ranges is (RFC 9110, section 14.1.1);
++        # the unsatisfiable ones are ignored.
++        satisfiable = [(start, end) for start, end in ranges if 0 <= start < file_size]
++        if not satisfiable:
+             raise RangeNotSatisfiable(file_size)
++        ranges = satisfiable
+ 
+         if any(start >= end for start, end in ranges):
+             raise MalformedRangeHeader("Range header: start must be less than end")
+diff --git a/starlette/routing.py b/starlette/routing.py
+index e0fb8e4..c5fa788 100644
+--- a/starlette/routing.py
++++ b/starlette/routing.py
+@@ -12,6 +12,7 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager, asyn
+ from enum import Enum
+ from re import Pattern
+ from typing import Any, TypeVar
++from urllib.parse import quote
+ 
+ from starlette._exception_handler import wrap_app_handling_exceptions
+ from starlette._utils import get_route_path, is_async_callable, parse_host_header
+@@ -90,17 +91,50 @@ def get_name(endpoint: Callable[..., Any]) -> str:
+     return getattr(endpoint, "__name__", endpoint.__class__.__name__)
+ 
+ 
++# Characters allowed verbatim in a path segment (RFC 3986, section 3.3), plus "/".
++_PATH_SAFE_CHARS = "/:@!$&'()*+,;="
++
++_FORMAT_PARAM_REGEX = re.compile("{([a-zA-Z_][a-zA-Z0-9_]*)}")
++
++
++def _quote_path_param(value: str) -> str:
++    quoted = quote(value, safe=_PATH_SAFE_CHARS)
++    # Dot segments would be removed by clients (RFC 3986, section 5.2.4).
++    return "/".join(
++        segment.replace(".", "%2E") if segment in (".", "..") else segment for segment in quoted.split("/")
++    )
++
++
++def _ensure_path(path: str) -> str:
++    # A path starting with "//" would be read as a network-path reference
++    # (an authority), so escape the second slash.
++    if path.startswith("//"):
++        path = "/%2F" + path[2:]
++    return path
++
++
+ def replace_params(
+     path: str,
+     param_convertors: dict[str, Convertor[Any]],
+     path_params: dict[str, str],
++    *,
++    quote_values: bool = False,
+ ) -> tuple[str, dict[str, str]]:
++    replaced: dict[str, str] = {}
+     for key, value in list(path_params.items()):
+         if "{" + key + "}" in path:
+             convertor = param_convertors[key]
+             value = convertor.to_string(value)
+-            path = path.replace("{" + key + "}", value)
++            replaced[key] = _quote_path_param(value) if quote_values else value
+             path_params.pop(key)
++
++    def substitute(match: re.Match[str]) -> str:
++        key = match.group(1)
++        return replaced[key] if key in replaced else match.group(0)
++
++    # Substitute all the parameters in a single pass, so that a value
++    # containing "{name}" is never substituted again.
++    path = _FORMAT_PARAM_REGEX.sub(substitute, path)
+     return path, path_params
+ 
+ 
+@@ -163,6 +197,9 @@ def compile_path(
+ 
+     path_format += path[idx:]
+ 
++    if is_host:
++        # Host names are case-insensitive (RFC 9110, section 4.2.3).
++        return re.compile(path_regex, re.IGNORECASE), path_format, param_convertors
+     return re.compile(path_regex), path_format, param_convertors
+ 
+ 
+@@ -196,6 +233,17 @@ class BaseRoute:
+         await self.handle(scope, receive, send)
+ 
+ 
++async def _method_not_allowed(methods: Collection[str], scope: Scope, receive: Receive, send: Send) -> None:
++    headers = {"Allow": ", ".join(sorted(methods))}
++    # If we're running inside a starlette application then raise an
++    # exception, so that the configurable exception handler can deal with
++    # returning the response. For plain ASGI apps, just return the response.
++    if "app" in scope:
++        raise HTTPException(status_code=405, headers=headers)
++    response = PlainTextResponse("Method Not Allowed", status_code=405, headers=headers)
++    await response(scope, receive, send)
++
++
+ class Route(BaseRoute):
+     def __init__(
+         self,
+@@ -266,18 +314,15 @@ class Route(BaseRoute):
+         if name != self.name or seen_params != expected_params:
+             raise NoMatchFound(name, path_params)
+ 
+-        path, remaining_params = replace_params(self.path_format, self.param_convertors, path_params)
++        path, remaining_params = replace_params(
++            self.path_format, self.param_convertors, path_params, quote_values=True
++        )
+         assert not remaining_params
+-        return URLPath(path=path, protocol="http")
++        return URLPath(path=_ensure_path(path), protocol="http")
+ 
+     async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
+         if self.methods and scope["method"] not in self.methods:
+-            headers = {"Allow": ", ".join(self.methods)}
+-            if "app" in scope:
+-                raise HTTPException(status_code=405, headers=headers)
+-            else:
+-                response = PlainTextResponse("Method Not Allowed", status_code=405, headers=headers)
+-            await response(scope, receive, send)
++            await _method_not_allowed(self.methods, scope, receive, send)
+         else:
+             await self.app(scope, receive, send)
+ 
+@@ -348,9 +393,11 @@ class WebSocketRoute(BaseRoute):
+         if name != self.name or seen_params != expected_params:
+             raise NoMatchFound(name, path_params)
+ 
+-        path, remaining_params = replace_params(self.path_format, self.param_convertors, path_params)
++        path, remaining_params = replace_params(
++            self.path_format, self.param_convertors, path_params, quote_values=True
++        )
+         assert not remaining_params
+-        return URLPath(path=path, protocol="websocket")
++        return URLPath(path=_ensure_path(path), protocol="websocket")
+ 
+     async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
+         await self.app(scope, receive, send)
+@@ -430,9 +477,11 @@ class Mount(BaseRoute):
+         if self.name is not None and name == self.name and "path" in path_params:
+             # 'name' matches "<mount_name>".
+             path_params["path"] = path_params["path"].lstrip("/")
+-            path, remaining_params = replace_params(self.path_format, self.param_convertors, path_params)
++            path, remaining_params = replace_params(
++                self.path_format, self.param_convertors, path_params, quote_values=True
++            )
+             if not remaining_params:
+-                return URLPath(path=path)
++                return URLPath(path=_ensure_path(path))
+         elif self.name is None or name.startswith(self.name + ":"):
+             if self.name is None:
+                 # No mount name.
+@@ -442,13 +491,17 @@ class Mount(BaseRoute):
+                 remaining_name = name[len(self.name) + 1 :]
+             path_kwarg = path_params.get("path")
+             path_params["path"] = ""
+-            path_prefix, remaining_params = replace_params(self.path_format, self.param_convertors, path_params)
++            path_prefix, remaining_params = replace_params(
++                self.path_format, self.param_convertors, path_params, quote_values=True
++            )
+             if path_kwarg is not None:
+                 remaining_params["path"] = path_kwarg
+             for route in self.routes or []:
+                 try:
+                     url = route.url_path_for(remaining_name, **remaining_params)
+-                    return URLPath(path=path_prefix.rstrip("/") + str(url), protocol=url.protocol)
++                    return URLPath(
++                        path=_ensure_path(path_prefix.rstrip("/") + str(url)), protocol=url.protocol
++                    )
+                 except NoMatchFound:
+                     pass
+         raise NoMatchFound(name, path_params)
+@@ -686,6 +739,7 @@ class Router:
+             return
+ 
+         partial = None
++        partial_methods: set[str] = set()
+ 
+         for route in self.routes:
+             # Determine if any route matches the incoming scope,
+@@ -696,16 +750,30 @@ class Router:
+                 scope.update(child_scope)
+                 await route.handle(scope, receive, send)
+                 return
+-            elif match is Match.PARTIAL and partial is None:
+-                partial = route
+-                partial_scope = child_scope
++            elif match is Match.PARTIAL:
++                if partial is None:
++                    partial = route
++                    partial_scope = child_scope
++                if isinstance(route, Route) and route.methods:
++                    partial_methods.update(route.methods)
+ 
+         if partial is not None:
+-            #  Handle partial matches. These are cases where an endpoint is
++            #  Handle partial matches. These are cases where an endpoint is
+             # able to handle the request, but is not a preferred option.
+             # We use this in particular to deal with "405 Method Not Allowed".
+             scope["route"] = partial
+             scope.update(partial_scope)
++            if (
++                isinstance(partial, Route)
++                and type(partial).handle is Route.handle
++                and partial.methods
++                and scope["method"] not in partial.methods
++                and partial_methods != partial.methods
++            ):
++                # A 405 response must list every method the resource supports,
++                # including those served by other routes with the same path.
++                await _method_not_allowed(partial_methods, scope, receive, send)
++                return
+             await partial.handle(scope, receive, send)
+             return
+ 
+diff --git a/starlette/staticfiles.py b/starlette/staticfiles.py
+index 77b62e1..bacf54d 100644
+--- a/starlette/staticfiles.py
++++ b/starlette/staticfiles.py
+@@ -117,7 +117,7 @@ class StaticFiles:
+         Returns an HTTP response, given the incoming path, method and request headers.
+         """
+         if scope["method"] not in ("GET", "HEAD"):
+-            raise HTTPException(status_code=405)
++            raise HTTPException(status_code=405, headers={"Allow": "GET, HEAD"})
+ 
+         try:
+             full_path, stat_result = await anyio.to_thread.run_sync(self.lookup_path, path)
+@@ -213,7 +213,8 @@ class StaticFiles:
+         Given the request and response headers, return `True` if an HTTP
+         "Not Modified" response could be returned instead.
+         """
+-        if if_none_match := request_headers.get("if-none-match"):
++        # The header may be repeated: combine every occurrence (RFC 9110, section 5.3).
++        if if_none_match := ", ".join(value for value in request_headers.getlist("if-none-match") if value.strip()):
+             if if_none_match.strip() == "*":
+                 return True
+             # The "etag" header is added by FileResponse, so it's always present.
+diff --git a/starlette/testclient.py b/starlette/testclient.py
+index 54d48f5..acb0a5d 100644
+--- a/starlette/testclient.py
++++ b/starlette/testclient.py
+@@ -143,12 +143,12 @@ class WebSocketTestSession:
+             raise WebSocketDisconnect(code=message.get("code", 1000), reason=message.get("reason", ""))
+         elif message["type"] == "websocket.http.response.start":
+             status_code: int = message["status"]
+-            headers: list[tuple[bytes, bytes]] = message["headers"]
++            headers: list[tuple[bytes, bytes]] = list(message.get("headers", []))
+             body: list[bytes] = []
+             while True:
+                 message = self.receive()
+                 assert message["type"] == "websocket.http.response.body"
+-                body.append(message["body"])
++                body.append(bytes(message.get("body", b"")))
+                 if not message.get("more_body", False):
+                     break
+             raise WebSocketDenialResponse(status_code=status_code, headers=headers, content=b"".join(body))
+@@ -170,7 +170,7 @@ class WebSocketTestSession:
+             self.send({"type": "websocket.receive", "bytes": text.encode("utf-8")})
+ 
+     def close(self, code: int = 1000, reason: str | None = None) -> None:
+-        self.send({"type": "websocket.disconnect", "code": code, "reason": reason})
++        self.send({"type": "websocket.disconnect", "code": code, "reason": reason or ""})
+ 
+     def receive(self) -> Message:
+         return self.portal.call(self._send_rx.receive)
+@@ -250,7 +250,7 @@ class _TestClientTransport(httpx.BaseTransport):
+             headers = [(b"host", request.url.netloc)]
+ 
+         # Include other request headers.
+-        headers += [(key.lower().encode(), value.encode()) for key, value in request.headers.multi_items()]
++        headers += [(key.lower(), value) for key, value in request.headers.raw]
+ 
+         scope: dict[str, Any]
+ 
+@@ -336,7 +336,7 @@ class _TestClientTransport(httpx.BaseTransport):
+             if message["type"] == "http.response.start":
+                 assert not response_started, 'Received multiple "http.response.start" messages.'
+                 raw_kwargs["status_code"] = message["status"]
+-                raw_kwargs["headers"] = [(key.decode(), value.decode()) for key, value in message.get("headers", [])]
++                raw_kwargs["headers"] = [(bytes(key), bytes(value)) for key, value in message.get("headers", [])]
+                 response_started = True
+                 trailers_expected = message.get("trailers", False)
+                 response_available.set()
+diff --git a/starlette/websockets.py b/starlette/websockets.py
+index cf48e87..fdb410d 100644
+--- a/starlette/websockets.py
++++ b/starlette/websockets.py
+@@ -117,7 +117,7 @@ class WebSocket(HTTPConnection[StateT]):
+ 
+     def _raise_on_disconnect(self, message: Message) -> None:
+         if message["type"] == "websocket.disconnect":
+-            raise WebSocketDisconnect(message["code"], message.get("reason"))
++            raise WebSocketDisconnect(message.get("code", 1005), message.get("reason"))
+ 
+     async def receive_text(self) -> str:
+         if self.application_state != WebSocketState.CONNECTED:
+@@ -172,7 +172,8 @@ class WebSocket(HTTPConnection[StateT]):
+         await self.send({"type": "websocket.send", "text": data})
+ 
+     async def send_bytes(self, data: bytes) -> None:
+-        await self.send({"type": "websocket.send", "bytes": data})
++        # The ASGI spec requires a byte string.
++        await self.send({"type": "websocket.send", "bytes": data if type(data) is bytes else bytes(data)})
+ 
+     async def send_json(self, data: Any, mode: str = "text") -> None:
+         if mode not in {"text", "binary"}:
