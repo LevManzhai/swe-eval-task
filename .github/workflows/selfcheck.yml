@@ -14,6 +14,7 @@ on:
         default: tomlkit-conformance
         type: choice
         options:
+          - more-itertools-edge-cases
           - click-cli-edge-cases
           - starlette-spec-edge-cases
           - urllib3-response-edge-cases

@@ -26,6 +26,7 @@ because that's how I got to the ones that work.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
+| [`tasks/more-itertools-edge-cases`](tasks/more-itertools-edge-cases) | [more-itertools](https://github.com/more-itertools/more-itertools) | Bug hunt: sixteen size, argument, error, `numeric_range` and laziness bugs, no oracle | **Accepted**: 0 of 3 attempts passed (549, 549, 554 / 558) |
 | [`tasks/click-cli-edge-cases`](tasks/click-cli-edge-cases) | [click](https://github.com/pallets/click) | Bug hunt: thirteen help, value-source, terminal and strict-flag bugs, no oracle | **Accepted**: 0 of 3 attempts passed (60, 60, 60 / 64) |
 | [`tasks/starlette-spec-edge-cases`](tasks/starlette-spec-edge-cases) | [starlette](https://github.com/Kludex/starlette) | Bug hunt: seventeen RFC 9110, ASGI and documented-API bugs, no oracle | **Accepted**: 0 of 3 attempts passed (40, 43, 42 / 44) |
 | [`tasks/urllib3-response-edge-cases`](tasks/urllib3-response-edge-cases) | [urllib3](https://github.com/urllib3/urllib3) | Bug hunt: thirteen response, retry and redirect bugs, no oracle | **Accepted**: 0 of 3 attempts passed (90, 89, 88 / 92) |

@@ -1,0 +1,984 @@
+diff --git a/docs/versions.rst b/docs/versions.rst
+index fddf5c3..896cf42 100644
+--- a/docs/versions.rst
++++ b/docs/versions.rst
+@@ -24,19 +24,9 @@ Unreleased
+     * :func:`subfactorial` computes the number of permutations of *n* elements with no fixed points (thanks to rhettinger)
+ 
+ * Updated functions:
+-    * :func:`bucket` no longer adds keys when looking them. It now also allows ``validator``s that evaluate to ``False``. (thanks to onk3sh, DawnofGenX, and rhettinger)
+-    * :func:`chunked` and :func:`ichunked` now raise ``ValueError`` for negative chunk sizes (thanks to uttam12331 and 00200200)
++    * :func:`bucket` no longer adds keys when looking them. (thanks to onk3sh, DawnofGenX, and rhettinger)
+     * :func:`combination_with_replacement_index` now handles inputs with ``None`` properly (thanks to pochmann and JamesParrott)
+-    * :func:`constrained_batches` now raises ``ValueError`` for a nonpositive *max_count* (thanks to gheshm-jpg).
+-    * :func:`interleave_evenly` returns immediately for empty input (thanks to nyxst4ck)
+-    * :func:`numeric_range` now more closely mirrors the behavior of the built-in ``range`` (thanks to emme1t, onk3sh, chuenchen309, feiiiiii5, and JamesParrott)
+-    * :func:`one` and :func:`only` now accept user-supplied exceptions that evaluate to ``False`` (thanks to andjf, itzzdev09, rhettinger)
+-    * :func:`running_min` and :func:`running_max` are now more numerically stable (thanks to rhettinger)
+-    * :func:`running_min`, :func:`running_max`, :func:`running_mean`, and :func:`running_statistics` now validate *maxlen* as an integer and support the index protocol (thanks to jackwalkerlabs and rhettinger)
+     * :func:`seekable` now handles ``maxlen=0`` more robustly (thanks to otiscuilei, pochmann , upayon123)
+-    * :func:`sliced` now raises ``ValueError`` for negative slice sizes (thanks to Sanjays2402)
+-    * :func:`split_before`, :func:`split_after`, and :func:`split_when` no longer yield an empty list for an empty *iterable* when *maxsplit* is ``0`` (thanks to dylanpulver)
+-    * :func:`value_chain` no longer swallows ``TypeError`` exceptions (thanks to onk3sh)
+     * :func:`zip_broadcast` no longer opens input iterables twice (thanks to dylanpulver)
+ 
+ * Functions with performance improvements
+diff --git a/more_itertools/more.py b/more_itertools/more.py
+index b99a871..8a212a2 100755
+--- a/more_itertools/more.py
++++ b/more_itertools/more.py
+@@ -461,24 +461,12 @@ class peekable:
+ 
+         # If either the start or stop index is negative, we'll need to cache
+         # the rest of the iterable in order to slice from the right side.
+-        # When step < 0 and stop is None, the slice stops at index 0 rather than
+-        # indexing from the right, so only items up to start must be cached.
+-        has_negative_index = (
+-            (index.start is not None and index.start < 0)
+-            or (index.stop is not None and index.stop < 0)
+-            or (step < 0 and index.start is None)
+-        )
+-        if has_negative_index:
++        if (start < 0) or (stop < 0):
+             self._cache.extend(self._it)
+         # Otherwise we'll need to find the rightmost index and cache to that
+         # point.
+         else:
+-            rightmost = (
+-                start
+-                if (step < 0 and index.stop is None)
+-                else max(start, stop)
+-            )
+-            n = min(rightmost + 1, maxsize)
++            n = min(max(start, stop) + 1, maxsize)
+             cache_len = len(self._cache)
+             if n >= cache_len:
+                 self._cache.extend(islice(self._it, n - cache_len))
+@@ -670,16 +658,13 @@ def one(iterable, too_short=None, too_long=None):
+     iterator = iter(iterable)
+     for first in iterator:
+         for second in iterator:
+-            if too_long is not None:
+-                raise too_long
+-            raise ValueError(
++            msg = (
+                 f'Expected exactly one item in iterable, but got {first!r}, '
+                 f'{second!r}, and perhaps more.'
+             )
++            raise too_long or ValueError(msg)
+         return first
+-    if too_short is not None:
+-        raise too_short
+-    raise ValueError('too few items in iterable (expected 1)')
++    raise too_short or ValueError('too few items in iterable (expected 1)')
+ 
+ 
+ def raise_(exception, *args):
+@@ -1194,10 +1179,7 @@ class bucket:
+         self._it = iter(iterable)
+         self._key = key
+         self._cache = defaultdict(deque)
+-        # Use ``is None`` rather than truthiness: a valid validator may be a
+-        # callable object that is falsey (e.g. an empty ``set`` subclass with
+-        # ``__call__``), and ``validator or ...`` would silently replace it.
+-        self._validator = (lambda x: True) if validator is None else validator
++        self._validator = validator or (lambda x: True)
+ 
+     def __contains__(self, value):
+         if not self._validator(value):
+@@ -1363,9 +1345,6 @@ def interleave_evenly(iterables, lengths=None):
+ 
+     dims = len(lengths)
+ 
+-    if not dims:
+-        return
+-
+     # sort iterables by length, descending
+     lengths_permute = sorted(
+         range(dims), key=lambda i: lengths[i], reverse=True
+@@ -1559,9 +1538,6 @@ def sliced(seq, n, strict=False):
+     For non-sliceable iterables, see :func:`chunked`.
+ 
+     """
+-    if n < 0:
+-        raise ValueError('n must be at least 0')
+-
+     iterator = takewhile(len, (seq[i : i + n] for i in count(0, n)))
+     if strict:
+ 
+@@ -1637,9 +1613,7 @@ def split_before(iterable, pred, maxsplit=-1):
+         [[0, 1, 2], [3, 4, 5], [6, 7, 8, 9]]
+     """
+     if maxsplit == 0:
+-        buf = list(iterable)
+-        if buf:
+-            yield buf
++        yield list(iterable)
+         return
+ 
+     buf = []
+@@ -1675,9 +1649,7 @@ def split_after(iterable, pred, maxsplit=-1):
+ 
+     """
+     if maxsplit == 0:
+-        buf = list(iterable)
+-        if buf:
+-            yield buf
++        yield list(iterable)
+         return
+ 
+     buf = []
+@@ -1717,9 +1689,7 @@ def split_when(iterable, pred, maxsplit=-1):
+ 
+     """
+     if maxsplit == 0:
+-        buf = list(iterable)
+-        if buf:
+-            yield buf
++        yield list(iterable)
+         return
+ 
+     it = iter(iterable)
+@@ -2360,47 +2330,51 @@ class numeric_range(Sequence):
+             return self._start > self._stop
+ 
+     def __contains__(self, elem):
+-        try:
+-            self.index(elem)
+-        except ValueError:
+-            return False
+-        return True
+-
+-    def __eq__(self, other):
+-        # numeric_range object equality is intended to mirror the built-in range
+-        # object's equality.
+-        # https://github.com/python/cpython/blob/f5c4880151b609e0a0a0b05c292d36b18038c061/Objects/rangeobject.c#L499
+-        if not isinstance(other, numeric_range):
+-            return False
+-
+-        if self is other:
+-            return True
+-
+-        len_self = self._len
+-        if len_self != other._len:
+-            return False
++        if self._growing:
++            if self._start <= elem < self._stop:
++                return (elem - self._start) % self._step == self._zero
++        else:
++            if self._start >= elem > self._stop:
++                return (self._start - elem) % (-self._step) == self._zero
+ 
+-        if not len_self:
+-            return True
++        return False
+ 
+-        if self._start != other._start:
++    def __eq__(self, other):
++        if isinstance(other, numeric_range):
++            empty_self = not bool(self)
++            empty_other = not bool(other)
++            if empty_self or empty_other:
++                return empty_self and empty_other  # True if both empty
++            else:
++                return (
++                    self._start == other._start
++                    and self._step == other._step
++                    and self._get_by_index(-1) == other._get_by_index(-1)
++                )
++        else:
+             return False
+ 
+-        if len_self == 1:
+-            return True
+-
+-        return self._step == other._step
+-
+     def __getitem__(self, key):
+         if isinstance(key, int):
+             return self._get_by_index(key)
+         elif isinstance(key, slice):
+-            start_idx, stop_idx, step_idx = key.indices(self._len)
+-            return numeric_range(
+-                self._start + start_idx * self._step,
+-                self._start + stop_idx * self._step,
+-                self._step * step_idx,
+-            )
++            step = self._step if key.step is None else key.step * self._step
++
++            if key.start is None or key.start <= -self._len:
++                start = self._start
++            elif key.start >= self._len:
++                start = self._stop
++            else:  # -self._len < key.start < self._len
++                start = self._get_by_index(key.start)
++
++            if key.stop is None or key.stop >= self._len:
++                stop = self._stop
++            elif key.stop <= -self._len:
++                stop = self._start
++            else:  # -self._len < key.stop < self._len
++                stop = self._get_by_index(key.stop)
++
++            return numeric_range(start, stop, step)
+         else:
+             raise TypeError(
+                 'numeric range indices must be '
+@@ -2408,15 +2382,10 @@ class numeric_range(Sequence):
+             )
+ 
+     def __hash__(self):
+-        # numeric_range hashing is intended to mirror the built-in range object's
+-        # hashing.
+-        # https://github.com/python/cpython/blob/f5c4880151b609e0a0a0b05c292d36b18038c061/Objects/rangeobject.c#L570
+-        len_self = self._len
+-        if not len_self:
+-            return hash((len_self, None, None))
+-        if len_self == 1:
+-            return hash((len_self, self._start, None))
+-        return hash((len_self, self._start, self._step))
++        if self:
++            return hash((self._start, self._get_by_index(-1), self._step))
++        else:
++            return self._EMPTY_HASH
+ 
+     def __iter__(self):
+         values = (self._start + (n * self._step) for n in count())
+@@ -2443,20 +2412,7 @@ class numeric_range(Sequence):
+             return 0
+         else:  # distance > 0 and step > 0: regular euclidean division
+             q, r = divmod(distance, step)
+-            n = int(q) + int(r != self._zero)
+-            # The division above measures the distance to cover, but the items
+-            # are produced by repeated multiplication (see `__iter__`). With
+-            # inexact arithmetic the two disagree at the boundary, so settle
+-            # the count against the items themselves.
+-            while n and not self._before_stop(n - 1):
+-                n -= 1
+-            while self._before_stop(n):
+-                n += 1
+-            return n
+-
+-    def _before_stop(self, i):
+-        value = self._start + i * self._step
+-        return value < self._stop if self._growing else value > self._stop
++            return int(q) + int(r != self._zero)
+ 
+     def __reduce__(self):
+         return numeric_range, (self._start, self._stop, self._step)
+@@ -2480,27 +2436,14 @@ class numeric_range(Sequence):
+     def index(self, value):
+         if self._growing:
+             if self._start <= value < self._stop:
+-                q, _ = divmod(value - self._start, self._step)
+-                return self._index_near(int(q), value)
++                q, r = divmod(value - self._start, self._step)
++                if r == self._zero:
++                    return int(q)
+         else:
+             if self._start >= value > self._stop:
+-                q, _ = divmod(self._start - value, -self._step)
+-                return self._index_near(int(q), value)
+-
+-        raise ValueError(f"{value} is not in numeric range")
+-
+-    def _index_near(self, i, value):
+-        # `i` is the quotient of the division of `value` by the step, which
+-        # locates the value on the grid of items this range produces. For
+-        # exact types that quotient is the index. For inexact ones (floats)
+-        # it can land one short, and the remainder of the division is not a
+-        # reliable membership test either: `numeric_range(0.0, 1.0, 0.1)`
+-        # yields 0.30000000000000004, which leaves a non-zero remainder.
+-        # So compare against the item the range actually produces there.
+-        for candidate in (i, i + 1):
+-            if 0 <= candidate < self._len:
+-                if self._start + candidate * self._step == value:
+-                    return candidate
++                q, r = divmod(self._start - value, -self._step)
++                if r == self._zero:
++                    return int(q)
+ 
+         raise ValueError(f"{value} is not in numeric range")
+ 
+@@ -3705,12 +3648,11 @@ def only(iterable, default=None, too_long=None):
+     iterator = iter(iterable)
+     for first in iterator:
+         for second in iterator:
+-            if too_long is not None:
+-                raise too_long
+-            raise ValueError(
++            msg = (
+                 f'Expected exactly one item in iterable, but got {first!r}, '
+                 f'{second!r}, and perhaps more.'
+             )
++            raise too_long or ValueError(msg)
+         return first
+     return default
+ 
+@@ -3736,11 +3678,6 @@ def ichunked(iterable, n):
+     [8, 9, 10, 11]
+ 
+     """
+-    if n is not None and n < 0:
+-        raise ValueError('n must be at least 0')
+-    if n == 0:
+-        return
+-
+     iterator = iter(iterable)
+     for first in iterator:
+         rest = islice(iterator, n - 1)
+@@ -4294,7 +4231,7 @@ def all_unique(iterable, key=None):
+     seenset_add = seenset.add
+     seenlist = []
+     seenlist_add = seenlist.append
+-    for element in iterable if key is None else map(key, iterable):
++    for element in map(key, iterable) if key else iterable:
+         try:
+             if element in seenset:
+                 return False
+@@ -4451,11 +4388,9 @@ def value_chain(*args):
+             yield value
+             continue
+         try:
+-            it = iter(value)
++            yield from value
+         except TypeError:
+             yield value
+-        else:
+-            yield from it
+ 
+ 
+ def product_index(element, *iterables, repeat=1):
+@@ -4642,11 +4577,6 @@ def chunked_even(iterable, n):
+     [[1, 2, 3], [4, 5, 6], [7]]
+ 
+     """
+-    if n < 0:
+-        raise ValueError('n must be at least 0')
+-    if n == 0:
+-        return
+-
+     iterator = iter(iterable)
+ 
+     # Initialize a buffer to process the chunks while keeping
+@@ -4972,7 +4902,7 @@ def constrained_batches(
+     [(b'12345', b'123'), (b'12345678', b'1', b'1'), (b'12', b'1')]
+ 
+     If a *max_count* is supplied, the number of items per batch is also
+-    limited. It must be greater than zero:
++    limited:
+ 
+     >>> iterable = [b'12345', b'123', b'12345678', b'1', b'1', b'12', b'1']
+     >>> list(constrained_batches(iterable, 10, max_count = 2))
+@@ -4986,8 +4916,6 @@ def constrained_batches(
+     """
+     if max_size <= 0:
+         raise ValueError('maximum size must be greater than zero')
+-    if max_count is not None and max_count <= 0:
+-        raise ValueError('maximum count must be greater than zero')
+ 
+     batch = []
+     batch_size = 0
+diff --git a/more_itertools/recipes.py b/more_itertools/recipes.py
+index 7c458d3..7a24ef2 100644
+--- a/more_itertools/recipes.py
++++ b/more_itertools/recipes.py
+@@ -1460,7 +1460,6 @@ def running_mean(iterable, *, maxlen=None):
+     if maxlen is None:
+         return map(truediv, accumulate(iterator), count(1))
+ 
+-    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
+@@ -1476,7 +1475,7 @@ def _windowed_running_min(iterator, maxlen):
+     for index, value in enumerate(iterator):
+         if s and s[0][0] == index - maxlen:
+             s.popleft()
+-        while s and value < s[-1][1]:
++        while s and not s[-1][1] < value:
+             s.pop()
+         s.append((index, value))
+         yield s[0][1]
+@@ -1506,7 +1505,6 @@ def running_min(iterable, *, maxlen=None):
+     if maxlen is None:
+         return accumulate(iterator, func=min)
+ 
+-    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
+@@ -1522,7 +1520,7 @@ def _windowed_running_max(iterator, maxlen):
+     for index, value in enumerate(iterator):
+         if s and s[0][0] == index - maxlen:
+             s.popleft()
+-        while s and value > s[-1][1]:
++        while s and not s[-1][1] > value:
+             s.pop()
+         s.append((index, value))
+         yield s[0][1]
+@@ -1552,7 +1550,6 @@ def running_max(iterable, *, maxlen=None):
+     if maxlen is None:
+         return accumulate(iterator, func=max)
+ 
+-    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
+@@ -1582,9 +1579,6 @@ def running_statistics(iterable, *, maxlen=None):
+     but not complex numbers which are unorderable.
+     """
+ 
+-    if maxlen is not None:
+-        maxlen = _index(maxlen)
+-
+     # fmt: off
+     t0, t1, t2, t3 = tee(iterable, 4)
+     return map(
+diff --git a/tests/test_more.py b/tests/test_more.py
+index 4a5d7fc..d077029 100644
+--- a/tests/test_more.py
++++ b/tests/test_more.py
+@@ -340,37 +340,6 @@ class PeekableTests(PeekableMixinTests, TestCase):
+         self.assertEqual(old_cache, list(p._cache))
+         self.assertEqual(list(p), list(iterable))
+ 
+-    def test_slicing_negative_step_omitted_stop(self):
+-        it = iter(range(100))
+-        p = mi.peekable(it)
+-        self.assertEqual(p[5::-1], [5, 4, 3, 2, 1, 0])
+-        self.assertEqual(len(p._cache), 6)
+-        self.assertEqual(next(p), 0)
+-
+-    def test_slicing_negative_step_omitted_stop_read_bound(self):
+-        seen = []
+-
+-        def guarded_source():
+-            for value in count():
+-                if len(seen) == 6:
+-                    raise AssertionError(
+-                        'source read past reverse-slice boundary'
+-                    )
+-                seen.append(value)
+-                yield value
+-
+-        p = mi.peekable(guarded_source())
+-        self.assertEqual(p[2], 2)
+-        self.assertEqual(seen, [0, 1, 2])
+-
+-        self.assertEqual(p[5::-2], [5, 3, 1])
+-        self.assertEqual(seen, list(range(6)))
+-        self.assertEqual(p[5::-1], [5, 4, 3, 2, 1, 0])
+-        self.assertEqual(seen, list(range(6)))
+-
+-        self.assertEqual(list(islice(p, 6)), list(range(6)))
+-        self.assertEqual(seen, list(range(6)))
+-
+     # prepend() behavior tests
+ 
+     def test_prepend(self):
+@@ -822,33 +791,6 @@ class OneTests(TestCase):
+             lambda: mi.one(it),
+         )
+ 
+-    def test_falsy_custom_exception(self):
+-        # An exception whose instances are falsy must still be raised, rather
+-        # than being treated as "no custom exception given".
+-        class FalsyError(Exception):
+-            def __bool__(self):
+-                return False
+-
+-        too_long = FalsyError('too many')
+-        self.assertRaises(
+-            FalsyError, lambda: mi.one(count(), too_long=too_long)
+-        )
+-
+-        too_short = FalsyError('too few')
+-        self.assertRaises(FalsyError, lambda: mi.one([], too_short=too_short))
+-
+-    def test_too_long_does_not_evaluate_repr(self):
+-        # When too_long is given, the default message (which reprs the first two
+-        # items) should never be built.
+-        class NoRepr:
+-            def __repr__(self):
+-                raise RuntimeError('repr should not be called')
+-
+-        it = (NoRepr() for _ in count())
+-        self.assertRaises(
+-            OverflowError, lambda: mi.one(it, too_long=OverflowError)
+-        )
+-
+ 
+ class IntersperseTest(TestCase):
+     """Tests for intersperse()"""
+@@ -1140,22 +1082,6 @@ class BucketTests(TestCase):
+         self.assertEqual(list(D[20]), [])
+         self.assertEqual(list(D[30]), [30, 31, 33])
+ 
+-    def test_falsey_validator_is_honoured(self):
+-        # A falsey callable is still a valid validator and must not be
+-        # replaced by the default (see #1308).
+-        class AllowedKeys(set):
+-            def __call__(self, key):
+-                return key in self
+-
+-        allowed = AllowedKeys()
+-        self.assertFalse(allowed)  # Sanity: the validator itself is falsey
+-        D = mi.bucket(
+-            iter([10, 20, 11, 21]), key=lambda x: x, validator=allowed
+-        )
+-        self.assertEqual(list(D[10]), [])
+-        self.assertNotIn(10, D)
+-        self.assertEqual(set(D), set())
+-
+     def test_in_does_not_add_key(self):
+         # A failed membership test must not invent a key (see #1284)
+         iterable = [10, 20, 11, 21]
+@@ -1314,10 +1240,6 @@ class InterleaveEvenlyTests(TestCase):
+         actual = list(mi.interleave_evenly([a, b]))
+         self.assertEqual(actual, expected)
+ 
+-    def test_no_iterables(self):
+-        self.assertEqual(list(mi.interleave_evenly([])), [])
+-        self.assertEqual(list(mi.interleave_evenly([], lengths=[])), [])
+-
+     def test_three_iters(self):
+         a = ["a1", "a2", "a3", "a4", "a5"]
+         b = ["b1", "b2", "b3"]
+@@ -1548,15 +1470,6 @@ class SlicedTests(TestCase):
+         with self.assertRaises(ValueError):
+             list(mi.sliced(seq, 4, strict=True))
+ 
+-    def test_negative(self):
+-        """Negative slice sizes should raise instead of silently
+-        yielding a wrong result."""
+-        seq = 'ABCDEFG'
+-        self.assertRaises(ValueError, lambda: list(mi.sliced(seq, -1)))
+-        self.assertRaises(
+-            ValueError, lambda: list(mi.sliced(seq, -1, strict=True))
+-        )
+-
+     def test_numpy_like_array(self):
+         # Numpy arrays don't behave like Python lists - calling bool()
+         # on them doesn't return False for empty lists and True for non-empty
+@@ -1597,17 +1510,17 @@ class SplitAtTests(TestCase):
+                 self.assertEqual(actual, expected)
+ 
+     def test_maxsplit(self):
++        iterable = 'a,bb,ccc,dddd'
+         separator = ','
+         pred = lambda x: x == separator
+ 
+-        for iterable in ['a,bb,ccc,dddd', '']:
+-            for maxsplit in range(-1, 4):
+-                with self.subTest(iterable=iterable, maxsplit=maxsplit):
+-                    it = iter(iterable)
+-                    result = mi.split_at(it, pred, maxsplit=maxsplit)
+-                    actual = [''.join(x) for x in result]
+-                    expected = iterable.split(separator, maxsplit)
+-                    self.assertEqual(actual, expected)
++        for maxsplit in range(-1, 4):
++            with self.subTest(maxsplit=maxsplit):
++                it = iter(iterable)
++                result = mi.split_at(it, pred, maxsplit=maxsplit)
++                actual = [''.join(x) for x in result]
++                expected = iterable.split(separator, maxsplit)
++                self.assertEqual(actual, expected)
+ 
+     def test_keep_separator(self):
+         separator = ','
+@@ -1653,13 +1566,9 @@ class SplitBeforeTest(TestCase):
+         self.assertEqual(actual, expected)
+ 
+     def test_empty_collection(self):
+-        for maxsplit in range(-1, 4):
+-            with self.subTest(maxsplit=maxsplit):
+-                actual = list(
+-                    mi.split_before([], lambda c: bool(c), maxsplit=maxsplit)
+-                )
+-                expected = []
+-                self.assertEqual(actual, expected)
++        actual = list(mi.split_before([], lambda c: bool(c)))
++        expected = []
++        self.assertEqual(actual, expected)
+ 
+     def test_max_split(self):
+         for args, expected in [
+@@ -1714,15 +1623,6 @@ class SplitAfterTest(TestCase):
+         expected = [['o', 'o', 'o']]
+         self.assertEqual(actual, expected)
+ 
+-    def test_empty_collection(self):
+-        for maxsplit in range(-1, 4):
+-            with self.subTest(maxsplit=maxsplit):
+-                actual = list(
+-                    mi.split_after([], lambda c: bool(c), maxsplit=maxsplit)
+-                )
+-                expected = []
+-                self.assertEqual(actual, expected)
+-
+     def test_max_split(self):
+         for args, expected in [
+             (
+@@ -1807,13 +1707,9 @@ class SplitWhenTests(TestCase):
+ 
+     # edge cases
+     def test_empty_iterable(self):
+-        for maxsplit in range(-1, 4):
+-            with self.subTest(maxsplit=maxsplit):
+-                actual = list(
+-                    mi.split_when('', lambda a, b: a != b, maxsplit=maxsplit)
+-                )
+-                expected = []
+-                self.assertEqual(actual, expected)
++        actual = list(mi.split_when('', lambda a, b: a != b))
++        expected = []
++        self.assertEqual(actual, expected)
+ 
+     def test_one_element(self):
+         actual = list(mi.split_when('o', lambda a, b: a == b))
+@@ -2906,35 +2802,6 @@ class NumericRangeTests(TestCase):
+                 self.assertFalse(v in r)
+                 self.assertTrue(v not in r)
+ 
+-    def test_contains_items_with_inexact_step(self):
+-        # The items are produced by repeated multiplication, so with a step
+-        # that has no exact float representation they do not land on an exact
+-        # multiple of it. Every item must still be a member, and index() must
+-        # locate it where __getitem__ puts it.
+-        for args in [
+-            (0.0, 1.0, 0.1),
+-            (0.0, 3.0, 0.7),
+-            (1.0, 0.0, -0.1),
+-            (2.1, 5.1, 0.5),
+-            (-1.0, 1.0, 0.25),
+-        ]:
+-            r = mi.numeric_range(*args)
+-            for i, v in enumerate(r):
+-                self.assertIn(v, r)
+-                self.assertEqual(i, r.index(v))
+-                self.assertEqual(v, r[i])
+-                self.assertEqual(1, r.count(v))
+-
+-    def test_contains_non_items_with_inexact_step(self):
+-        # Values the range does not produce stay out of it.
+-        r = mi.numeric_range(0.0, 1.0, 0.1)
+-        items = set(r)
+-        for i in range(1000):
+-            v = i / 1000
+-            if v not in items:
+-                self.assertNotIn(v, r)
+-                self.assertRaises(ValueError, r.index, v)
+-
+     def test_eq(self):
+         # numeric_range objects are equal to themselves
+         range_1 = mi.numeric_range(2, 4, 1)
+@@ -2972,7 +2839,6 @@ class NumericRangeTests(TestCase):
+                     timedelta(hours=10),
+                 ),
+             ),
+-            ((2, 3, 1), (2, 3, 5)),
+         ]:
+             range1 = mi.numeric_range(*args1)
+             range2 = mi.numeric_range(*args2)
+@@ -3014,34 +2880,6 @@ class NumericRangeTests(TestCase):
+             self.assertNotEqual(range1, range2)
+             self.assertNotEqual(hash(range1), hash(range2))
+ 
+-    def test_eq_above_maxsize(self):
+-        stop = 10**30
+-        cases = [
+-            ((0, stop, 1), (0, stop, 1), True),
+-            ((0, stop, 2), (0, stop - 1, 2), True),
+-            ((stop, 0, -2), (stop, 1, -2), True),
+-            ((0, stop, 1), (0, stop + 1, 1), False),
+-            ((0, stop, 1), (1, stop + 1, 1), False),
+-            ((0, stop, 1), (0, stop * 2, 2), False),
+-        ]
+-        for args1, args2, expected in cases:
+-            with self.subTest(args1=args1, args2=args2):
+-                range1 = mi.numeric_range(*args1)
+-                range2 = mi.numeric_range(*args2)
+-                self.assertEqual(range(*args1) == range(*args2), expected)
+-                self.assertEqual(range1 == range2, expected)
+-
+-    def test_hash_above_maxsize(self):
+-        stop = 10**30
+-        for args in [(0, stop, 1), (0, stop, 2), (stop, 0, -2)]:
+-            with self.subTest(args=args):
+-                r = mi.numeric_range(*args)
+-                self.assertEqual(hash(r), hash(range(*args)))
+-                self.assertEqual(
+-                    {r: 'value'}[mi.numeric_range(*args)], 'value'
+-                )
+-                self.assertRaises(OverflowError, len, r)
+-
+     def test_get_item_by_index(self):
+         for args, index, expected in [
+             ((1, 6), 2, 3),
+@@ -3104,11 +2942,6 @@ class NumericRangeTests(TestCase):
+             ((1.0, 9.0, 1.5), slice(-10, None, 3), (1.0, 9.0, 4.5)),
+             ((1.0, 9.0, 1.5), slice(None, -10, 3), (1.0, 1.0, 4.5)),
+             ((1.0, 9.0, 1.5), slice(None, 10, 3), (1.0, 9.0, 4.5)),
+-            (
+-                (10.0, 0.0, -2.0),
+-                slice(None, None, -1),
+-                (2.0, 12.0, 2.0),
+-            ),
+             (
+                 (Decimal("1.0"), Decimal("9.0"), Decimal("1.5")),
+                 slice(1, -1, None),
+@@ -3173,28 +3006,6 @@ class NumericRangeTests(TestCase):
+         ]:
+             self.assertEqual(expected, len(mi.numeric_range(*args)))
+ 
+-    def test_len_matches_iteration(self):
+-        # len() is derived by division while the items come from repeated
+-        # multiplication; the two must not disagree, or the last index reports
+-        # an item the range never yields.
+-        for args in [
+-            # the division overshoots: len() counted an item past the stop
+-            (-8.732, -13.532, -2.4),
+-            (4.51, 10.375, 0.255),
+-            # the division falls short: len() missed an item the range yields
+-            (-69.37276490678778, -29.8339073344664, 4.942357196540172),
+-            (32.50227965239458, 9.003418351482358, -1.9582384417426848),
+-            (0.0, 1.0, 0.1),
+-            (0.0, 3.0, 0.7),
+-            (10.0, -10.0, -0.7),
+-            (2.1, 5.1, 0.5),
+-        ]:
+-            r = mi.numeric_range(*args)
+-            items = list(r)
+-            self.assertEqual(len(items), len(r))
+-            if items:
+-                self.assertEqual(items[-1], r[len(r) - 1])
+-
+     def test_repr(self):
+         for args, *expected in [
+             ((7.0,), "numeric_range(0.0, 7.0)"),
+@@ -4576,28 +4387,6 @@ class OnlyTests(TestCase):
+             lambda: mi.only(['foo', 'bar', 'baz']),
+         )
+ 
+-    def test_falsy_custom_exception(self):
+-        class FalsyError(Exception):
+-            def __bool__(self):
+-                return False
+-
+-        too_long = FalsyError('too many')
+-        self.assertRaises(
+-            FalsyError, lambda: mi.only([1, 2], too_long=too_long)
+-        )
+-
+-    def test_too_long_does_not_evaluate_repr(self):
+-        class NoRepr:
+-            def __repr__(self):
+-                raise RuntimeError('repr should not be called')
+-
+-        self.assertRaises(
+-            OverflowError,
+-            lambda: mi.only(
+-                [NoRepr(), NoRepr(), NoRepr()], too_long=OverflowError
+-            ),
+-        )
+-
+ 
+ class IchunkedTests(TestCase):
+     def test_even(self):
+@@ -4618,22 +4407,10 @@ class IchunkedTests(TestCase):
+         expected = []
+         self.assertEqual(actual, expected)
+ 
+-    def test_zero_nonempty(self):
+-        # chunked(..., 0) yields nothing; ichunked should match, including
+-        # when the source still has items (the empty-iterable case hid this).
+-        iterable = [1, 2, 3]
+-        actual = [list(c) for c in mi.ichunked(iterable, 0)]
+-        self.assertEqual(actual, [])
+-
+-        source = iter([1, 2, 3])
+-        self.assertEqual([list(c) for c in mi.ichunked(source, 0)], [])
+-        self.assertEqual(list(source), [1, 2, 3])
+-
+     def test_negative(self):
+         iterable = count()
+-        with self.assertRaises(ValueError) as cm:
++        with self.assertRaises(ValueError):
+             [list(c) for c in mi.ichunked(iterable, -1)]
+-        self.assertIn('n must be at least 0', str(cm.exception))
+ 
+     def test_out_of_order(self):
+         iterable = map(str, count())
+@@ -5212,19 +4989,6 @@ class AllUniqueTests(TestCase):
+         self.assertEqual(mi.all_unique(iterable, lambda x: x), True)
+         self.assertEqual(mi.all_unique(iterable, str.lower), False)
+ 
+-    def test_falsey_key_is_honoured(self):
+-        # A falsey callable is still a valid key and must not be ignored
+-        class CaseFold:
+-            def __bool__(self):
+-                return False
+-
+-            def __call__(self, x):
+-                return x.casefold()
+-
+-        key = CaseFold()
+-        self.assertFalse(key)  # Sanity: the key itself is falsey
+-        self.assertEqual(mi.all_unique(['A', 'B', 'C', 'b'], key), False)
+-
+     def test_infinite(self):
+         self.assertEqual(mi.all_unique(mi.prepend(3, count())), False)
+ 
+@@ -5330,28 +5094,6 @@ class ValueChainTests(TestCase):
+         expected = [1, (2, (3,)), 'foo', ['bar', ['baz']], 'tic', 'key', obj]
+         self.assertEqual(actual, expected)
+ 
+-    def test_type_error_while_iterating(self):
+-        # A TypeError raised while consuming an argument means the argument
+-        # is broken, not that it is a scalar - it should propagate.
+-        def gen():
+-            yield 1
+-            yield 2
+-            raise TypeError('failure inside the iterable')
+-
+-        it = mi.value_chain(gen(), 3)
+-        self.assertEqual([next(it), next(it)], [1, 2])
+-        with self.assertRaises(TypeError):
+-            next(it)
+-
+-    def test_type_error_from_iter(self):
+-        # An object that cannot be iterated at all is still emitted as-is.
+-        class NotIterable:
+-            def __iter__(self):
+-                raise TypeError('not iterable')
+-
+-        obj = NotIterable()
+-        self.assertEqual(list(mi.value_chain(1, obj, [2, 3])), [1, obj, 2, 3])
+-
+ 
+ class ProductIndexTests(TestCase):
+     def test_basic(self):
+@@ -5626,19 +5368,6 @@ class ChunkedEvenTests(TestCase):
+     def test_0(self):
+         self._test_finite('', 3, [])
+ 
+-    def test_zero_chunk_size(self):
+-        self._test_finite('ABC', 0, [])
+-
+-        source = iter('ABC')
+-        self.assertEqual(list(mi.chunked_even(source, 0)), [])
+-        self.assertEqual(list(source), list('ABC'))
+-
+-    def test_negative_chunk_size(self):
+-        source = iter('ABC')
+-        with self.assertRaisesRegex(ValueError, 'n must be at least 0'):
+-            list(mi.chunked_even(source, -1))
+-        self.assertEqual(list(source), list('ABC'))
+-
+     def test_1(self):
+         self._test_finite('A', 1, [['A']])
+ 
+@@ -6395,17 +6124,6 @@ class ConstrainedBatchesTests(TestCase):
+             [('',), ('a',), ('',)],
+         )
+ 
+-    def test_nonpositive_max_count(self):
+-        for max_count in (0, -1):
+-            for items in ([], ['a', 'b']):
+-                with self.subTest(max_count=max_count, items=items):
+-                    source = iter(items)
+-                    with self.assertRaisesRegex(
+-                        ValueError, 'maximum count must be greater than zero'
+-                    ):
+-                        list(mi.constrained_batches(source, 10, max_count))
+-                    self.assertEqual(list(source), items)
+-
+     def test_strict(self):
+         iterable = ['1', '123456789', '1']
+         size = 8
+@@ -7263,14 +6981,6 @@ class TestRunningMin(TestCase):
+             list(mi.running_min(iter(data))),
+         )
+ 
+-    def test_stability(self):
+-        # min(x, y) returns x when x == y
+-        data = [0, 0.0, Fraction(0)]
+-        self.assertEqual(
+-            list(map(type, mi.running_min(data, maxlen=2))),
+-            [type(min(data[0:1])), type(min(data[0:2])), type(min(data[1:3]))],
+-        )
+-
+ 
+ class TestRunningMax(TestCase):
+     def test_basic(self):
+@@ -7317,14 +7027,6 @@ class TestRunningMax(TestCase):
+             list(mi.running_max(iter(data))),
+         )
+ 
+-    def test_stability(self):
+-        # max(x, y) returns x when x == y
+-        data = [0, 0.0, Fraction(0)]
+-        self.assertEqual(
+-            list(map(type, mi.running_max(data, maxlen=2))),
+-            [type(max(data[0:1])), type(max(data[0:2])), type(max(data[1:3]))],
+-        )
+-
+ 
+ class TestRunningStats(TestCase):
+     # Assumes that the component functions are already tested,
+diff --git a/tests/test_recipes.py b/tests/test_recipes.py
+index 1b95479..e6cb525 100644
+--- a/tests/test_recipes.py
++++ b/tests/test_recipes.py
+@@ -1680,50 +1680,3 @@ class RunningMedianTests(TestCase):
+             list(
+                 running_median(['abc', 'def', 'ghi'])
+             )  # Input type that doesn't support division
+-
+-
+-class RunningWindowSizeTests(TestCase):
+-    functions = (
+-        mi.running_min,
+-        mi.running_max,
+-        mi.running_mean,
+-        mi.running_statistics,
+-    )
+-
+-    def test_noninteger_window(self):
+-        for function in self.functions:
+-            for maxlen in (2.5, 2.0, float('nan'), float('inf')):
+-                with self.subTest(function=function, maxlen=maxlen):
+-                    with self.assertRaises(TypeError):
+-                        list(function([1, 2, 3, 4], maxlen=maxlen))
+-
+-    def test_index_protocol(self):
+-        class WindowSize:
+-            def __index__(self):
+-                return 2
+-
+-        for function in self.functions:
+-            with self.subTest(function=function):
+-                expected = list(function([1, 2, 3, 4], maxlen=2))
+-                actual = list(function([1, 2, 3, 4], maxlen=WindowSize()))
+-                self.assertEqual(actual, expected)
+-        self.assertTrue(
+-            all(
+-                isinstance(stats.size, int)
+-                for stats in mi.running_statistics(
+-                    [1, 2, 3], maxlen=WindowSize()
+-                )
+-            )
+-        )
+-
+-    def test_nonpositive_index(self):
+-        class WindowSize:
+-            def __index__(self):
+-                return -1
+-
+-        for function in self.functions:
+-            with (
+-                self.subTest(function=function),
+-                self.assertRaises(ValueError),
+-            ):
+-                list(function([1, 2, 3], maxlen=WindowSize()))

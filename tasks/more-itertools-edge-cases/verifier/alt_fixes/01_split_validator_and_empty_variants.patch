@@ -1,0 +1,411 @@
+diff --git a/more_itertools/more.py b/more_itertools/more.py
+index 8a212a2..7dd0bc1 100755
+--- a/more_itertools/more.py
++++ b/more_itertools/more.py
+@@ -461,12 +461,24 @@ class peekable:
+ 
+         # If either the start or stop index is negative, we'll need to cache
+         # the rest of the iterable in order to slice from the right side.
+-        if (start < 0) or (stop < 0):
++        # When step < 0 and stop is None, the slice stops at index 0 rather than
++        # indexing from the right, so only items up to start must be cached.
++        has_negative_index = (
++            (index.start is not None and index.start < 0)
++            or (index.stop is not None and index.stop < 0)
++            or (step < 0 and index.start is None)
++        )
++        if has_negative_index:
+             self._cache.extend(self._it)
+         # Otherwise we'll need to find the rightmost index and cache to that
+         # point.
+         else:
+-            n = min(max(start, stop) + 1, maxsize)
++            rightmost = (
++                start
++                if (step < 0 and index.stop is None)
++                else max(start, stop)
++            )
++            n = min(rightmost + 1, maxsize)
+             cache_len = len(self._cache)
+             if n >= cache_len:
+                 self._cache.extend(islice(self._it, n - cache_len))
+@@ -658,13 +670,16 @@ def one(iterable, too_short=None, too_long=None):
+     iterator = iter(iterable)
+     for first in iterator:
+         for second in iterator:
+-            msg = (
++            if too_long is not None:
++                raise too_long
++            raise ValueError(
+                 f'Expected exactly one item in iterable, but got {first!r}, '
+                 f'{second!r}, and perhaps more.'
+             )
+-            raise too_long or ValueError(msg)
+         return first
+-    raise too_short or ValueError('too few items in iterable (expected 1)')
++    if too_short is not None:
++        raise too_short
++    raise ValueError('too few items in iterable (expected 1)')
+ 
+ 
+ def raise_(exception, *args):
+@@ -1179,7 +1194,12 @@ class bucket:
+         self._it = iter(iterable)
+         self._key = key
+         self._cache = defaultdict(deque)
+-        self._validator = validator or (lambda x: True)
++        # Use ``is None`` rather than truthiness: a valid validator may be a
++        # callable object that is falsey (e.g. an empty ``set`` subclass with
++        # ``__call__``), and ``validator or ...`` would silently replace it.
++        if validator is None:
++            validator = lambda x: True  # noqa: E731
++        self._validator = validator
+ 
+     def __contains__(self, value):
+         if not self._validator(value):
+@@ -1345,6 +1365,9 @@ def interleave_evenly(iterables, lengths=None):
+ 
+     dims = len(lengths)
+ 
++    if dims == 0:
++        return iter(())
++
+     # sort iterables by length, descending
+     lengths_permute = sorted(
+         range(dims), key=lambda i: lengths[i], reverse=True
+@@ -1538,6 +1561,9 @@ def sliced(seq, n, strict=False):
+     For non-sliceable iterables, see :func:`chunked`.
+ 
+     """
++    if n < 0:
++        raise ValueError('n must be at least 0')
++
+     iterator = takewhile(len, (seq[i : i + n] for i in count(0, n)))
+     if strict:
+ 
+@@ -1613,7 +1639,8 @@ def split_before(iterable, pred, maxsplit=-1):
+         [[0, 1, 2], [3, 4, 5], [6, 7, 8, 9]]
+     """
+     if maxsplit == 0:
+-        yield list(iterable)
++        if buf := list(iterable):
++            yield buf
+         return
+ 
+     buf = []
+@@ -1649,7 +1676,8 @@ def split_after(iterable, pred, maxsplit=-1):
+ 
+     """
+     if maxsplit == 0:
+-        yield list(iterable)
++        if buf := list(iterable):
++            yield buf
+         return
+ 
+     buf = []
+@@ -1689,7 +1717,8 @@ def split_when(iterable, pred, maxsplit=-1):
+ 
+     """
+     if maxsplit == 0:
+-        yield list(iterable)
++        if buf := list(iterable):
++            yield buf
+         return
+ 
+     it = iter(iterable)
+@@ -2330,51 +2359,47 @@ class numeric_range(Sequence):
+             return self._start > self._stop
+ 
+     def __contains__(self, elem):
+-        if self._growing:
+-            if self._start <= elem < self._stop:
+-                return (elem - self._start) % self._step == self._zero
+-        else:
+-            if self._start >= elem > self._stop:
+-                return (self._start - elem) % (-self._step) == self._zero
+-
+-        return False
++        try:
++            self.index(elem)
++        except ValueError:
++            return False
++        return True
+ 
+     def __eq__(self, other):
+-        if isinstance(other, numeric_range):
+-            empty_self = not bool(self)
+-            empty_other = not bool(other)
+-            if empty_self or empty_other:
+-                return empty_self and empty_other  # True if both empty
+-            else:
+-                return (
+-                    self._start == other._start
+-                    and self._step == other._step
+-                    and self._get_by_index(-1) == other._get_by_index(-1)
+-                )
+-        else:
++        # numeric_range object equality is intended to mirror the built-in range
++        # object's equality.
++        # https://github.com/python/cpython/blob/f5c4880151b609e0a0a0b05c292d36b18038c061/Objects/rangeobject.c#L499
++        if not isinstance(other, numeric_range):
++            return False
++
++        if self is other:
++            return True
++
++        len_self = self._len
++        if len_self != other._len:
+             return False
+ 
++        if not len_self:
++            return True
++
++        if self._start != other._start:
++            return False
++
++        if len_self == 1:
++            return True
++
++        return self._step == other._step
++
+     def __getitem__(self, key):
+         if isinstance(key, int):
+             return self._get_by_index(key)
+         elif isinstance(key, slice):
+-            step = self._step if key.step is None else key.step * self._step
+-
+-            if key.start is None or key.start <= -self._len:
+-                start = self._start
+-            elif key.start >= self._len:
+-                start = self._stop
+-            else:  # -self._len < key.start < self._len
+-                start = self._get_by_index(key.start)
+-
+-            if key.stop is None or key.stop >= self._len:
+-                stop = self._stop
+-            elif key.stop <= -self._len:
+-                stop = self._start
+-            else:  # -self._len < key.stop < self._len
+-                stop = self._get_by_index(key.stop)
+-
+-            return numeric_range(start, stop, step)
++            start_idx, stop_idx, step_idx = key.indices(self._len)
++            return numeric_range(
++                self._start + start_idx * self._step,
++                self._start + stop_idx * self._step,
++                self._step * step_idx,
++            )
+         else:
+             raise TypeError(
+                 'numeric range indices must be '
+@@ -2382,10 +2407,15 @@ class numeric_range(Sequence):
+             )
+ 
+     def __hash__(self):
+-        if self:
+-            return hash((self._start, self._get_by_index(-1), self._step))
+-        else:
+-            return self._EMPTY_HASH
++        # numeric_range hashing is intended to mirror the built-in range object's
++        # hashing.
++        # https://github.com/python/cpython/blob/f5c4880151b609e0a0a0b05c292d36b18038c061/Objects/rangeobject.c#L570
++        len_self = self._len
++        if not len_self:
++            return hash((len_self, None, None))
++        if len_self == 1:
++            return hash((len_self, self._start, None))
++        return hash((len_self, self._start, self._step))
+ 
+     def __iter__(self):
+         values = (self._start + (n * self._step) for n in count())
+@@ -2412,7 +2442,20 @@ class numeric_range(Sequence):
+             return 0
+         else:  # distance > 0 and step > 0: regular euclidean division
+             q, r = divmod(distance, step)
+-            return int(q) + int(r != self._zero)
++            n = int(q) + int(r != self._zero)
++            # The division above measures the distance to cover, but the items
++            # are produced by repeated multiplication (see `__iter__`). With
++            # inexact arithmetic the two disagree at the boundary, so settle
++            # the count against the items themselves.
++            while n and not self._before_stop(n - 1):
++                n -= 1
++            while self._before_stop(n):
++                n += 1
++            return n
++
++    def _before_stop(self, i):
++        value = self._start + i * self._step
++        return value < self._stop if self._growing else value > self._stop
+ 
+     def __reduce__(self):
+         return numeric_range, (self._start, self._stop, self._step)
+@@ -2436,14 +2479,27 @@ class numeric_range(Sequence):
+     def index(self, value):
+         if self._growing:
+             if self._start <= value < self._stop:
+-                q, r = divmod(value - self._start, self._step)
+-                if r == self._zero:
+-                    return int(q)
++                q, _ = divmod(value - self._start, self._step)
++                return self._index_near(int(q), value)
+         else:
+             if self._start >= value > self._stop:
+-                q, r = divmod(self._start - value, -self._step)
+-                if r == self._zero:
+-                    return int(q)
++                q, _ = divmod(self._start - value, -self._step)
++                return self._index_near(int(q), value)
++
++        raise ValueError(f"{value} is not in numeric range")
++
++    def _index_near(self, i, value):
++        # `i` is the quotient of the division of `value` by the step, which
++        # locates the value on the grid of items this range produces. For
++        # exact types that quotient is the index. For inexact ones (floats)
++        # it can land one short, and the remainder of the division is not a
++        # reliable membership test either: `numeric_range(0.0, 1.0, 0.1)`
++        # yields 0.30000000000000004, which leaves a non-zero remainder.
++        # So compare against the item the range actually produces there.
++        for candidate in (i, i + 1):
++            if 0 <= candidate < self._len:
++                if self._start + candidate * self._step == value:
++                    return candidate
+ 
+         raise ValueError(f"{value} is not in numeric range")
+ 
+@@ -3648,11 +3704,12 @@ def only(iterable, default=None, too_long=None):
+     iterator = iter(iterable)
+     for first in iterator:
+         for second in iterator:
+-            msg = (
++            if too_long is not None:
++                raise too_long
++            raise ValueError(
+                 f'Expected exactly one item in iterable, but got {first!r}, '
+                 f'{second!r}, and perhaps more.'
+             )
+-            raise too_long or ValueError(msg)
+         return first
+     return default
+ 
+@@ -3678,6 +3735,11 @@ def ichunked(iterable, n):
+     [8, 9, 10, 11]
+ 
+     """
++    if n is not None and n < 0:
++        raise ValueError('n must be at least 0')
++    if n == 0:
++        return
++
+     iterator = iter(iterable)
+     for first in iterator:
+         rest = islice(iterator, n - 1)
+@@ -4231,7 +4293,7 @@ def all_unique(iterable, key=None):
+     seenset_add = seenset.add
+     seenlist = []
+     seenlist_add = seenlist.append
+-    for element in map(key, iterable) if key else iterable:
++    for element in iterable if key is None else map(key, iterable):
+         try:
+             if element in seenset:
+                 return False
+@@ -4388,9 +4450,11 @@ def value_chain(*args):
+             yield value
+             continue
+         try:
+-            yield from value
++            it = iter(value)
+         except TypeError:
+             yield value
++        else:
++            yield from it
+ 
+ 
+ def product_index(element, *iterables, repeat=1):
+@@ -4577,6 +4641,11 @@ def chunked_even(iterable, n):
+     [[1, 2, 3], [4, 5, 6], [7]]
+ 
+     """
++    if n < 0:
++        raise ValueError('n must be at least 0')
++    if n == 0:
++        return
++
+     iterator = iter(iterable)
+ 
+     # Initialize a buffer to process the chunks while keeping
+@@ -4902,7 +4971,7 @@ def constrained_batches(
+     [(b'12345', b'123'), (b'12345678', b'1', b'1'), (b'12', b'1')]
+ 
+     If a *max_count* is supplied, the number of items per batch is also
+-    limited:
++    limited. It must be greater than zero:
+ 
+     >>> iterable = [b'12345', b'123', b'12345678', b'1', b'1', b'12', b'1']
+     >>> list(constrained_batches(iterable, 10, max_count = 2))
+@@ -4916,6 +4985,8 @@ def constrained_batches(
+     """
+     if max_size <= 0:
+         raise ValueError('maximum size must be greater than zero')
++    if max_count is not None and max_count <= 0:
++        raise ValueError('maximum count must be greater than zero')
+ 
+     batch = []
+     batch_size = 0
+diff --git a/more_itertools/recipes.py b/more_itertools/recipes.py
+index 7a24ef2..7c458d3 100644
+--- a/more_itertools/recipes.py
++++ b/more_itertools/recipes.py
+@@ -1460,6 +1460,7 @@ def running_mean(iterable, *, maxlen=None):
+     if maxlen is None:
+         return map(truediv, accumulate(iterator), count(1))
+ 
++    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
+@@ -1475,7 +1476,7 @@ def _windowed_running_min(iterator, maxlen):
+     for index, value in enumerate(iterator):
+         if s and s[0][0] == index - maxlen:
+             s.popleft()
+-        while s and not s[-1][1] < value:
++        while s and value < s[-1][1]:
+             s.pop()
+         s.append((index, value))
+         yield s[0][1]
+@@ -1505,6 +1506,7 @@ def running_min(iterable, *, maxlen=None):
+     if maxlen is None:
+         return accumulate(iterator, func=min)
+ 
++    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
+@@ -1520,7 +1522,7 @@ def _windowed_running_max(iterator, maxlen):
+     for index, value in enumerate(iterator):
+         if s and s[0][0] == index - maxlen:
+             s.popleft()
+-        while s and not s[-1][1] > value:
++        while s and value > s[-1][1]:
+             s.pop()
+         s.append((index, value))
+         yield s[0][1]
+@@ -1550,6 +1552,7 @@ def running_max(iterable, *, maxlen=None):
+     if maxlen is None:
+         return accumulate(iterator, func=max)
+ 
++    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
+@@ -1579,6 +1582,9 @@ def running_statistics(iterable, *, maxlen=None):
+     but not complex numbers which are unorderable.
+     """
+ 
++    if maxlen is not None:
++        maxlen = _index(maxlen)
++
+     # fmt: off
+     t0, t1, t2, t3 = tee(iterable, 4)
+     return map(

@@ -1,0 +1,1469 @@
+diff --git a/more_itertools/more.py b/more_itertools/more.py
+index 8a212a2..ae32c3e 100755
+--- a/more_itertools/more.py
++++ b/more_itertools/more.py
+@@ -5,6 +5,7 @@ import types
+ 
+ from collections import Counter, defaultdict, deque
+ from collections.abc import Sequence
++from datetime import date, timedelta
+ from contextlib import suppress
+ from functools import cached_property, partial, wraps
+ from heapq import heapify, heapreplace
+@@ -27,17 +28,19 @@ from itertools import (
+ )
+ from math import comb, e, exp, floor, fsum, log, log1p, perm, tau
+ from math import ceil, prod
++from numbers import Rational
+ from queue import Empty, Queue
+ from random import random, randrange, shuffle, uniform
+ from operator import (
+     attrgetter,
++    eq,
+     getitem,
++    index as _index,
+     is_not,
+     itemgetter,
+     lt,
+     neg,
+     sub,
+-    gt,
+ )
+ from sys import maxsize
+ from time import monotonic
+@@ -212,6 +215,20 @@ except ImportError:  # pragma: no cover
+         return fsum(chain.from_iterable(map(dl_mul, p, q)))
+ 
+ 
++def _check_size(n, name='n', minimum=0):
++    """Return *n* as an integer, raising ``TypeError`` if it isn't one and
++    ``ValueError`` if it is smaller than *minimum*."""
++    try:
++        n = _index(n)
++    except TypeError:
++        raise TypeError(
++            f'{name} must be an integer, not {type(n).__name__}'
++        ) from None
++    if n < minimum:
++        raise ValueError(f'{name} must be at least {minimum}')
++    return n
++
++
+ def chunked(iterable, n, strict=False):
+     """Break *iterable* into lists of length *n*:
+ 
+@@ -231,13 +248,15 @@ def chunked(iterable, n, strict=False):
+     list is yielded.
+ 
+     """
+-    if n is not None and n < 0:
+-        raise ValueError('n must be at least 0')
++    if n is not None:
++        n = _check_size(n)
++    if strict and n is None:
++        raise ValueError('n must not be None when using strict mode.')
++    if n == 0:
++        return iter(())
+ 
+     iterator = iter(partial(take, n, iter(iterable)), [])
+     if strict:
+-        if n is None:
+-            raise ValueError('n must not be None when using strict mode.')
+ 
+         def ret():
+             for chunk in iterator:
+@@ -289,17 +308,18 @@ def last(iterable, default=_marker):
+     If *default* is not provided and there are no items in the iterable,
+     raise ``ValueError``.
+     """
+-    try:
+-        if getattr(iterable, '__reversed__', None):
+-            return next(reversed(iterable))
+-        return deque(iterable, maxlen=1)[-1]
+-    except (IndexError, StopIteration):
+-        if default is _marker:
+-            raise ValueError(
+-                'last() was called on an empty iterable, '
+-                'and no default value was provided.'
+-            )
+-        return default
++    if getattr(iterable, '__reversed__', None) is not None:
++        for item in reversed(iterable):
++            return item
++    else:
++        for item in deque(iterable, maxlen=1):
++            return item
++    if default is _marker:
++        raise ValueError(
++            'last() was called on an empty iterable, '
++            'and no default value was provided.'
++        )
++    return default
+ 
+ 
+ def nth_or_last(iterable, n, default=_marker):
+@@ -316,6 +336,7 @@ def nth_or_last(iterable, n, default=_marker):
+     If *default* is not provided and there are no items in the iterable,
+     raise ``ValueError``.
+     """
++    n = _check_size(n)
+     return last(islice(iterable, n + 1), default=default)
+ 
+ 
+@@ -466,9 +487,14 @@ class peekable:
+         # Otherwise we'll need to find the rightmost index and cache to that
+         # point.
+         else:
+-            n = min(max(start, stop) + 1, maxsize)
++            # Only cache as many items as the slice needs
++            if step > 0:
++                n = stop if start < stop else 0
++            else:
++                n = start + 1 if start > stop else 0
++            n = min(n, maxsize)
+             cache_len = len(self._cache)
+-            if n >= cache_len:
++            if n > cache_len:
+                 self._cache.extend(islice(self._it, n - cache_len))
+ 
+         return list(self._cache)[index]
+@@ -662,9 +688,11 @@ def one(iterable, too_short=None, too_long=None):
+                 f'Expected exactly one item in iterable, but got {first!r}, '
+                 f'{second!r}, and perhaps more.'
+             )
+-            raise too_long or ValueError(msg)
++            raise ValueError(msg) if too_long is None else too_long
+         return first
+-    raise too_short or ValueError('too few items in iterable (expected 1)')
++    if too_short is None:
++        raise ValueError('too few items in iterable (expected 1)')
++    raise too_short
+ 
+ 
+ def raise_(exception, *args):
+@@ -730,8 +758,11 @@ def strictly_n(iterable, n, too_short=None, too_long=None):
+             f'Too many items in iterable (got at least {item_count})',
+         )
+ 
+-    it = iter(iterable)
++    n = _check_size(n)
++    return _strictly_n(iter(iterable), n, too_short, too_long)
+ 
++
++def _strictly_n(it, n, too_short, too_long):
+     sent = 0
+     for item in islice(it, n):
+         yield item
+@@ -793,6 +824,12 @@ def distinct_permutations(iterable, r=None):
+         ]
+     """
+ 
++    if r is not None:
++        r = _check_size(r, 'r')
++    return _distinct_permutations(iterable, r)
++
++
++def _distinct_permutations(iterable, r):
+     # Algorithm: https://w.wiki/Qai
+     def _full(A):
+         while True:
+@@ -889,14 +926,14 @@ def distinct_permutations(iterable, r=None):
+ 
+     if 0 < r <= size:
+         if sortable:
+-            return algorithm(items)
++            yield from algorithm(items)
+         else:
+-            return (
++            yield from (
+                 permuted_items(permuted_indices)
+                 for permuted_indices in algorithm(indices)
+             )
+-
+-    return iter(() if r else ((),))
++    elif not r:
++        yield ()
+ 
+ 
+ def derangements(iterable, r=None):
+@@ -954,9 +991,15 @@ def derangements(iterable, r=None):
+     * Article:  https://www.numberanalytics.com/blog/ultimate-guide-to-derangements-in-combinatorics
+     * Sizes:    https://oeis.org/A000166
+     """
++    if r is not None:
++        r = _check_size(r, 'r')
++    return _derangements(iterable, r)
++
++
++def _derangements(iterable, r):
+     xs = tuple(iterable)
+     ys = tuple(range(len(xs)))
+-    return compress(
++    yield from compress(
+         permutations(xs, r=r),
+         map(all, map(map, repeat(is_not), repeat(ys), permutations(ys, r=r))),
+     )
+@@ -973,9 +1016,8 @@ def intersperse(e, iterable, n=1):
+         [1, 2, None, 3, 4, None, 5]
+ 
+     """
+-    if n == 0:
+-        raise ValueError('n must be > 0')
+-    elif n == 1:
++    n = _check_size(n, minimum=1)
++    if n == 1:
+         # interleave(repeat(e), iterable) -> e, x_0, e, x_1, e, x_2...
+         # islice(..., 1, None) -> x_0, e, x_1, e, x_2...
+         return islice(interleave(repeat(e), iterable), 1, None)
+@@ -1048,13 +1090,12 @@ def windowed(seq, n, fillvalue=None, step=1):
+         >>> list(windowed(chain(padding, iterable), 3))
+         [(None, None, 1), (None, 1, 2), (1, 2, 3), (2, 3, 4)]
+     """
+-    if n <= 0:
+-        raise ValueError('n must be > 0')
+-    if step < 1:
+-        raise ValueError('step must be >= 1')
++    n = _check_size(n, minimum=1)
++    step = _check_size(step, 'step', minimum=1)
++    return _windowed(iter(seq), n, fillvalue, step)
+ 
+-    iterator = iter(seq)
+ 
++def _windowed(iterator, n, fillvalue, step):
+     # Generate first window
+     window = deque(islice(iterator, n), maxlen=n)
+ 
+@@ -1179,7 +1220,9 @@ class bucket:
+         self._it = iter(iterable)
+         self._key = key
+         self._cache = defaultdict(deque)
+-        self._validator = validator or (lambda x: True)
++        self._validator = (
++            (lambda x: True) if validator is None else validator
++        )
+ 
+     def __contains__(self, value):
+         if not self._validator(value):
+@@ -1343,7 +1386,13 @@ def interleave_evenly(iterables, lengths=None):
+     elif len(iterables) != len(lengths):
+         raise ValueError('Mismatching number of iterables and lengths.')
+ 
++    return _interleave_evenly(iterables, lengths)
++
++
++def _interleave_evenly(iterables, lengths):
+     dims = len(lengths)
++    if not dims:
++        return
+ 
+     # sort iterables by length, descending
+     lengths_permute = sorted(
+@@ -1501,6 +1550,12 @@ def side_effect(func, iterable, chunk_size=None, before=None, after=None):
+         True
+ 
+     """
++    if chunk_size is not None:
++        chunk_size = _check_size(chunk_size, 'chunk_size', minimum=1)
++    return _side_effect(func, iterable, chunk_size, before, after)
++
++
++def _side_effect(func, iterable, chunk_size, before, after):
+     try:
+         if before is not None:
+             before()
+@@ -1538,6 +1593,9 @@ def sliced(seq, n, strict=False):
+     For non-sliceable iterables, see :func:`chunked`.
+ 
+     """
++    n = _check_size(n)
++    if n == 0:
++        return iter(())
+     iterator = takewhile(len, (seq[i : i + n] for i in count(0, n)))
+     if strict:
+ 
+@@ -1788,9 +1846,9 @@ def padded(iterable, fillvalue=None, n=None, next_multiple=False):
+ 
+     if n is None:
+         return iterator_with_repeat
+-    elif n < 1:
+-        raise ValueError('n must be at least 1')
+-    elif next_multiple:
++
++    n = _check_size(n, minimum=1)
++    if next_multiple:
+ 
+         def slice_generator():
+             for first in iterator:
+@@ -1862,6 +1920,7 @@ def distribute(n, iterable):
+     original iterable, see :func:`divide`.
+ 
+     """
++    n = _check_size(n, minimum=1)
+     if n < 1:
+         raise ValueError('n must be at least 1')
+ 
+@@ -2009,6 +2068,10 @@ def sort_together(
+     return list(untransposed)
+ 
+ 
++class _UnzipStop(Exception):
++    pass
++
++
+ def unzip(iterable):
+     """The inverse of :func:`zip`, this function disaggregates the elements
+     of the zipped *iterable*.
+@@ -2044,10 +2107,22 @@ def unzip(iterable):
+     # To support these "improperly zipped" iterables, we suppress
+     # the IndexError, which just stops the unzipped iterables at
+     # first length mismatch.
+-    return tuple(
+-        iter_suppress(map(itemgetter(i), it), IndexError)
+-        for i, it in enumerate(iterables)
+-    )
++    def getter(i):
++        def get(obj):
++            try:
++                return obj[i]
++            except IndexError:
++                raise _UnzipStop from None
++
++        return get
++
++    def unzipped(i, it):
++        try:
++            yield from map(getter(i), it)
++        except _UnzipStop:
++            return
++
++    return tuple(unzipped(i, it) for i, it in enumerate(iterables))
+ 
+ 
+ def divide(n, iterable):
+@@ -2079,6 +2154,7 @@ def divide(n, iterable):
+     pull the iterable into memory.
+ 
+     """
++    n = _check_size(n, minimum=1)
+     if n < 1:
+         raise ValueError('n must be at least 1')
+ 
+@@ -2183,6 +2259,7 @@ def adjacent(predicate, iterable, distance=1):
+ 
+     """
+     # Allow distance=0 mainly for testing that it reproduces results with map()
++    distance = _check_size(distance, 'distance')
+     if distance < 0:
+         raise ValueError('distance must be at least 0')
+ 
+@@ -2235,14 +2312,19 @@ def groupby_transform(iterable, keyfunc=None, valuefunc=None, reducefunc=None):
+ 
+     """
+     ret = groupby(iterable, keyfunc)
+-    if valuefunc:
++    if valuefunc is not None:
+         ret = ((k, map(valuefunc, g)) for k, g in ret)
+-    if reducefunc:
++    if reducefunc is not None:
+         ret = ((k, reducefunc(g)) for k, g in ret)
+ 
+     return ret
+ 
+ 
++# Types whose arithmetic is exact, so that start + i * step can be computed
++# in any order without changing the result.
++_EXACT_TYPES = (Rational, date, timedelta)
++
++
+ class numeric_range(Sequence):
+     """An extension of the built-in ``range()`` function whose arguments can
+     be any orderable numeric type.
+@@ -2323,99 +2405,219 @@ class numeric_range(Sequence):
+             raise ValueError('numeric_range() arg 3 must not be zero')
+         self._growing = self._step > self._zero
+ 
+-    def __bool__(self):
+-        if self._growing:
+-            return self._start < self._stop
++        # Item i is computed as ``_base + (_offset + i * _stride) * _unit``.
++        # For a range built from arguments this is ``start + i * step``.
++        # Slices share their parent's base and unit so that they produce
++        # exactly the same values as the parent does.
++        self._base = self._start
++        self._unit = self._step
++        self._offset = 0
++        self._stride = 1
++
++    def _item(self, i):
++        return self._base + (self._offset + i * self._stride) * self._unit
++
++    @staticmethod
++    def _first_true(pred, hint, n=None):
++        """Return the smallest ``i`` in ``[0, n]`` for which ``pred(i)`` is
++        true, assuming *pred* is monotonic (false, then true). ``pred(n)``
++        is assumed to be true and is never called. If *n* is ``None``, the
++        search is unbounded above. *hint* is a guess at the answer."""
++        hint = max(hint, 0)
++        if n is not None:
++            hint = min(hint, n)
++
++        if (n is not None and hint == n) or pred(hint):
++            hi = hint
++            step = 1
++            lo = hi - step
++            while lo >= 0 and pred(lo):
++                hi = lo
++                step *= 2
++                lo = hi - step
++            lo = max(lo, -1)
+         else:
+-            return self._start > self._stop
++            lo = hint
++            step = 1
++            hi = lo + step
++            while (n is None or hi < n) and not pred(hi):
++                lo = hi
++                step *= 2
++                hi = lo + step
++            if n is not None:
++                hi = min(hi, n)
++
++        while hi - lo > 1:
++            mid = (lo + hi) // 2
++            if pred(mid):
++                hi = mid
++            else:
++                lo = mid
++        return hi
+ 
+-    def __contains__(self, elem):
++    def _hint(self, value):
++        # A guess at the position of *value*; it only needs to be close.
++        try:
++            return int((value - self._start) // self._step)
++        except (TypeError, ValueError, OverflowError, ArithmeticError):
++            return 0
++
++    def _bounds(self, value):
++        """Return ``(lo, hi)`` such that the items at positions in
++        ``range(lo, hi)`` are exactly those equal to *value*."""
++        n = self._len
++        item = self._item
+         if self._growing:
+-            if self._start <= elem < self._stop:
+-                return (elem - self._start) % self._step == self._zero
++
++            def at_least(i):
++                return item(i) >= value
++
++            def above(i):
++                return item(i) > value
++
+         else:
+-            if self._start >= elem > self._stop:
+-                return (self._start - elem) % (-self._step) == self._zero
+ 
+-        return False
++            def at_least(i):
++                return item(i) <= value
++
++            def above(i):
++                return item(i) < value
++
++        hint = self._hint(value)
++        lo = self._first_true(at_least, hint, n)
++        hi = self._first_true(above, lo, n)
++        return lo, hi
++
++    def __bool__(self):
++        return self._len > 0
++
++    def __contains__(self, elem):
++        try:
++            lo, hi = self._bounds(elem)
++        except TypeError:
++            return False
++        return lo < hi
+ 
+     def __eq__(self, other):
+         if isinstance(other, numeric_range):
+-            empty_self = not bool(self)
+-            empty_other = not bool(other)
+-            if empty_self or empty_other:
+-                return empty_self and empty_other  # True if both empty
+-            else:
+-                return (
+-                    self._start == other._start
+-                    and self._step == other._step
+-                    and self._get_by_index(-1) == other._get_by_index(-1)
+-                )
++            n = self._len
++            if n != other._len:
++                return False
++            if n == 0:
++                return True
++            if (self._base, self._unit, self._offset, self._stride) == (
++                other._base,
++                other._unit,
++                other._offset,
++                other._stride,
++            ):
++                return True
++            return all(map(eq, self, other))
+         else:
+             return False
+ 
+     def __getitem__(self, key):
+-        if isinstance(key, int):
+-            return self._get_by_index(key)
+-        elif isinstance(key, slice):
+-            step = self._step if key.step is None else key.step * self._step
+-
+-            if key.start is None or key.start <= -self._len:
+-                start = self._start
+-            elif key.start >= self._len:
+-                start = self._stop
+-            else:  # -self._len < key.start < self._len
+-                start = self._get_by_index(key.start)
+-
+-            if key.stop is None or key.stop >= self._len:
+-                stop = self._stop
+-            elif key.stop <= -self._len:
+-                stop = self._start
+-            else:  # -self._len < key.stop < self._len
+-                stop = self._get_by_index(key.stop)
+-
+-            return numeric_range(start, stop, step)
+-        else:
++        if isinstance(key, slice):
++            indexes = range(self._len)[key]
++            ret = object.__new__(numeric_range)
++            ret._base = self._base
++            ret._unit = self._unit
++            ret._offset = self._offset + indexes.start * self._stride
++            ret._stride = self._stride * indexes.step
++            # len() doesn't work for very large ranges
++            if indexes.step > 0:
++                n = indexes.stop - indexes.start + indexes.step - 1
++            else:
++                n = indexes.start - indexes.stop - indexes.step - 1
++            ret._len = max(0, n // abs(indexes.step))
++            ret._step = ret._stride * ret._unit
++            ret._zero = type(ret._step)(0)
++            ret._growing = ret._step > ret._zero
++            try:
++                ret._start = ret._item(0)
++            except (OverflowError, ValueError):
++                # Only possible for an empty slice
++                ret._start = self._stop
++            try:
++                ret._stop = ret._item(ret._len)
++            except (OverflowError, ValueError):
++                ret._stop = self._stop
++            if isinstance(ret._base, _EXACT_TYPES) and isinstance(
++                ret._unit, _EXACT_TYPES
++            ):
++                # Exact arithmetic: the slice is an ordinary range
++                ret._base = ret._start
++                ret._unit = ret._step
++                ret._offset = 0
++                ret._stride = 1
++            return ret
++
++        try:
++            i = _index(key)
++        except TypeError:
+             raise TypeError(
+                 'numeric range indices must be '
+                 f'integers or slices, not {type(key).__name__}'
+-            )
++            ) from None
++        return self._get_by_index(i)
+ 
+     def __hash__(self):
+-        if self:
+-            return hash((self._start, self._get_by_index(-1), self._step))
++        n = self._len
++        if n:
++            second = self._item(1) if n > 1 else None
++            return hash((n, self._item(0), second))
+         else:
+             return self._EMPTY_HASH
+ 
+     def __iter__(self):
+-        values = (self._start + (n * self._step) for n in count())
+-        if self._growing:
+-            return takewhile(partial(gt, self._stop), values)
+-        else:
+-            return takewhile(partial(lt, self._stop), values)
++        return map(self._item, range(self._len))
+ 
+     def __len__(self):
+         return self._len
+ 
+     @cached_property
+     def _len(self):
++        start = self._start
++        stop = self._stop
+         if self._growing:
+-            start = self._start
+-            stop = self._stop
+-            step = self._step
++            distance = stop - start
+         else:
+-            start = self._stop
+-            stop = self._start
+-            step = -self._step
+-        distance = stop - start
+-        if distance <= self._zero:
++            distance = start - stop
++        if not distance > self._zero:
+             return 0
+-        else:  # distance > 0 and step > 0: regular euclidean division
+-            q, r = divmod(distance, step)
+-            return int(q) + int(r != self._zero)
++
++        item = self._item
++        if self._growing:
++
++            def done(i):
++                try:
++                    return not item(i) < stop
++                except OverflowError:
++                    return True
++
++        else:
++
++            def done(i):
++                try:
++                    return not item(i) > stop
++                except OverflowError:
++                    return True
++
++        try:
++            hint = int(distance // abs(self._step))
++        except (TypeError, ValueError, OverflowError, ArithmeticError):
++            hint = 0
++        return self._first_true(done, hint)
+ 
+     def __reduce__(self):
+-        return numeric_range, (self._start, self._stop, self._step)
++        state = {
++            '_base': self._base,
++            '_unit': self._unit,
++            '_offset': self._offset,
++            '_stride': self._stride,
++            '_len': self._len,
++        }
++        return numeric_range, (self._start, self._stop, self._step), state
+ 
+     def __repr__(self):
+         if self._step == 1:
+@@ -2425,34 +2627,31 @@ class numeric_range(Sequence):
+         )
+ 
+     def __reversed__(self):
+-        start = self._start
+-        step = self._step
+-        for i in reversed(range(self._len)):
+-            yield start + i * step
++        return map(self._item, reversed(range(self._len)))
+ 
+     def count(self, value):
+-        return int(value in self)
++        try:
++            lo, hi = self._bounds(value)
++        except TypeError:
++            return 0
++        return hi - lo
+ 
+     def index(self, value):
+-        if self._growing:
+-            if self._start <= value < self._stop:
+-                q, r = divmod(value - self._start, self._step)
+-                if r == self._zero:
+-                    return int(q)
+-        else:
+-            if self._start >= value > self._stop:
+-                q, r = divmod(self._start - value, -self._step)
+-                if r == self._zero:
+-                    return int(q)
+-
++        try:
++            lo, hi = self._bounds(value)
++        except TypeError:
++            lo = hi = 0
++        if lo < hi:
++            return lo
+         raise ValueError(f"{value} is not in numeric range")
+ 
+     def _get_by_index(self, i):
++        n = self._len
+         if i < 0:
+-            i += self._len
+-        if i < 0 or i >= self._len:
++            i += n
++        if i < 0 or i >= n:
+             raise IndexError("numeric range object index out of range")
+-        return self._start + i * self._step
++        return self._item(i)
+ 
+ 
+ def count_cycle(iterable, n=None):
+@@ -2465,11 +2664,27 @@ def count_cycle(iterable, n=None):
+ 
+     """
+     if n is not None:
+-        return product(range(n), iterable)
+-    seq = tuple(iterable)
+-    if not seq:
+-        return iter(())
+-    return zip(repeat_each(count(), len(seq)), cycle(seq))
++        try:
++            n = _index(n)
++        except TypeError:
++            raise TypeError(
++                f'n must be an integer, not {type(n).__name__}'
++            ) from None
++    return _count_cycle(iterable, n)
++
++
++def _count_cycle(iterable, n):
++    if n is not None and n <= 0:
++        return
++    saved = []
++    for item in iterable:
++        yield 0, item
++        saved.append(item)
++    if not saved:
++        return
++    for i in count(1) if n is None else range(1, n):
++        for item in saved:
++            yield i, item
+ 
+ 
+ def mark_ends(iterable):
+@@ -2545,8 +2760,7 @@ def locate(iterable, pred=bool, window_size=None):
+     if window_size is None:
+         return compress(count(), map(pred, iterable))
+ 
+-    if window_size < 1:
+-        raise ValueError('window size must be at least 1')
++    window_size = _check_size(window_size, 'window_size', minimum=1)
+ 
+     it = windowed(iterable, window_size, fillvalue=_marker)
+     return compress(
+@@ -2655,7 +2869,7 @@ class islice_extended:
+     def __init__(self, iterable, *args):
+         it = iter(iterable)
+         if args:
+-            self._iterator = _islice_helper(it, slice(*args))
++            self._iterator = _islice_helper(it, _islice_check(slice(*args)))
+         else:
+             self._iterator = it
+ 
+@@ -2667,11 +2881,33 @@ class islice_extended:
+ 
+     def __getitem__(self, key):
+         if isinstance(key, slice):
++            key = _islice_check(key)
+             return islice_extended(_islice_helper(self._iterator, key))
+ 
+         raise TypeError('islice_extended.__getitem__ argument must be a slice')
+ 
+ 
++def _islice_check(s):
++    # Validate the slice's arguments up front, as itertools.islice does.
++    def check(value, name):
++        if value is None:
++            return None
++        try:
++            return _index(value)
++        except TypeError:
++            raise TypeError(
++                f'{name} argument must be None or an integer, '
++                f'not {type(value).__name__}'
++            ) from None
++
++    start = check(s.start, 'start')
++    stop = check(s.stop, 'stop')
++    step = check(s.step, 'step')
++    if step == 0:
++        raise ValueError('step argument must be a non-zero integer or None.')
++    return slice(start, stop, step)
++
++
+ def _islice_helper(it, s):
+     start = s.start
+     stop = s.stop
+@@ -2882,15 +3118,10 @@ def difference(iterable, func=sub, *, initial=None):
+ 
+     """
+     a, b = tee(iterable)
+-    try:
+-        first = [next(b)]
+-    except StopIteration:
+-        return iter([])
+-
+-    if initial is not None:
+-        return map(func, b, a)
+-
+-    return chain(first, map(func, b, a))
++    for first in b:
++        if initial is None:
++            yield first
++        yield from map(func, b, a)
+ 
+ 
+ class SequenceView(Sequence):
+@@ -3050,6 +3281,8 @@ class seekable:
+     """
+ 
+     def __init__(self, iterable, maxlen=None):
++        if maxlen is not None:
++            maxlen = _check_size(maxlen, 'maxlen')
+         self._maxlen_zero = maxlen == 0
+         self._source = (
+             peekable(iterable) if self._maxlen_zero else iter(iterable)
+@@ -3162,6 +3395,7 @@ def exactly_n(iterable, n, predicate=bool):
+ 
+     """
+     iterator = filter(predicate, iterable)
++    n = _index(n)
+     if n <= 0:
+         if n < 0:
+             return False
+@@ -3193,10 +3427,19 @@ def circular_shifts(iterable, steps=1):
+     [(0, 1, 2, 3), (3, 0, 1, 2), (2, 3, 0, 1), (1, 2, 3, 0)]
+ 
+     """
+-    buffer = deque(iterable)
++    try:
++        steps = _index(steps)
++    except TypeError:
++        raise TypeError(
++            f'steps must be an integer, not {type(steps).__name__}'
++        ) from None
+     if steps == 0:
+         raise ValueError('Steps should be a non-zero integer')
++    return _circular_shifts(iterable, steps)
++
+ 
++def _circular_shifts(iterable, steps):
++    buffer = deque(iterable)
+     buffer.rotate(steps)
+     steps = -steps
+     n = len(buffer)
+@@ -3428,16 +3671,18 @@ def replace(iterable, pred, substitutes, count=None, window_size=1):
+     the iterable and should be able to handle this.
+ 
+     """
+-    if window_size < 1:
+-        raise ValueError('window_size must be at least 1')
++    window_size = _check_size(window_size, 'window_size', minimum=1)
++    return _replace(iterable, pred, substitutes, count, window_size)
++
+ 
++def _replace(iterable, pred, substitutes, count, window_size):
+     # Save the substitutes iterable, since it's used more than once
+     substitutes = tuple(substitutes)
+ 
+     # Add padding such that the number of windows matches the length of the
+     # iterable
+     it = chain(iterable, repeat(_marker, window_size - 1))
+-    windows = windowed(it, window_size)
++    windows = windowed(it, window_size, fillvalue=_marker)
+ 
+     n = 0
+     for w in windows:
+@@ -3528,15 +3773,20 @@ def set_partitions(iterable, k=None, min_size=None, max_size=None):
+     []
+ 
+     """
+-    L = list(iterable)
+-    n = len(L)
+     if k is not None:
++        k = _check_size(k, 'k')
+         if k < 1:
+             raise ValueError(
+                 "Can't partition in a negative or zero number of groups"
+             )
+-        elif k > n:
+-            return
++    return _set_partitions(iterable, k, min_size, max_size)
++
++
++def _set_partitions(iterable, k, min_size, max_size):
++    L = list(iterable)
++    n = len(L)
++    if k is not None and k > n:
++        return
+ 
+     min_size = min_size if min_size is not None else 0
+     max_size = max_size if max_size is not None else n
+@@ -3652,7 +3902,7 @@ def only(iterable, default=None, too_long=None):
+                 f'Expected exactly one item in iterable, but got {first!r}, '
+                 f'{second!r}, and perhaps more.'
+             )
+-            raise too_long or ValueError(msg)
++            raise ValueError(msg) if too_long is None else too_long
+         return first
+     return default
+ 
+@@ -3678,7 +3928,13 @@ def ichunked(iterable, n):
+     [8, 9, 10, 11]
+ 
+     """
+-    iterator = iter(iterable)
++    n = _check_size(n)
++    if n == 0:
++        return iter(())
++    return _ichunked(iter(iterable), n)
++
++
++def _ichunked(iterator, n):
+     for first in iterator:
+         rest = islice(iterator, n - 1)
+         cache, cacher = tee(rest)
+@@ -3703,10 +3959,12 @@ def iequals(*iterables):
+     elements of iterable are equal to each other.
+ 
+     """
+-    try:
+-        return all(map(all_equal, zip(*iterables, strict=True)))
+-    except ValueError:
+-        return False
++    for items in zip_longest(*iterables, fillvalue=_marker):
++        if any(item is _marker for item in items):
++            return False
++        if not all_equal(items):
++            return False
++    return True
+ 
+ 
+ def distinct_combinations(iterable, r):
+@@ -3720,9 +3978,12 @@ def distinct_combinations(iterable, r):
+     efficient.
+ 
+     """
+-    if r < 0:
+-        raise ValueError('r must be non-negative')
+-    elif r == 0:
++    r = _check_size(r, 'r')
++    return _distinct_combinations(iterable, r)
++
++
++def _distinct_combinations(iterable, r):
++    if r == 0:
+         yield ()
+         return
+     pool = tuple(iterable)
+@@ -3854,6 +4115,8 @@ def _sample_weighted(iterator, k, weights, strict):
+     reservoir = take(k, zip(weight_keys, iterator))
+     if strict and len(reservoir) < k:
+         raise ValueError('Sample larger than population')
++    if not reservoir:
++        return []
+ 
+     heapify(reservoir)
+ 
+@@ -3978,8 +4241,7 @@ def sample(iterable, k, weights=None, *, counts=None, strict=False):
+     """
+     iterator = iter(iterable)
+ 
+-    if k < 0:
+-        raise ValueError('k must be non-negative')
++    k = _check_size(k, 'k')
+ 
+     if k == 0:
+         return []
+@@ -4192,9 +4454,11 @@ def windowed_complete(iterable, n):
+     This function will exhaust the iterable and may require significant
+     storage.
+     """
+-    if n < 0:
+-        raise ValueError('n must be >= 0')
++    n = _check_size(n)
++    return _windowed_complete(iterable, n)
+ 
++
++def _windowed_complete(iterable, n):
+     seq = tuple(iterable)
+     size = len(seq)
+ 
+@@ -4231,7 +4495,7 @@ def all_unique(iterable, key=None):
+     seenset_add = seenset.add
+     seenlist = []
+     seenlist_add = seenlist.append
+-    for element in map(key, iterable) if key else iterable:
++    for element in iterable if key is None else map(key, iterable):
+         try:
+             if element in seenset:
+                 return False
+@@ -4261,6 +4525,8 @@ def nth_product(index, *iterables, repeat=1):
+ 
+     ``IndexError`` will be raised if the given *index* is invalid.
+     """
++    repeat = _check_size(repeat, 'repeat')
++    index = _index(index)
+     pools = tuple(map(tuple, reversed(iterables))) * repeat
+     ns = tuple(map(len, pools))
+ 
+@@ -4295,6 +4561,9 @@ def nth_permutation(iterable, r, index):
+     """
+     pool = list(iterable)
+     n = len(pool)
++    if r is not None:
++        r = _check_size(r, 'r')
++    index = _index(index)
+     if r is None:
+         r = n
+     c = perm(n, r)
+@@ -4333,6 +4602,8 @@ def nth_combination_with_replacement(iterable, r, index):
+     """
+     pool = tuple(iterable)
+     n = len(pool)
++    r = _check_size(r, 'r')
++    index = _index(index)
+     if r < 0:
+         raise ValueError
+     c = comb(n + r - 1, r) if n else 0 if r else 1
+@@ -4388,9 +4659,11 @@ def value_chain(*args):
+             yield value
+             continue
+         try:
+-            yield from value
++            iterator = iter(value)
+         except TypeError:
+             yield value
++        else:
++            yield from iterator
+ 
+ 
+ def product_index(element, *iterables, repeat=1):
+@@ -4412,6 +4685,7 @@ def product_index(element, *iterables, repeat=1):
+     ``ValueError`` will be raised if the given *element* isn't in the product
+     of *args*.
+     """
++    repeat = _check_size(repeat, 'repeat')
+     elements = tuple(element)
+     pools = tuple(map(tuple, iterables)) * repeat
+     if len(elements) != len(pools):
+@@ -4486,15 +4760,15 @@ def combination_with_replacement_index(element, iterable):
+     n = len(pool)
+ 
+     occupations = [0] * n
+-    try:
+-        i = 0
+-        for e in element:
++    i = 0
++    for e in element:
++        try:
+             i = pool.index(e, i)
+-            occupations[i] += 1
+-    except ValueError:
+-        raise ValueError(
+-            'element is not a combination with replacement of iterable'
+-        )
++        except ValueError:
++            raise ValueError(
++                'element is not a combination with replacement of iterable'
++            ) from None
++        occupations[i] += 1
+ 
+     index = 0
+     cumulative_sum = 0
+@@ -4577,8 +4851,13 @@ def chunked_even(iterable, n):
+     [[1, 2, 3], [4, 5, 6], [7]]
+ 
+     """
+-    iterator = iter(iterable)
++    n = _check_size(n)
++    if n == 0:
++        return iter(())
++    return _chunked_even(iter(iterable), n)
+ 
++
++def _chunked_even(iterator, n):
+     # Initialize a buffer to process the chunks while keeping
+     # some back to fill any underfilled chunks
+     min_buffer = (n - 1) * (n - 2)
+@@ -4637,7 +4916,7 @@ def zip_broadcast(*objects, scalar_types=(str, bytes), strict=False):
+     """
+ 
+     def get_iterator(obj):
+-        if scalar_types and isinstance(obj, scalar_types):
++        if scalar_types is not None and isinstance(obj, scalar_types):
+             return None
+         try:
+             return iter(obj)
+@@ -4693,9 +4972,11 @@ def unique_in_window(iterable, n, key=None):
+     The items in *iterable* must be hashable.
+ 
+     """
+-    if n <= 0:
+-        raise ValueError('n must be greater than 0')
++    n = _check_size(n, minimum=1)
++    return _unique_in_window(iterable, n, key)
++
+ 
++def _unique_in_window(iterable, n, key):
+     window = deque(maxlen=n)
+     counts = Counter()
+     use_key = key is not None
+@@ -4916,7 +5197,12 @@ def constrained_batches(
+     """
+     if max_size <= 0:
+         raise ValueError('maximum size must be greater than zero')
++    if max_count is not None:
++        max_count = _check_size(max_count, 'max_count', minimum=1)
++    return _constrained_batches(iterable, max_size, max_count, get_len, strict)
+ 
++
++def _constrained_batches(iterable, max_size, max_count, get_len, strict):
+     batch = []
+     batch_size = 0
+     batch_count = 0
+@@ -4961,6 +5247,11 @@ def gray_product(*iterables, repeat=1):
+     `this section <https://www-cs-faculty.stanford.edu/~knuth/fasc2a.ps.gz>`__
+     of Donald Knuth's *The Art of Computer Programming*.
+     """
++    repeat = _check_size(repeat, 'repeat')
++    return _gray_product(iterables, repeat)
++
++
++def _gray_product(iterables, repeat):
+     all_iterables = tuple(map(tuple, iterables)) * repeat
+     iterable_count = len(all_iterables)
+     for iterable in all_iterables:
+@@ -5002,7 +5293,11 @@ def partial_product(*iterables, repeat=1):
+     of the iterables.  For example, ``partial_product('AB', repeat=3)`` is
+     equivalent to ``partial_product('AB', 'AB', 'AB')``.
+     """
++    repeat = _check_size(repeat, 'repeat')
++    return _partial_product(iterables, repeat)
+ 
++
++def _partial_product(iterables, repeat):
+     all_iterables = tuple(map(tuple, iterables)) * repeat
+     iterators = tuple(map(iter, all_iterables))
+ 
+@@ -5120,9 +5415,8 @@ def powerset_of_sets(iterable, *, baseset=set):
+     """
+     sets = tuple(dict.fromkeys(map(frozenset, zip(iterable))))
+     union = baseset().union
+-    return chain.from_iterable(
+-        starmap(union, combinations(sets, r)) for r in range(len(sets) + 1)
+-    )
++    for r in range(len(sets) + 1):
++        yield from starmap(union, combinations(sets, r))
+ 
+ 
+ def join_mappings(**field_to_map):
+@@ -5333,15 +5627,15 @@ def _extract_monotonic(iterator, indices):
+     'Non-decreasing indices, lazily consumed'
+     num_read = 0
+     for index in indices:
++        index = _index(index)
+         advance = index - num_read
+-        try:
+-            value = next(islice(iterator, advance, None))
+-        except ValueError:
+-            if advance != -1 or index < 0:
+-                raise ValueError(f'Invalid index: {index}') from None
+-        except StopIteration:
+-            raise IndexError(index) from None
+-        else:
++        if index < 0 or advance < -1:
++            raise ValueError(f'Invalid index: {index}')
++        if advance != -1:
++            try:
++                value = next(islice(iterator, advance, None))
++            except StopIteration:
++                raise IndexError(index) from None
+             num_read += advance + 1
+         yield value
+ 
+@@ -5487,6 +5781,7 @@ def concurrent_tee(iterable, n=2):
+     with :func:`serialize`.
+     """
+ 
++    n = _check_size(n)
+     if n < 0:
+         raise ValueError
+     if n == 0:
+@@ -5542,6 +5837,7 @@ def subfactorial(n):
+     Reference:  https://oeis.org/A000166
+ 
+     """
++    n = _check_size(n)
+     if n < 0:
+         raise ValueError
+     sf = adj = 1
+@@ -5589,6 +5885,10 @@ def _random_ordered_indices(n):
+ def random_ordered_range(*args):
+     "Return :func:`range` values in randomly shuffled order."
+     range_object = range(*args)
++    return _random_ordered_range(range_object)
++
++
++def _random_ordered_range(range_object):
+     n = len(range_object)
+     for index in _random_ordered_indices(n):
+         yield range_object[index]
+diff --git a/more_itertools/recipes.py b/more_itertools/recipes.py
+index 7a24ef2..6afef99 100644
+--- a/more_itertools/recipes.py
++++ b/more_itertools/recipes.py
+@@ -110,6 +110,20 @@ else:  # pragma: no cover
+     _max_heap_available = True
+ 
+ 
++def _check_size(n, name='n', minimum=0):
++    # Return *n* as an integer, raising TypeError if it isn't one and
++    # ValueError if it is smaller than *minimum*.
++    try:
++        n = _index(n)
++    except TypeError:
++        raise TypeError(
++            f'{name} must be an integer, not {type(n).__name__}'
++        ) from None
++    if n < minimum:
++        raise ValueError(f'{name} must be at least {minimum}')
++    return n
++
++
+ def take(n, iterable):
+     """Return first *n* items of the *iterable* as a list.
+ 
+@@ -123,6 +137,8 @@ def take(n, iterable):
+         [0, 1, 2]
+ 
+     """
++    if n is not None:
++        n = _check_size(n)
+     return list(islice(iterable, n))
+ 
+ 
+@@ -152,6 +168,7 @@ def tail(n, iterable):
+     ['E', 'F', 'G']
+ 
+     """
++    n = _check_size(n)
+     try:
+         size = len(iterable)
+     except TypeError:
+@@ -197,6 +214,7 @@ def consume(iterator, n=None):
+         deque(iterator, maxlen=0)
+     else:
+         # advance to the empty slice starting at position n
++        n = _check_size(n)
+         next(islice(iterator, n, n), None)
+ 
+ 
+@@ -210,7 +228,7 @@ def nth(iterable, n, default=None):
+     'zebra'
+ 
+     """
+-    return next(islice(iterable, n, None), default)
++    return next(islice(iterable, _check_size(n), None), default)
+ 
+ 
+ def all_equal(iterable, key=None):
+@@ -275,7 +293,24 @@ def ncycles(iterable, n):
+     ['a', 'b', 'a', 'b', 'a', 'b']
+ 
+     """
+-    return chain.from_iterable(repeat(tuple(iterable), n))
++    try:
++        n = _index(n)
++    except TypeError:
++        raise TypeError(
++            f'n must be an integer, not {type(n).__name__}'
++        ) from None
++    return _ncycles(iterable, n)
++
++
++def _ncycles(iterable, n):
++    if n <= 0:
++        return
++    saved = []
++    for element in iterable:
++        yield element
++        saved.append(element)
++    for _ in repeat(None, n - 1):
++        yield from saved
+ 
+ 
+ def dotproduct(vec1, vec2):
+@@ -376,6 +411,7 @@ def grouper(iterable, n, incomplete='fill', fillvalue=None):
+     ValueError
+ 
+     """
++    n = _check_size(n)
+     iterators = [iter(iterable)] * n
+     match incomplete:
+         case 'fill':
+@@ -466,7 +502,8 @@ def powerset(iterable):
+     :func:`powerset_of_sets`.
+     """
+     s = list(iterable)
+-    return chain.from_iterable(combinations(s, r) for r in range(len(s) + 1))
++    for r in range(len(s) + 1):
++        yield from combinations(s, r)
+ 
+ 
+ def unique_everseen(iterable, key=None):
+@@ -619,7 +656,7 @@ def random_permutation(iterable, r=None):
+ 
+     """
+     pool = tuple(iterable)
+-    r = len(pool) if r is None else r
++    r = len(pool) if r is None else _check_size(r, 'r')
+     return tuple(sample(pool, r))
+ 
+ 
+@@ -633,6 +670,7 @@ def random_combination(iterable, r):
+     ``itertools.combinations(iterable, r)``.
+ 
+     """
++    r = _check_size(r, 'r')
+     pool = tuple(iterable)
+     n = len(pool)
+     indices = sorted(sample(range(n), r))
+@@ -650,6 +688,7 @@ def random_combination_with_replacement(iterable, r):
+     ``itertools.combinations_with_replacement(iterable, r)``.
+ 
+     """
++    r = _check_size(r, 'r')
+     pool = tuple(iterable)
+     n = len(pool)
+     indices = sorted(randrange(n) for i in range(r))
+@@ -670,6 +709,8 @@ def nth_combination(iterable, r, index):
+     ``ValueError`` will be raised if *r* is negative.
+     ``IndexError`` will be raised if the given *index* is invalid.
+     """
++    r = _check_size(r, 'r')
++    index = _index(index)
+     pool = tuple(iterable)
+     n = len(pool)
+     c = comb(n, r)
+@@ -729,7 +770,7 @@ def convolve(signal, kernel):
+     infinite. *kernel* is fully consumed before calculations begin.
+ 
+     Supports all numeric types: int, float, complex, Decimal, Fraction.
+-    Note that empty input iterables will produce meaningless output.
++    If either input is empty, no output is produced.
+ 
+     References:
+ 
+@@ -743,8 +784,15 @@ def convolve(signal, kernel):
+     # and it avoids an unnecessary deque-to-tuple conversion.
+     kernel = tuple(kernel)[::-1]
+     n = len(kernel)
++    if not n:
++        return
++    signal = iter(signal)
++    for first in signal:
++        break
++    else:
++        return
+     window = deque([0], maxlen=n) * n
+-    for x in chain(signal, repeat(0, n - 1)):
++    for x in chain((first,), signal, repeat(0, n - 1)):
+         window.append(x)
+         yield _sumprod(kernel, window)
+ 
+@@ -814,6 +862,12 @@ def sliding_window(iterable, n):
+ 
+     For a variant with more features, see :func:`windowed`.
+     """
++    try:
++        n = _index(n)
++    except TypeError:
++        raise TypeError(
++            f'n must be an integer, not {type(n).__name__}'
++        ) from None
+     if n > 20:
+         return _sliding_window_deque(iterable, n)
+     elif n > 2:
+@@ -837,7 +891,7 @@ def subslices(iterable):
+     """
+     seq = list(iterable)
+     slices = starmap(slice, combinations(range(len(seq) + 1), 2))
+-    return map(getitem, repeat(seq), slices)
++    yield from map(getitem, repeat(seq), slices)
+ 
+ 
+ def polynomial_from_roots(roots):
+@@ -940,9 +994,13 @@ def _batched(iterable, n, *, strict=False):  # pragma: no cover
+ 
+     On Python 3.13 and above, this is an alias for :func:`itertools.batched`.
+     """
++    n = _index(n)
+     if n < 1:
+         raise ValueError('n must be at least one')
+-    iterator = iter(iterable)
++    return _batched_gen(iter(iterable), n, strict)
++
++
++def _batched_gen(iterator, n, strict):  # pragma: no cover
+     while batch := tuple(islice(iterator, n)):
+         if strict and len(batch) != n:
+             raise ValueError('batched(): incomplete batch')
+@@ -1031,8 +1089,11 @@ def reshape(matrix, shape):
+     if isinstance(shape, int):
+         return batched(chain.from_iterable(matrix), shape)
+     first_dim, *dims = shape
+-    scalar_stream = _flatten_tensor(matrix)
+-    reshaped = reduce(batched, reversed(dims), scalar_stream)
++
++    def scalar_stream():
++        yield from _flatten_tensor(matrix)
++
++    reshaped = reduce(batched, reversed(dims), scalar_stream())
+     return islice(reshaped, first_dim)
+ 
+ 
+@@ -1460,6 +1521,7 @@ def running_mean(iterable, *, maxlen=None):
+     if maxlen is None:
+         return map(truediv, accumulate(iterator), count(1))
+ 
++    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
+@@ -1475,7 +1537,7 @@ def _windowed_running_min(iterator, maxlen):
+     for index, value in enumerate(iterator):
+         if s and s[0][0] == index - maxlen:
+             s.popleft()
+-        while s and not s[-1][1] < value:
++        while s and value < s[-1][1]:
+             s.pop()
+         s.append((index, value))
+         yield s[0][1]
+@@ -1505,6 +1567,7 @@ def running_min(iterable, *, maxlen=None):
+     if maxlen is None:
+         return accumulate(iterator, func=min)
+ 
++    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
+@@ -1520,7 +1583,7 @@ def _windowed_running_max(iterator, maxlen):
+     for index, value in enumerate(iterator):
+         if s and s[0][0] == index - maxlen:
+             s.popleft()
+-        while s and not s[-1][1] > value:
++        while s and value > s[-1][1]:
+             s.pop()
+         s.append((index, value))
+         yield s[0][1]
+@@ -1550,6 +1613,7 @@ def running_max(iterable, *, maxlen=None):
+     if maxlen is None:
+         return accumulate(iterator, func=max)
+ 
++    maxlen = _index(maxlen)
+     if maxlen <= 0:
+         raise ValueError('Window size should be positive')
+ 
