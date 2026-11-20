@@ -1,0 +1,1728 @@
+diff --git a/src/dateutil/parser/isoparser.py b/src/dateutil/parser/isoparser.py
+index c51bdea..e08dafa 100644
+--- a/src/dateutil/parser/isoparser.py
++++ b/src/dateutil/parser/isoparser.py
+@@ -17,6 +17,20 @@ import re
+ __all__ = ["isoparse", "isoparser"]
+ 
+ 
++_DIGITS_RE = re.compile(b'[0-9]+')
++
++
++def _parse_digits(s, length):
++    """
++    Parse a numeric field consisting only of ASCII digits. Unlike ``int``,
++    this rejects signs, whitespace and underscores, and the field must have
++    exactly ``length`` digits (a slice is shorter if the string ends early).
++    """
++    if len(s) != length or not _DIGITS_RE.fullmatch(s):
++        raise ValueError('Invalid numeric field in ISO string: {!r}'.format(s))
++    return int(s)
++
++
+ def _takes_ascii(f):
+     @wraps(f)
+     def func(self, str_in, *args, **kwargs):
+@@ -215,7 +229,7 @@ class isoparser:
+             raise ValueError('ISO string too short')
+ 
+         # Year
+-        components[0] = int(dt_str[0:4])
++        components[0] = _parse_digits(dt_str[0:4], 4)
+         pos = 4
+         if pos >= len_str:
+             return components, pos
+@@ -228,7 +242,7 @@ class isoparser:
+         if len_str - pos < 2:
+             raise ValueError('Invalid common month')
+ 
+-        components[1] = int(dt_str[pos:pos + 2])
++        components[1] = _parse_digits(dt_str[pos:pos + 2], 2)
+         pos += 2
+ 
+         if pos >= len_str:
+@@ -245,7 +259,7 @@ class isoparser:
+         # Day
+         if len_str - pos < 2:
+             raise ValueError('Invalid common day')
+-        components[2] = int(dt_str[pos:pos + 2])
++        components[2] = _parse_digits(dt_str[pos:pos + 2], 2)
+         return components, pos + 2
+ 
+     def _parse_isodate_uncommon(self, dt_str):
+@@ -253,7 +267,7 @@ class isoparser:
+             raise ValueError('ISO string too short')
+ 
+         # All ISO formats start with the year
+-        year = int(dt_str[0:4])
++        year = _parse_digits(dt_str[0:4], 4)
+ 
+         has_sep = dt_str[4:5] == self._DATE_SEP
+ 
+@@ -261,7 +275,7 @@ class isoparser:
+         if dt_str[pos:pos + 1] == b'W':
+             # YYYY-?Www-?D?
+             pos += 1
+-            weekno = int(dt_str[pos:pos + 2])
++            weekno = _parse_digits(dt_str[pos:pos + 2], 2)
+             pos += 2
+ 
+             dayno = 1
+@@ -271,7 +285,7 @@ class isoparser:
+ 
+                 pos += has_sep
+ 
+-                dayno = int(dt_str[pos:pos + 1])
++                dayno = _parse_digits(dt_str[pos:pos + 1], 1)
+                 pos += 1
+ 
+             base_date = self._calculate_weekdate(year, weekno, dayno)
+@@ -280,7 +294,7 @@ class isoparser:
+             if len(dt_str) - pos < 3:
+                 raise ValueError('Invalid ordinal day')
+ 
+-            ordinal_day = int(dt_str[pos:pos + 3])
++            ordinal_day = _parse_digits(dt_str[pos:pos + 3], 3)
+             pos += 3
+ 
+             if ordinal_day < 1 or ordinal_day > (365 + calendar.isleap(year)):
+@@ -321,6 +335,11 @@ class isoparser:
+         jan_4 = date(year, 1, 4)   # Week 1 always has January 4th in it
+         week_1 = jan_4 - timedelta(days=jan_4.isocalendar()[2] - 1)
+ 
++        # Only years with 53 ISO weeks have a week 53; December 28th is
++        # always in the last week of its ISO year.
++        if week == 53 and date(year, 12, 28).isocalendar()[1] != 53:
++            raise ValueError('Invalid week: {} for year {}'.format(week, year))
++
+         # Now add the specific number of weeks and days to get what we want
+         week_offset = (week - 1) * 7 + (day - 1)
+         return week_1 + timedelta(days=week_offset)
+@@ -340,6 +359,10 @@ class isoparser:
+             comp += 1
+ 
+             if timestr[pos:pos + 1] in b'-+Zz':
++                if comp == 0:
++                    # A time zone offset must follow a time
++                    raise ValueError('ISO time must start with the hour')
++
+                 # Detect time zone boundary
+                 components[-1] = self._parse_tzstr(timestr[pos:])
+                 pos = len_str
+@@ -355,7 +378,7 @@ class isoparser:
+ 
+             if comp < 3:
+                 # Hour, minute, second
+-                components[comp] = int(timestr[pos:pos + 2])
++                components[comp] = _parse_digits(timestr[pos:pos + 2], 2)
+                 pos += 2
+ 
+             if comp == 3:
+@@ -392,11 +415,17 @@ class isoparser:
+         else:
+             raise ValueError('Time zone offset requires sign')
+ 
+-        hours = int(tzstr[1:3])
++        hours = _parse_digits(tzstr[1:3], 2)
+         if len(tzstr) == 3:
+             minutes = 0
++        elif len(tzstr) == 5:
++            # +HHMM
++            minutes = _parse_digits(tzstr[3:5], 2)
+         else:
+-            minutes = int(tzstr[(4 if tzstr[3:4] == self._TIME_SEP else 3):])
++            # +HH:MM
++            if tzstr[3:4] != self._TIME_SEP:
++                raise ValueError('Invalid separator in time zone offset')
++            minutes = _parse_digits(tzstr[4:6], 2)
+ 
+         if zero_as_utc and hours == 0 and minutes == 0:
+             return tz.UTC
+diff --git a/src/dateutil/relativedelta.py b/src/dateutil/relativedelta.py
+index ad0dbab..ff20dfb 100644
+--- a/src/dateutil/relativedelta.py
++++ b/src/dateutil/relativedelta.py
+@@ -208,7 +208,11 @@ class relativedelta:
+                 yday = nlyearday
+             elif yearday:
+                 yday = yearday
+-                if yearday > 59:
++                if yearday == 366:
++                    # The last day of a leap year: December 31st is day 366
++                    # in leap years (and there is no such day otherwise).
++                    yday = 365
++                elif yearday > 59:
+                     self.leapdays = -1
+             if yday:
+                 ydayidx = [31, 59, 90, 120, 151, 181, 212,
+diff --git a/src/dateutil/rrule.py b/src/dateutil/rrule.py
+index dfe87f9..edd0e14 100644
+--- a/src/dateutil/rrule.py
++++ b/src/dateutil/rrule.py
+@@ -133,33 +133,36 @@ class rrulebase:
+             self._cache_complete = False
+             self._cache_gen = self._iter()
+ 
+-            if self._cache_lock.locked():
+-                self._cache_lock.release()
+-
+         self._len = None
+ 
+     def _iter_cached(self):
+         i = 0
+-        gen = self._cache_gen
+         cache = self._cache
+-        acquire = self._cache_lock.acquire
+-        release = self._cache_lock.release
+-        while gen:
++        lock = self._cache_lock
++        while True:
++            if self._cache is not cache:
++                # The cache was invalidated (e.g. a rule set was modified),
++                # so continue with the new results.
++                cache = self._cache
+             if i == len(cache):
+-                acquire()
+-                if self._cache_complete:
+-                    break
+-                try:
+-                    for j in range(10):
+-                        cache.append(next(gen))
+-                except StopIteration:
+-                    self._cache_gen = gen = None
+-                    self._cache_complete = True
++                with lock:
++                    # Another iterator may have filled the cache (or
++                    # finished it) while we were waiting for the lock.
++                    if (self._cache is cache and i == len(cache) and
++                            not self._cache_complete):
++                        gen = self._cache_gen
++                        try:
++                            for j in range(10):
++                                cache.append(next(gen))
++                        except StopIteration:
++                            self._cache_gen = None
++                            self._cache_complete = True
++
++                if self._cache is not cache:
++                    continue
++                if i == len(cache):
++                    # The cache is complete and every item has been yielded
+                     break
+-                release()
+-            yield cache[i]
+-            i += 1
+-        while i < self._len:
+             yield cache[i]
+             i += 1
+ 
+@@ -167,13 +170,15 @@ class rrulebase:
+         if self._cache_complete:
+             return self._cache[item]
+         elif isinstance(item, slice):
+-            if item.step and item.step < 0:
++            if ((item.step is not None and item.step < 0) or
++                    (item.start is not None and item.start < 0) or
++                    (item.stop is not None and item.stop < 0)):
+                 return list(iter(self))[item]
+             else:
+                 return list(itertools.islice(self,
+-                                             item.start or 0,
+-                                             item.stop or sys.maxsize,
+-                                             item.step or 1))
++                                             item.start,
++                                             item.stop,
++                                             item.step))
+         elif item >= 0:
+             gen = iter(self)
+             try:
+@@ -679,7 +684,21 @@ class rrule(rrulebase):
+             self._byminute = tuple(sorted(self._byminute))
+             self._original_rule['byminute'] = self._byminute
+ 
+-        # bysecond
++        # bysecond: RFC 5545 allows 60 (a leap second), which can't be
++        # represented by datetime, so these instances are ignored like other
++        # invalid instances.
++        self._empty = False
++        orig_bysecond = None
++        if bysecond is not None:
++            if isinstance(bysecond, int):
++                bysecond = (bysecond,)
++            if 60 in bysecond:
++                orig_bysecond = tuple(sorted(set(bysecond)))
++                bysecond = tuple(x for x in bysecond if x != 60)
++                if not bysecond:
++                    self._empty = True
++                    bysecond = (dtstart.second,)
++
+         if bysecond is None:
+             if freq < SECONDLY:
+                 self._bysecond = ((dtstart.second,))
+@@ -699,7 +718,8 @@ class rrule(rrulebase):
+                 self._bysecond = set(bysecond)
+ 
+             self._bysecond = tuple(sorted(self._bysecond))
+-            self._original_rule['bysecond'] = self._bysecond
++            self._original_rule['bysecond'] = (orig_bysecond or
++                                               self._bysecond)
+ 
+         if self._freq >= HOURLY:
+             self._timeset = None
+@@ -731,7 +751,9 @@ class rrule(rrulebase):
+         if self._interval != 1:
+             parts.append('INTERVAL=' + str(self._interval))
+ 
+-        if self._wkst:
++        # rrulestr defaults to calendar.firstweekday(), so the week start can
++        # only be left out if it is the same (and the default of MO).
++        if self._wkst or calendar.firstweekday():
+             parts.append('WKST=' + repr(weekday(self._wkst))[0:2])
+ 
+         if self._count is not None:
+@@ -791,6 +813,10 @@ class rrule(rrulebase):
+         return rrule(**new_kwargs)
+ 
+     def _iter(self):
++        if self._empty:
++            self._len = 0
++            return
++
+         year, month, day, hour, minute, second, weekday, yearday, _ = \
+             self._dtstart.timetuple()
+ 
+@@ -1194,9 +1220,19 @@ class _iterinfo:
+                         i += 1
+                         if self.wdaymask[i] == rr._wkst:
+                             break
+-                if 1 in rr._byweekno:
++                # Number of weeks in next year, to check whether week
++                # number 1 of next year is selected as -nnumweeks
++                nyearweekday = (self.yearweekday + self.yearlen) % 7
++                nno1wkst = (7-nyearweekday+rr._wkst) % 7
++                if nno1wkst >= 4:
++                    nwyearlen = (self.nextyearlen +
++                                 (nyearweekday-rr._wkst) % 7)
++                else:
++                    nwyearlen = self.nextyearlen-nno1wkst
++                ndiv, nmod = divmod(nwyearlen, 7)
++                nnumweeks = ndiv+nmod//4
++                if 1 in rr._byweekno or -nnumweeks in rr._byweekno:
+                     # Check week number 1 of next year as well
+-                    # TODO: Check -numweeks for next year.
+                     i = no1wkst+numweeks*7
+                     if no1wkst != firstwkst:
+                         i -= 7-firstwkst
+@@ -1219,12 +1255,14 @@ class _iterinfo:
+                         lyearweekday = datetime.date(year-1, 1, 1).weekday()
+                         lno1wkst = (7-lyearweekday+rr._wkst) % 7
+                         lyearlen = 365+calendar.isleap(year-1)
++                        # Same computation as numweeks above, for last year
+                         if lno1wkst >= 4:
+-                            lno1wkst = 0
+-                            lnumweeks = 52+(lyearlen +
+-                                            (lyearweekday-rr._wkst) % 7) % 7//4
++                            lwyearlen = (lyearlen +
++                                         (lyearweekday-rr._wkst) % 7)
+                         else:
+-                            lnumweeks = 52+(self.yearlen-no1wkst) % 7//4
++                            lwyearlen = lyearlen-lno1wkst
++                        ldiv, lmod = divmod(lwyearlen, 7)
++                        lnumweeks = ldiv+lmod//4
+                     else:
+                         lnumweeks = -1
+                     if lnumweeks in rr._byweekno:
+@@ -1548,15 +1586,48 @@ class _rrulestr:
+ 
+     _handle_BYDAY = _handle_BYWEEKDAY
+ 
++    @staticmethod
++    def _split_line(line):
++        """
++        Split a content line into its name, its parameters (as a list of
++        ``NAME=VALUE`` strings) and its value. Parameter values may be quoted,
++        in which case they may contain ``;`` and ``:``.
++        """
++        parts = []
++        start = 0
++        quoted = False
++        for i, c in enumerate(line):
++            if c == '"':
++                quoted = not quoted
++            elif quoted:
++                continue
++            elif c == ';':
++                parts.append(line[start:i])
++                start = i + 1
++            elif c == ':':
++                parts.append(line[start:i])
++                return parts[0], parts[1:], line[i + 1:]
++
++        raise ValueError("invalid content line: " + line)
++
++    @staticmethod
++    def _is_x_param(parm):
++        # Experimental parameters (RFC 5545 Section 3.2, "other-param") may
++        # be present on any property, and are ignored.
++        return parm.upper().startswith("X-") and "=" in parm
++
+     def _parse_rfc_rrule(self, line,
+                          dtstart=None,
+                          cache=False,
+                          ignoretz=False,
+                          tzinfos=None):
+         if line.find(':') != -1:
+-            name, value = line.split(':')
+-            if name != "RRULE":
++            name, parms, value = self._split_line(line)
++            if name.upper() != "RRULE":
+                 raise ValueError("unknown parameter name")
++            for parm in parms:
++                if not self._is_x_param(parm):
++                    raise ValueError("unsupported RRULE parm: " + parm)
+         else:
+             value = line
+         rrkwargs = {}
+@@ -1572,19 +1643,25 @@ class _rrulestr:
+                 raise ValueError("unknown parameter '%s'" % name)
+             except (KeyError, ValueError):
+                 raise ValueError("invalid '%s': %s" % (name, value))
++        if "freq" not in rrkwargs:
++            raise ValueError("FREQ rule part is required")
+         return rrule(dtstart=dtstart, cache=cache, **rrkwargs)
+ 
+     def _parse_date_value(self, date_value, parms, rule_tzids,
+-                          ignoretz, tzids, tzinfos):
++                          ignoretz, tzids, tzinfos, allow_period=False):
+         global parser
+         if not parser:
+             from dateutil import parser
+ 
+         datevals = []
+         value_found = False
++        is_period = False
+         TZID = None
+ 
+         for parm in parms:
++            if self._is_x_param(parm):
++                continue
++
+             if parm.startswith("TZID="):
+                 try:
+                     tzkey = rule_tzids[parm.split('TZID=')[-1]]
+@@ -1607,15 +1684,26 @@ class _rrulestr:
+ 
+             # RFC 5445 3.8.2.4: The VALUE parameter is optional, but may be found
+             # only once.
+-            if parm not in {"VALUE=DATE-TIME", "VALUE=DATE"}:
++            allowed = {"VALUE=DATE-TIME", "VALUE=DATE"}
++            if allow_period:
++                allowed.add("VALUE=PERIOD")
++            if parm not in allowed:
+                 raise ValueError("unsupported parm: " + parm)
+             else:
+                 if value_found:
+                     msg = ("Duplicate value parameter found in: " + parm)
+                     raise ValueError(msg)
+                 value_found = True
++                is_period = (parm == "VALUE=PERIOD")
+ 
+         for datestr in date_value.split(','):
++            if is_period:
++                # A period of time (RFC 5545 Section 3.3.9) is given by its
++                # start and either its end or its duration; the recurrence
++                # instance starts at the start of the period.
++                datestr, sep, period_end = datestr.partition('/')
++                if not sep or not period_end:
++                    raise ValueError("invalid period: " + datestr)
+             date = parser.parse(datestr, ignoretz=ignoretz, tzinfos=tzinfos)
+             if TZID is not None:
+                 if date.tzinfo is None:
+@@ -1642,7 +1730,7 @@ class _rrulestr:
+ 
+         TZID_NAMES = dict(map(
+             lambda x: (x.upper(), x),
+-            re.findall('TZID=(?P<name>[^:]+):', s)
++            re.findall('TZID=(?P<name>[^;:]+)[;:]', s, flags=re.IGNORECASE)
+         ))
+         s = s.upper()
+         if not s.strip():
+@@ -1654,15 +1742,16 @@ class _rrulestr:
+                 line = lines[i].rstrip()
+                 if not line:
+                     del lines[i]
+-                elif i > 0 and line[0] == " ":
+-                    lines[i-1] += line[1:]
++                elif i > 0 and line[0] in (" ", "\t"):
++                    lines[i-1] += lines[i][1:].rstrip()
+                     del lines[i]
+                 else:
+                     i += 1
+         else:
+             lines = s.split()
+-        if (not forceset and len(lines) == 1 and (s.find(':') == -1 or
+-                                                  s.startswith('RRULE:'))):
++        if (not forceset and len(lines) == 1 and
++                (lines[0].find(':') == -1 or
++                 self._split_line(lines[0])[0] == "RRULE")):
+             return self._parse_rfc_rrule(lines[0], cache=cache,
+                                          dtstart=dtstart, ignoretz=ignoretz,
+                                          tzinfos=tzinfos)
+@@ -1677,25 +1766,27 @@ class _rrulestr:
+                 if line.find(':') == -1:
+                     name = "RRULE"
+                     value = line
++                    parms = []
+                 else:
+-                    name, value = line.split(':', 1)
+-                parms = name.split(';')
+-                if not parms:
++                    name, parms, value = self._split_line(line)
++                if not name:
+                     raise ValueError("empty property name")
+-                name = parms[0]
+-                parms = parms[1:]
+                 if name == "RRULE":
+                     for parm in parms:
+-                        raise ValueError("unsupported RRULE parm: "+parm)
++                        if not self._is_x_param(parm):
++                            raise ValueError("unsupported RRULE parm: "+parm)
+                     rrulevals.append(value)
+                 elif name == "RDATE":
+-                    for parm in parms:
+-                        if parm != "VALUE=DATE-TIME":
+-                            raise ValueError("unsupported RDATE parm: "+parm)
+-                    rdatevals.append(value)
++                    rdatevals.extend(
++                        self._parse_date_value(value, parms,
++                                               TZID_NAMES, ignoretz,
++                                               tzids, tzinfos,
++                                               allow_period=True)
++                    )
+                 elif name == "EXRULE":
+                     for parm in parms:
+-                        raise ValueError("unsupported EXRULE parm: "+parm)
++                        if not self._is_x_param(parm):
++                            raise ValueError("unsupported EXRULE parm: "+parm)
+                     exrulevals.append(value)
+                 elif name == "EXDATE":
+                     exdatevals.extend(
+@@ -1712,7 +1803,7 @@ class _rrulestr:
+                     dtstart = dtvals[0]
+                 else:
+                     raise ValueError("unsupported property: "+name)
+-            if (forceset or len(rrulevals) > 1 or rdatevals
++            if (forceset or len(rrulevals) != 1 or rdatevals
+                     or exrulevals or exdatevals):
+                 if not parser and (rdatevals or exdatevals):
+                     from dateutil import parser
+@@ -1722,10 +1813,7 @@ class _rrulestr:
+                                                      ignoretz=ignoretz,
+                                                      tzinfos=tzinfos))
+                 for value in rdatevals:
+-                    for datestr in value.split(','):
+-                        rset.rdate(parser.parse(datestr,
+-                                                ignoretz=ignoretz,
+-                                                tzinfos=tzinfos))
++                    rset.rdate(value)
+                 for value in exrulevals:
+                     rset.exrule(self._parse_rfc_rrule(value, dtstart=dtstart,
+                                                       ignoretz=ignoretz,
+diff --git a/src/dateutil/tz/_common.py b/src/dateutil/tz/_common.py
+index 44a505d..3d6e551 100644
+--- a/src/dateutil/tz/_common.py
++++ b/src/dateutil/tz/_common.py
+@@ -62,6 +62,9 @@ class _tzinfo(tzinfo):
+         .. versionadded:: 2.6.0
+         """
+ 
++        if dt is None:
++            return False
++
+         dt = dt.replace(tzinfo=self)
+ 
+         wall_0 = enfold(dt, fold=0)
+@@ -203,7 +206,11 @@ class tzrangebase(_tzinfo):
+             return ZERO
+ 
+     def tzname(self, dt):
+-        if self._isdst(dt):
++        isdst = self._isdst(dt)
++
++        if isdst is None:
++            return None
++        elif isdst:
+             return self._dst_abbr
+         else:
+             return self._std_abbr
+@@ -255,7 +262,7 @@ class tzrangebase(_tzinfo):
+ 
+         .. versionadded:: 2.6.0
+         """
+-        if not self.hasdst:
++        if not self.hasdst or dt is None:
+             return False
+ 
+         start, end = self.transitions(dt.year)
+diff --git a/src/dateutil/tz/_tzfile.py b/src/dateutil/tz/_tzfile.py
+index e106d56..fec2df7 100644
+--- a/src/dateutil/tz/_tzfile.py
++++ b/src/dateutil/tz/_tzfile.py
+@@ -253,11 +253,10 @@ class tzfile(_tzinfo):
+         else:
+             idx = bisect.bisect_right(self._trans_utc, timestamp)
+ 
+-            if num_trans > 1 and timestamp >= self._trans_utc[1]:
++            # idx >= 1 here, since timestamp >= self._trans_utc[0]; the
++            # local time type in effect is the one of transition idx - 1.
++            if idx >= 2:
+                 tti_prev, tti = self._ttinfos[idx - 2 : idx]
+-            elif timestamp > self._trans_utc[-1]:
+-                tti_prev = self._ttinfos[-1]
+-                tti = self._tz_after
+             else:
+                 tti_prev = self._tti_before
+                 tti = self._ttinfos[0]
+@@ -374,10 +373,24 @@ class tzfile(_tzinfo):
+     def _load_from_data(self, data):
+         trans_idx, trans_utc, utcoff, isdst, abbr, tz_str = data
+ 
++        if tz_str is not None and tz_str != b"":
++            tz_after = _parse_tz_str(tz_str.decode())
++        else:
++            tz_after = None
++
++        # After the last transition, the TZ string gives the standard time,
++        # which is needed to infer the DST offset of the last DST periods.
++        if isinstance(tz_after, _TZStr):
++            final_std_utcoff = int(tz_after.std.utcoff.total_seconds())
++        elif isinstance(tz_after, _ttinfo):
++            final_std_utcoff = int(tz_after.utcoff.total_seconds())
++        else:
++            final_std_utcoff = None
++
+         # Infer the DST offsets (needed for .dst()) from the data, for each
+         # transition and for each local time type
+         trans_dstoff = self._utcoff_to_dstoff(
+-            trans_idx, trans_utc, utcoff, isdst
++            trans_idx, trans_utc, utcoff, isdst, final_std_utcoff
+         )
+         dstoff = [3600 if dst else 0 for dst in isdst]
+         for idx, trans_off in zip(trans_idx, trans_dstoff):
+@@ -417,21 +430,17 @@ class tzfile(_tzinfo):
+                 tti = ttinfos[key]
+             self._ttinfos.append(tti)
+ 
+-        # Find the first non-DST transition
+-        for i in range(len(isdst)):
+-            if not isdst[i]:
+-                self._tti_before = _ttinfo_list[i]
+-                break
++        # RFC 8536 Section 3.2: local time for timestamps before the first
++        # transition is specified by the first time type (time type 0).
++        if _ttinfo_list:
++            self._tti_before = _ttinfo_list[0]
+         else:
+-            if self._ttinfos:
+-                self._tti_before = self._ttinfos[0]
+-            else:
+-                self._tti_before = None
++            self._tti_before = None
+ 
+         # Set the "fallback" time zone
+         self._tz_str = tz_str
+-        if tz_str is not None and tz_str != b"":
+-            self._tz_after = _parse_tz_str(tz_str.decode())
++        if tz_after is not None:
++            self._tz_after = tz_after
+         else:
+             if not self._ttinfos and not _ttinfo_list:
+                 raise ValueError("No time zone information found.")
+@@ -462,15 +471,22 @@ class tzfile(_tzinfo):
+         # Violations to these assumptions would be fairly exotic, and exotic
+         # zones should almost certainly not be used with datetime.time (the
+         # only thing that would be affected by this).
+-        if len(_ttinfo_list) > 1 or not isinstance(self._tz_after, _ttinfo):
++        if not isinstance(self._tz_after, _ttinfo):
+             self._fixed_offset = False
+-        elif not _ttinfo_list:
+-            self._fixed_offset = True
+         else:
+-            self._fixed_offset = _ttinfo_list[0] == self._tz_after
++            # The local time types that are actually used: the one before the
++            # first transition, the one after each transition and the one
++            # after the last transition.
++            used = [self._tz_after]
++            if self._ttinfos:
++                used.append(self._tti_before)
++                used.extend(self._ttinfos)
++            self._fixed_offset = all(tti == self._tz_after for tti in used)
+ 
+     @staticmethod
+-    def _utcoff_to_dstoff(trans_idx, trans_utc, utcoffsets, isdsts):
++    def _utcoff_to_dstoff(
++        trans_idx, trans_utc, utcoffsets, isdsts, final_std_utcoff=None
++    ):
+         """Infer the DST offset (the value of dst()) for each transition.
+ 
+         TZif files give the total UTC offset of each local time type and
+@@ -494,7 +510,7 @@ class tzfile(_tzinfo):
+         after = [None] * n
+         for indices, implied, std_utcoff in (
+             (range(n), before, first_std_utcoff),
+-            (range(n - 1, -1, -1), after, None),
++            (range(n - 1, -1, -1), after, final_std_utcoff),
+         ):
+             for i in indices:
+                 idx = trans_idx[i]
+@@ -642,6 +658,28 @@ def _is_seekable(fobj):
+         return True
+ 
+ 
++def _read_exact(fobj, size):
++    """Read exactly ``size`` bytes from ``fobj``, or raise ValueError."""
++    if size == 0:
++        return b""
++
++    data = fobj.read(size)
++    if data is None or len(data) != size:
++        raise ValueError("Invalid TZif file: unexpected end of file")
++
++    return data
++
++
++def _skip_exact(fobj, size):
++    """Skip exactly ``size`` bytes of ``fobj``, or raise ValueError."""
++    if size == 0:
++        return
++
++    # Read the data rather than seeking, so that data that ends early is
++    # detected (seeking past the end of a file is not an error).
++    _read_exact(fobj, size)
++
++
+ def load_data(fobj):
+     header = _TZifHeader.from_file(fobj)
+ 
+@@ -664,48 +702,82 @@ def load_data(fobj):
+             + header.isutcnt  # UT/local indicators
+         )
+ 
+-        fobj.seek(skip_bytes, 1)
++        _skip_exact(fobj, skip_bytes)
+ 
+         # Now we need to read the second header, which is not the same
+         # as the first
+         header = _TZifHeader.from_file(fobj)
+ 
++        if header.version == 1:
++            raise ValueError(
++                "Invalid TZif file: version mismatch between headers"
++            )
++
+     typecnt = header.typecnt
+     timecnt = header.timecnt
+     charcnt = header.charcnt
+ 
++    if header.isutcnt not in (0, typecnt):
++        raise ValueError(
++            "Invalid TZif file: isutcnt must be zero or equal to typecnt"
++        )
++    if header.isstdcnt not in (0, typecnt):
++        raise ValueError(
++            "Invalid TZif file: isstdcnt must be zero or equal to typecnt"
++        )
++
+     # The data portion starts with timecnt transitions and indices
+     if timecnt:
+         trans_list_utc = struct.unpack(
+-            ">%s%s" % (timecnt, time_type), fobj.read(timecnt * time_size)
++            ">%s%s" % (timecnt, time_type),
++            _read_exact(fobj, timecnt * time_size),
+         )
+-        trans_idx = struct.unpack(">%sB" % timecnt, fobj.read(timecnt))
++        trans_idx = struct.unpack(">%sB" % timecnt, _read_exact(fobj, timecnt))
+ 
+         if max(trans_idx) >= typecnt:
+             raise ValueError(
+                 "Invalid transition index found while reading TZif: %s"
+                 % max(trans_idx)
+             )
++
++        if any(a >= b for a, b in zip(trans_list_utc, trans_list_utc[1:])):
++            raise ValueError(
++                "Invalid TZif file: transition times are not in strictly "
++                "ascending order"
++            )
+     else:
+         trans_list_utc = ()
+         trans_idx = ()
+ 
+-    # Read the ttinfo struct, (utoff, isdst, abbrind)
++    # Read the ttinfo struct, (utoff, isdst, desigidx), where isdst and
++    # desigidx are unsigned octets.
+     if typecnt:
++        ttinfo_data = _read_exact(fobj, typecnt * 6)
+         utcoff, isdst, abbrind = zip(
+-            *(struct.unpack(">lbb", fobj.read(6)) for i in range(typecnt))
++            *(
++                struct.unpack_from(">lBB", ttinfo_data, i * 6)
++                for i in range(typecnt)
++            )
+         )
+     else:
+         utcoff = ()
+         isdst = ()
+         abbrind = ()
+ 
++    for off in utcoff:
++        if off == -(2**31):
++            raise ValueError("Invalid TZif file: invalid UTC offset %s" % off)
++
++    for dst in isdst:
++        if dst not in (0, 1):
++            raise ValueError("Invalid TZif file: invalid isdst value %s" % dst)
++
+     # Now read the abbreviations. They are null-terminated strings, indexed
+     # not by position in the array but by position in the unsplit
+     # abbreviation string. I suppose this makes more sense in C, which uses
+     # null to terminate the strings, but it's inconvenient here...
+     abbr_vals = {}
+-    abbr_chars = fobj.read(charcnt)
++    abbr_chars = _read_exact(fobj, charcnt)
+ 
+     def get_abbr(idx):
+         # Gets a string starting at idx and running until the next \x00
+@@ -719,7 +791,16 @@ def load_data(fobj):
+         #
+         # {0: "LMT", 4: "AHST", 5: "HST", 9: "HDT"}
+         if idx not in abbr_vals:
++            if idx >= charcnt:
++                raise ValueError(
++                    "Invalid TZif file: designation index %s out of range"
++                    % idx
++                )
+             span_end = abbr_chars.find(b"\x00", idx)
++            if span_end < 0:
++                raise ValueError(
++                    "Invalid TZif file: unterminated time zone designation"
++                )
+             abbr_vals[idx] = abbr_chars[idx:span_end].decode()
+ 
+         return abbr_vals[idx]
+@@ -727,15 +808,29 @@ def load_data(fobj):
+     abbr = tuple(get_abbr(idx) for idx in abbrind)
+ 
+     # The remainder of the file consists of leap seconds (currently unused) and
+-    # the standard/wall and ut/local indicators, which are metadata we don't need.
+-    # In version 2 files, we need to skip the unnecessary data to get at the TZ string,
+-    # and in version 1 files we'll just hopefully consume the rest of the file.
+-
++    # the standard/wall and ut/local indicators, which are metadata we don't
++    # need, though they still have to be present.
+     # Each leap second record has size (time_size + 4)
+-    skip_bytes = (
+-        header.isutcnt + header.isstdcnt + header.leapcnt * (time_size + 4)
+-    )
+-    fobj.seek(skip_bytes, 1)
++    _skip_exact(fobj, header.leapcnt * (time_size + 4))
++    isstd = _read_exact(fobj, header.isstdcnt)
++    isut = _read_exact(fobj, header.isutcnt)
++
++    for indicator in (isstd, isut):
++        if any(v not in (0, 1) for v in indicator):
++            raise ValueError("Invalid TZif file: invalid indicator value")
++
++    if isut and isstd:
++        if any(u and not s for u, s in zip(isut, isstd)):
++            raise ValueError(
++                "Invalid TZif file: UT indicator set without standard "
++                "time indicator"
++            )
++    elif any(isut):
++        raise ValueError(
++            "Invalid TZif file: UT indicator set without standard "
++            "time indicator"
++        )
++
+     if header.version >= 2:
+         c = fobj.read(1)  # Should be \n
+         if c != b"\n":
+@@ -745,6 +840,16 @@ def load_data(fobj):
+         if not line.endswith(b"\n"):
+             raise ValueError("Invalid TZif file: unexpected end of file")
+         tz_str = line.rstrip(b"\n")
++
++        if header.version == 2:
++            # The extensions to the POSIX format for transition times (signed
++            # hours, and hours up to 167) are only allowed from version 3 on
++            for sign, hours in re.findall(rb"/([+-]?)([0-9]+)", tz_str):
++                if sign or int(hours) > 24:
++                    raise ValueError(
++                        "Invalid TZif file: transition time out of range "
++                        "for version 2: %r" % tz_str
++                    )
+     else:
+         tz_str = None
+ 
+@@ -778,17 +883,22 @@ class _TZifHeader:
+         if stream.read(4) != b"TZif":
+             raise ValueError("Invalid TZif file: magic not found")
+ 
+-        _version = stream.read(1)
++        _version = _read_exact(stream, 1)
+         if _version == b"\x00":
+             version = 1
+-        else:
++        elif b"2" <= _version <= b"9":
+             version = int(_version)
+-        stream.read(15)
++        else:
++            raise ValueError("Invalid TZif file: unknown version %r" % _version)
++
++        # Reserved for future use
++        _read_exact(stream, 15)
+ 
+         args = (version,)
+ 
+-        # Slots are defined in the order that the bytes are arranged
+-        args = args + struct.unpack(">6l", stream.read(24))
++        # Slots are defined in the order that the bytes are arranged; the
++        # counts are unsigned 32-bit integers.
++        args = args + struct.unpack(">6L", _read_exact(stream, 24))
+ 
+         return cls(*args)
+ 
+@@ -825,6 +935,30 @@ _NO_TTINFO = _ttinfo(None, None, None)
+ 
+ 
+ def _parse_tz_str(tz_str):
++    std_abbr, std_offset, dst_abbr, dst_offset, start, end = (
++        _parse_tz_str_parts(tz_str)
++    )
++
++    if dst_abbr is not None:
++        if dst_offset is None:
++            dst_offset = std_offset + 3600
++
++        return _TZStr(std_abbr, std_offset, dst_abbr, dst_offset, start, end)
++    else:
++        # This is a static ttinfo, don't return _TZStr
++        return _ttinfo(
++            _load_timedelta(std_offset), _load_timedelta(0), std_abbr
++        )
++
++
++def _parse_tz_str_parts(tz_str):
++    """Parse a POSIX TZ string (with the RFC 8536 extensions).
++
++    Returns a tuple ``(std_abbr, std_offset, dst_abbr, dst_offset, start,
++    end)``, where the offsets are UTC offsets in seconds (``dst_offset`` is
++    ``None`` if it was not given), and ``dst_abbr``, ``start`` and ``end``
++    are ``None`` for zones without DST.
++    """
+     # The tz string has the format:
+     #
+     # std[offset[dst[offset],start[/time],end[/time]]]
+@@ -839,11 +973,11 @@ def _parse_tz_str(tz_str):
+     offset_str, *start_end_str = tz_str.split(",", 1)
+ 
+     parser_re = (
+-        r"(?P<std>[a-zA-Z]+|<[a-zA-Z0-9+-]+>)"
++        r"(?P<std>[a-zA-Z]{3,}|<[a-zA-Z0-9+-]{3,}>)"
+         r"(?:"
+         r"(?P<stdoff>[+-]?\d{1,3}(?::\d{2}(?::\d{2})?)?)"
+         r"(?:"
+-        r"(?P<dst>[a-zA-Z]+|<[a-zA-Z0-9+-]+>)"
++        r"(?P<dst>[a-zA-Z]{3,}|<[a-zA-Z0-9+-]{3,}>)"
+         r"(?P<dstoff>[+-]?\d{1,3}(?::\d{2}(?::\d{2})?)?)?"
+         r")?"  # dst
+         r")?"  # stdoff
+@@ -881,7 +1015,7 @@ def _parse_tz_str(tz_str):
+             except ValueError as e:
+                 raise ValueError("Invalid DST offset in %s" % tz_str)
+         else:
+-            dst_offset = std_offset + 3600
++            dst_offset = None
+ 
+         if not start_end_str:
+             raise ValueError("Missing transition rules: %s" % tz_str)
+@@ -892,14 +1026,11 @@ def _parse_tz_str(tz_str):
+         except ValueError as e:
+             raise ValueError("Invalid TZ string: %s" % tz_str)
+ 
+-        return _TZStr(std_abbr, std_offset, dst_abbr, dst_offset, start, end)
++        return std_abbr, std_offset, dst_abbr, dst_offset, start, end
+     elif start_end_str:
+         raise ValueError("Transition rule present without DST: %s" % tz_str)
+     else:
+-        # This is a static ttinfo, don't return _TZStr
+-        return _ttinfo(
+-            _load_timedelta(std_offset), _load_timedelta(0), std_abbr
+-        )
++        return std_abbr, std_offset, None, None, None, None
+ 
+ 
+ def _parse_dst_start_end(dststr):
+@@ -1188,8 +1319,16 @@ class _DayOffset:
+     def year_to_epoch(self, year):
+         days_before_year = _post_epoch_days_before_year(year)
+ 
++        # _post_epoch_days_before_year gives the day *before* January 1st,
++        # so day 1 is January 1st.
+         d = self.d
+-        if self.julian and d >= 59 and calendar.isleap(year):
++        if self.julian:
++            # Jn: 1 <= n <= 365, February 29th is never counted, so in leap
++            # years every day from March 1st (J60) on is shifted by one.
++            if d >= 60 and calendar.isleap(year):
++                d += 1
++        else:
++            # n: 0 <= n <= 365, zero-based, counting February 29th
+             d += 1
+ 
+         epoch = (days_before_year + d) * 86400
+diff --git a/src/dateutil/tz/tz.py b/src/dateutil/tz/tz.py
+index 3ca574b..cefa416 100644
+--- a/src/dateutil/tz/tz.py
++++ b/src/dateutil/tz/tz.py
+@@ -8,9 +8,11 @@ timezone.
+ """
+ 
+ import _thread
++import calendar
+ import contextlib
+ import datetime
+ import os
++import re
+ import time
+ import warnings
+ import weakref
+@@ -108,7 +110,10 @@ class tzutc(datetime.tzinfo, metaclass=_TzSingleton):
+     def __repr__(self):
+         return "%s()" % self.__class__.__name__
+ 
+-    __reduce__ = object.__reduce__
++    def __reduce__(self):
++        # tzutc is a singleton, so copies and unpickled objects must go
++        # through the constructor to get the same instance back.
++        return (self.__class__, ())
+ 
+ 
+ #: Convenience constant providing a :class:`tzutc()` instance
+@@ -178,7 +183,10 @@ class tzoffset(datetime.tzinfo, metaclass=_TzOffsetFactory):
+                                repr(self._name),
+                                int(self._offset.total_seconds()))
+ 
+-    __reduce__ = object.__reduce__
++    def __reduce__(self):
++        # tzoffset instances are cached, so copies and unpickled objects go
++        # through the constructor to get the cached instance back.
++        return (self.__class__, (self._name, self._offset))
+ 
+ 
+ class tzlocal(_tzinfo):
+@@ -202,6 +210,10 @@ class tzlocal(_tzinfo):
+         if dt is None and self._hasdst:
+             return None
+ 
++        info = self._local_info(dt)
++        if info is not None:
++            return datetime.timedelta(seconds=info[0].tm_gmtoff)
++
+         if self._isdst(dt):
+             return self._dst_offset
+         else:
+@@ -211,14 +223,124 @@ class tzlocal(_tzinfo):
+         if dt is None and self._hasdst:
+             return None
+ 
++        info = self._local_info(dt)
++        if info is not None:
++            return self._dst_from_struct(info[0])
++
+         if self._isdst(dt):
+             return self._dst_offset - self._std_offset
+         else:
+             return ZERO
+ 
+     def tzname(self, dt):
++        if dt is None and self._hasdst:
++            return None
++
++        info = self._local_info(dt)
++        if info is not None and info[0].tm_zone is not None:
++            return info[0].tm_zone
++
+         return self._tznames[self._isdst(dt)]
+ 
++    @_validate_fromutc_inputs
++    def fromutc(self, dt):
++        try:
++            lt = time.localtime(_datetime_to_seconds(dt))
++            offset = lt.tm_gmtoff
++        except (OverflowError, OSError, ValueError, AttributeError,
++                TypeError):
++            offset = None
++
++        if offset is None:
++            return super().fromutc(dt)
++
++        dt_wall = dt + datetime.timedelta(seconds=offset)
++
++        # The second occurrence of an ambiguous time is in the fold
++        fold = 0
++        result = self._candidates(dt_wall)
++        if result is not None and len(result[0]) > 1:
++            if offset == min(c.tm_gmtoff for c in result[0]):
++                fold = 1
++
++        return enfold(dt_wall, fold=fold)
++
++    def _candidates(self, dt):
++        """
++        Find the local time information (as ``time.struct_time``) for the
++        UTC instants that the wall time ``dt`` can represent. Returns a tuple
++        ``(candidates, before, after)``, where ``before`` and ``after`` are
++        the local time information from about a day before and after, or
++        ``None`` if this can't be determined with the ``time`` module.
++        """
++        try:
++            wall = _datetime_to_seconds(dt)
++            before = time.localtime(wall - 86400)
++            after = time.localtime(wall + 86400)
++            candidates = []
++            for ref in (before, after):
++                offset = ref.tm_gmtoff
++                if offset is None:
++                    return None
++                if any(c.tm_gmtoff == offset for c in candidates):
++                    continue
++                lt = time.localtime(wall - offset)
++                if lt.tm_gmtoff == offset:
++                    candidates.append(lt)
++        except (OverflowError, OSError, ValueError, AttributeError,
++                TypeError):
++            return None
++
++        return candidates, before, after
++
++    def _local_info(self, dt):
++        """
++        The local time information (``time.struct_time``) that applies to
++        the wall time ``dt``, taking ``dt.fold`` into account as described
++        in PEP 495, as a 1-tuple, or ``None`` if the ``time`` module can't
++        be used for this.
++        """
++        result = self._candidates(dt)
++        if result is None:
++            return None
++
++        candidates, before, after = result
++        fold = getattr(dt, 'fold', 0)
++        if len(candidates) == 1:
++            return (candidates[0],)
++        elif len(candidates) > 1:
++            # Ambiguous: fold=0 is the first occurrence, which has the larger
++            # offset
++            candidates = sorted(candidates, key=lambda c: -c.tm_gmtoff)
++            return (candidates[-1] if fold else candidates[0],)
++        else:
++            # Imaginary: fold=0 uses the offset from before the transition
++            return (after if fold else before,)
++
++    def _dst_from_struct(self, lt):
++        if not lt.tm_isdst:
++            return ZERO
++
++        # The amount of DST is the difference to the standard offset around
++        # the same time (which is not always self._std_offset, e.g. for
++        # zones with negative DST, where the time module reports the
++        # standard and DST offsets the other way around).
++        std = None
++        wall_utc = calendar.timegm(lt) - lt.tm_gmtoff
++        for days in (182, -182, 91, -91, 273, -273):
++            try:
++                other = time.localtime(wall_utc + days * 86400)
++            except (OverflowError, OSError, ValueError):
++                continue
++            if not other.tm_isdst and other.tm_gmtoff is not None:
++                std = other.tm_gmtoff
++                break
++
++        if std is None:
++            return self._dst_offset - self._std_offset
++
++        return datetime.timedelta(seconds=lt.tm_gmtoff - std)
++
+     def is_ambiguous(self, dt):
+         """
+         Whether or not the "wall time" of a given datetime is ambiguous in this
+@@ -233,6 +355,16 @@ class tzlocal(_tzinfo):
+ 
+         .. versionadded:: 2.6.0
+         """
++        if dt is None:
++            return False
++
++        result = self._candidates(dt)
++        if result is not None:
++            return len(result[0]) > 1
++
++        if not self._hasdst:
++            return False
++
+         naive_dst = self._naive_is_dst(dt)
+         return (not naive_dst and
+                 (naive_dst != self._naive_is_dst(dt - self._dst_saved)))
+@@ -508,8 +640,11 @@ class tzstr(tzrange, metaclass=_TzStrFactory):
+         from dateutil.parser import _parser as parser
+ 
+         self._s = s
++        self._posix_offset = posix_offset
+ 
+-        res = parser._parsetz(s)
++        res = self._parse_posix(s)
++        if res is None:
++            res = parser._parsetz(s)
+         if res is None or res.any_unused_tokens:
+             raise ValueError("unknown string format")
+ 
+@@ -525,6 +660,7 @@ class tzstr(tzrange, metaclass=_TzStrFactory):
+                          res.dstabbr, res.dstoffset,
+                          start=False, end=False)
+ 
++        self._start_parts = self._end_parts = None
+         if not res.dstabbr:
+             self._start_delta = None
+             self._end_delta = None
+@@ -532,10 +668,83 @@ class tzstr(tzrange, metaclass=_TzStrFactory):
+             self._start_delta = self._delta(res.start)
+             if self._start_delta:
+                 self._end_delta = self._delta(res.end, isend=1)
++                self._start_parts = self._delta(res.start, split=True)
++                self._end_parts = self._delta(res.end, isend=1, split=True)
+ 
+         self.hasdst = bool(self._start_delta)
+ 
+-    def _delta(self, x, isend=0):
++    @staticmethod
++    def _parse_posix(s):
++        """
++        Parse a POSIX TZ string (with the extensions from RFC 8536) into the
++        same structure as the legacy parser, or return ``None`` if it is not
++        one.
++        """
++        from dateutil.parser import _parser as parser
++        from ._tzfile import _CalendarOffset, _DayOffset, _parse_tz_str_parts
++
++        if not isinstance(s, str):
++            return None
++
++        # Signed transition times are an extension of RFC 8536 to the POSIX
++        # format, which TZ variables do not support.
++        if re.search(r'/[+-]', s):
++            return None
++
++        try:
++            parts = _parse_tz_str_parts(s)
++        except ValueError:
++            return None
++
++        std_abbr, std_offset, dst_abbr, dst_offset, start, end = parts
++
++        res = parser._tzparser._result()
++        res.stdabbr = std_abbr
++        res.stdoffset = std_offset
++        res.dstabbr = dst_abbr
++        res.dstoffset = dst_offset
++        res.any_unused_tokens = False
++
++        if dst_abbr is not None:
++            for rule, x in ((start, res.start), (end, res.end)):
++                if isinstance(rule, _CalendarOffset):
++                    x.month = rule.m
++                    x.week = rule.w if rule.w < 5 else -1
++                    # POSIX uses 0 = Sunday, relativedelta 0 = Monday
++                    x.weekday = (rule.d - 1) % 7
++                elif isinstance(rule, _DayOffset):
++                    if rule.julian:
++                        x.jyday = rule.d
++                    else:
++                        # yday is 1-based
++                        x.yday = rule.d + 1
++                else:  # pragma: nocover
++                    return None
++                x.time = rule.hour * 3600 + rule.minute * 60 + rule.second
++
++        return res
++
++    def transitions(self, year):
++        if not self.hasdst:
++            return None
++
++        if self._start_parts is None:  # pragma: nocover
++            return tzrange.transitions(self, year)
++
++        # The date is found first and the time of day is added afterwards,
++        # because the time of the transition can be negative or more than a
++        # day (RFC 8536), which must not change which day is found.
++        base_year = datetime.datetime(year, 1, 1)
++        start_delta, start_secs = self._start_parts
++        end_delta, end_secs = self._end_parts
++
++        start = (base_year + start_delta +
++                 datetime.timedelta(seconds=start_secs))
++        end = base_year + end_delta + datetime.timedelta(seconds=end_secs)
++
++        return (start, end)
++
++    def _delta(self, x, isend=0, split=False):
+         from dateutil import relativedelta
+         kwargs = {}
+         if x.month is not None:
+@@ -574,11 +783,19 @@ class tzstr(tzrange, metaclass=_TzStrFactory):
+             # of the tzinfo class.
+             delta = self._dst_offset - self._std_offset
+             kwargs["seconds"] -= delta.seconds + delta.days * 86400
++        if split:
++            seconds = kwargs.pop("seconds")
++            return relativedelta.relativedelta(**kwargs), seconds
+         return relativedelta.relativedelta(**kwargs)
+ 
+     def __repr__(self):
+         return "%s(%s)" % (self.__class__.__name__, repr(self._s))
+ 
++    def __reduce__(self):
++        # tzstr instances are cached, so copies and unpickled objects go
++        # through the constructor to get the cached instance back.
++        return (self.__class__, (self._s, self._posix_offset))
++
+ 
+ class _tzicalvtzcomp:
+     def __init__(self, tzoffsetfrom, tzoffsetto, isdst,
+@@ -633,7 +850,7 @@ class _tzicalvtz(_tzinfo):
+                     lastcomp = comp
+                     break
+             else:
+-                lastcomp = comp[0]
++                lastcomp = self._comps[0]
+ 
+         with self._cache_lock:
+             self._cachedate.insert(0, (dt, dt.fold))
+@@ -653,22 +870,45 @@ class _tzicalvtz(_tzinfo):
+ 
+         return compdt
+ 
++    def _fixed_comp(self):
++        # The component that applies to every datetime, if there is one
++        if len(self._comps) == 1:
++            return self._comps[0]
++        return None
++
+     def utcoffset(self, dt):
+         if dt is None:
+-            return None
++            comp = self._fixed_comp()
++            return None if comp is None else comp.tzoffsetto
+ 
+         return self._find_comp(dt).tzoffsetto
+ 
+     def dst(self, dt):
+-        comp = self._find_comp(dt)
++        if dt is None:
++            comp = self._fixed_comp()
++            if comp is None:
++                return None
++        else:
++            comp = self._find_comp(dt)
++
+         if comp.isdst:
+             return comp.tzoffsetdiff
+         else:
+             return ZERO
+ 
+     def tzname(self, dt):
++        if dt is None:
++            comp = self._fixed_comp()
++            return None if comp is None else comp.tzname
++
+         return self._find_comp(dt).tzname
+ 
++    def is_ambiguous(self, dt):
++        if dt is None or len(self._comps) == 1:
++            return False
++
++        return super().is_ambiguous(dt)
++
+     def __repr__(self):
+         return "<tzicalvtz %s>" % repr(self._tzid)
+ 
+@@ -736,146 +976,230 @@ class tzical:
+ 
+         return self._vtz.get(tzid)
+ 
++    _OFFSET_RE = re.compile(r'([+-])([0-9]{2})([0-9]{2})([0-9]{2})?')
++
+     def _parse_offset(self, s):
+-        s = s.strip()
+-        if not s:
+-            raise ValueError("empty offset")
+-        if s[0] in ('+', '-'):
+-            signal = (-1, +1)[s[0] == '+']
+-            s = s[1:]
+-        else:
+-            signal = +1
+-        if len(s) == 4:
+-            return (int(s[:2]) * 3600 + int(s[2:]) * 60) * signal
+-        elif len(s) == 6:
+-            return (int(s[:2]) * 3600 + int(s[2:4]) * 60 + int(s[4:])) * signal
+-        else:
++        # RFC 5545 Section 3.3.14: utc-offset = time-numzone, where
++        # time-numzone = ("+" / "-") time-hour time-minute [time-second]
++        m = self._OFFSET_RE.fullmatch(s)
++        if m is None:
++            raise ValueError("invalid offset: " + s)
++
++        sign, hours, minutes, seconds = m.groups()
++        hours = int(hours)
++        minutes = int(minutes)
++        seconds = int(seconds or 0)
++
++        if hours > 23 or minutes > 59 or seconds > 60:
+             raise ValueError("invalid offset: " + s)
+ 
++        total = hours * 3600 + minutes * 60 + seconds
++        if sign == '-':
++            if total == 0:
++                # "-0000" and "-000000" are not allowed
++                raise ValueError("invalid offset: " + s)
++            total = -total
++
++        return total
++
++    _NAME_RE = re.compile(r'[A-Za-z0-9-]+')
++    _X_NAME_RE = re.compile(r'[Xx]-[A-Za-z0-9-]+')
++    _PARAM_RE = re.compile(
++        r';([A-Za-z0-9-]+)=((?:"[^"\x00-\x08\x0a-\x1f\x7f]*"|'
++        r'[^";:,\x00-\x08\x0a-\x1f\x7f]*)'
++        r'(?:,(?:"[^"\x00-\x08\x0a-\x1f\x7f]*"|'
++        r'[^";:,\x00-\x08\x0a-\x1f\x7f]*))*)'
++    )
++    _DATE_TIME_RE = re.compile(r'([0-9]{4})([0-9]{2})([0-9]{2})T'
++                               r'([0-9]{2})([0-9]{2})([0-9]{2})')
++
++    def _split_content_line(self, line):
++        """
++        Split a content line (RFC 5545 Section 3.1) into its upper-cased
++        name, its parameters as a list of ``(NAME, value)`` tuples and its
++        value. Parameter values may be quoted, in which case they may contain
++        colons and semicolons.
++        """
++        m = self._NAME_RE.match(line)
++        if m is None:
++            raise ValueError("invalid content line: " + line)
++        name = m.group().upper()
++        pos = m.end()
++
++        parms = []
++        while line[pos:pos + 1] == ';':
++            pm = self._PARAM_RE.match(line, pos)
++            if pm is None:
++                raise ValueError("invalid property parameter: " + line)
++            parms.append((pm.group(1).upper(), pm.group(2)))
++            pos = pm.end()
++
++        if line[pos:pos + 1] != ':':
++            raise ValueError("invalid content line: " + line)
++
++        return name, parms, line[pos + 1:]
++
++    def _check_parms(self, name, parms, allowed=()):
++        # Only the listed parameters and experimental (X-) parameters are
++        # accepted
++        for parm_name, parm_value in parms:
++            if parm_name in allowed or self._X_NAME_RE.fullmatch(parm_name):
++                continue
++            raise ValueError("unsupported %s parm: %s=%s" %
++                             (name, parm_name, parm_value))
++
++    def _check_local_date_time(self, value):
++        # DTSTART in VTIMEZONE must be a DATE-TIME with local time
++        m = self._DATE_TIME_RE.fullmatch(value)
++        if m is None:
++            raise ValueError("invalid DTSTART value in VTIMEZONE: " + value)
++
++        year, month, day, hour, minute, second = map(int, m.groups())
++        if second == 60:
++            # A leap second is valid in the grammar
++            second = 59
++        try:
++            datetime.datetime(year, month, day, hour, minute, second)
++        except ValueError:
++            raise ValueError("invalid DTSTART value in VTIMEZONE: " + value)
++
+     def _parse_rfc(self, s):
+         lines = s.splitlines()
+         if not lines:
+             raise ValueError("empty string")
+ 
+-        # Unfold
+-        i = 0
+-        while i < len(lines):
+-            line = lines[i].rstrip()
+-            if not line:
+-                del lines[i]
+-            elif i > 0 and line[0] == " ":
+-                lines[i-1] += line[1:]
+-                del lines[i]
++        # Unfold: a line starting with a single whitespace character (space
++        # or horizontal tab) is a continuation of the previous line.
++        unfolded = []
++        for line in lines:
++            if line[:1] in (" ", "\t") and unfolded:
++                unfolded[-1] += line[1:]
+             else:
+-                i += 1
++                unfolded.append(line)
++
++        lines = [line.rstrip() for line in unfolded]
++        lines = [line for line in lines if line]
++        if not lines:
++            raise ValueError("empty string")
+ 
+         tzid = None
+         comps = []
+         invtz = False
+         comptype = None
+         for line in lines:
+-            if not line:
++            name, parms, value = self._split_content_line(line)
++
++            if not invtz:
++                # Outside of VTIMEZONE components, only look for the start
++                # of the next one.
++                if name == "BEGIN" and value.upper() == "VTIMEZONE":
++                    tzid = None
++                    comps = []
++                    invtz = True
++                    comptype = None
+                 continue
+-            name, value = line.split(':', 1)
+-            parms = name.split(';')
+-            if not parms:
+-                raise ValueError("empty property name")
+-            name = parms[0].upper()
+-            parms = parms[1:]
+-            if invtz:
+-                if name == "BEGIN":
+-                    if value in ("STANDARD", "DAYLIGHT"):
+-                        # Process component
+-                        pass
+-                    else:
+-                        raise ValueError("unknown component: "+value)
+-                    comptype = value
+-                    founddtstart = False
+-                    tzoffsetfrom = None
+-                    tzoffsetto = None
+-                    rrulelines = []
+-                    tzname = None
+-                elif name == "END":
+-                    if value == "VTIMEZONE":
+-                        if comptype:
+-                            raise ValueError("component not closed: "+comptype)
+-                        if not tzid:
+-                            raise ValueError("mandatory TZID not found")
+-                        if not comps:
+-                            raise ValueError(
+-                                "at least one component is needed")
+-                        # Process vtimezone
+-                        self._vtz[tzid] = _tzicalvtz(tzid, comps)
+-                        invtz = False
+-                    elif value == comptype:
+-                        if not founddtstart:
+-                            raise ValueError("mandatory DTSTART not found")
+-                        if tzoffsetfrom is None:
+-                            raise ValueError(
+-                                "mandatory TZOFFSETFROM not found")
+-                        if tzoffsetto is None:
+-                            raise ValueError(
+-                                "mandatory TZOFFSETFROM not found")
+-                        # Process component
+-                        rr = None
+-                        if rrulelines:
+-                            rr = rrule.rrulestr("\n".join(rrulelines),
+-                                                compatible=True,
+-                                                ignoretz=True,
+-                                                cache=True)
+-                        comp = _tzicalvtzcomp(tzoffsetfrom, tzoffsetto,
+-                                              (comptype == "DAYLIGHT"),
+-                                              tzname, rr)
+-                        comps.append(comp)
+-                        comptype = None
+-                    else:
+-                        raise ValueError("invalid component end: "+value)
+-                elif comptype:
+-                    if name == "DTSTART":
+-                        # DTSTART in VTIMEZONE takes a subset of valid RRULE
+-                        # values under RFC 5545.
+-                        for parm in parms:
+-                            if parm != 'VALUE=DATE-TIME':
+-                                msg = ('Unsupported DTSTART param in ' +
+-                                       'VTIMEZONE: ' + parm)
+-                                raise ValueError(msg)
+-                        rrulelines.append(line)
+-                        founddtstart = True
+-                    elif name in ("RRULE", "RDATE", "EXRULE", "EXDATE"):
+-                        rrulelines.append(line)
+-                    elif name == "TZOFFSETFROM":
+-                        if parms:
+-                            raise ValueError(
+-                                "unsupported %s parm: %s " % (name, parms[0]))
+-                        tzoffsetfrom = self._parse_offset(value)
+-                    elif name == "TZOFFSETTO":
+-                        if parms:
+-                            raise ValueError(
+-                                "unsupported TZOFFSETTO parm: "+parms[0])
+-                        tzoffsetto = self._parse_offset(value)
+-                    elif name == "TZNAME":
+-                        if parms:
+-                            raise ValueError(
+-                                "unsupported TZNAME parm: "+parms[0])
++
++            if name == "BEGIN":
++                if parms:
++                    raise ValueError("invalid BEGIN line: " + line)
++                if comptype:
++                    raise ValueError("component not closed: " + comptype)
++                value = value.upper()
++                if value not in ("STANDARD", "DAYLIGHT"):
++                    raise ValueError("unknown component: " + value)
++                comptype = value
++                dtstart = None
++                tzoffsetfrom = None
++                tzoffsetto = None
++                rrulelines = []
++                tzname = None
++            elif name == "END":
++                if parms:
++                    raise ValueError("invalid END line: " + line)
++                value = value.upper()
++                if value == "VTIMEZONE":
++                    if comptype:
++                        raise ValueError("component not closed: " + comptype)
++                    if not tzid:
++                        raise ValueError("mandatory TZID not found")
++                    if not comps:
++                        raise ValueError(
++                            "at least one component is needed")
++                    # Process vtimezone
++                    self._vtz[tzid] = _tzicalvtz(tzid, comps)
++                    invtz = False
++                elif comptype and value == comptype:
++                    if dtstart is None:
++                        raise ValueError("mandatory DTSTART not found")
++                    if tzoffsetfrom is None:
++                        raise ValueError(
++                            "mandatory TZOFFSETFROM not found")
++                    if tzoffsetto is None:
++                        raise ValueError(
++                            "mandatory TZOFFSETTO not found")
++                    # Process component
++                    rr = rrule.rrulestr("\n".join([dtstart] + rrulelines),
++                                        compatible=True,
++                                        ignoretz=True,
++                                        cache=True)
++                    comp = _tzicalvtzcomp(tzoffsetfrom, tzoffsetto,
++                                          (comptype == "DAYLIGHT"),
++                                          tzname, rr)
++                    comps.append(comp)
++                    comptype = None
++                else:
++                    raise ValueError("invalid component end: " + value)
++            elif comptype:
++                if name == "DTSTART":
++                    if dtstart is not None:
++                        raise ValueError("DTSTART must occur only once")
++                    # DTSTART in VTIMEZONE takes a subset of valid RRULE
++                    # values under RFC 5545: a local DATE-TIME.
++                    for parm_name, parm_value in parms:
++                        if (parm_name == 'VALUE' and
++                                parm_value.upper() == 'DATE-TIME'):
++                            continue
++                        if self._X_NAME_RE.fullmatch(parm_name):
++                            continue
++                        msg = ('Unsupported DTSTART param in ' +
++                               'VTIMEZONE: %s=%s' % (parm_name, parm_value))
++                        raise ValueError(msg)
++                    self._check_local_date_time(value)
++                    dtstart = "DTSTART:" + value
++                elif name in ("RRULE", "RDATE"):
++                    rrulelines.append(line)
++                elif name == "TZOFFSETFROM":
++                    if tzoffsetfrom is not None:
++                        raise ValueError("TZOFFSETFROM must occur only once")
++                    self._check_parms(name, parms)
++                    tzoffsetfrom = self._parse_offset(value)
++                elif name == "TZOFFSETTO":
++                    if tzoffsetto is not None:
++                        raise ValueError("TZOFFSETTO must occur only once")
++                    self._check_parms(name, parms)
++                    tzoffsetto = self._parse_offset(value)
++                elif name == "TZNAME":
++                    self._check_parms(name, parms, allowed=("LANGUAGE",))
++                    if tzname is None:
+                         tzname = value
+-                    elif name == "COMMENT":
+-                        pass
+-                    else:
+-                        raise ValueError("unsupported property: "+name)
++                elif name == "COMMENT" or self._X_NAME_RE.fullmatch(name):
++                    pass
+                 else:
+-                    if name == "TZID":
+-                        if parms:
+-                            raise ValueError(
+-                                "unsupported TZID parm: "+parms[0])
+-                        tzid = value
+-                    elif name in ("TZURL", "LAST-MODIFIED", "COMMENT"):
+-                        pass
+-                    else:
+-                        raise ValueError("unsupported property: "+name)
+-            elif name == "BEGIN" and value == "VTIMEZONE":
+-                tzid = None
+-                comps = []
+-                invtz = True
++                    raise ValueError("unsupported property: " + name)
++            else:
++                if name == "TZID":
++                    if tzid is not None:
++                        raise ValueError("TZID must occur only once")
++                    self._check_parms(name, parms)
++                    tzid = value
++                elif (name in ("TZURL", "LAST-MODIFIED", "COMMENT") or
++                      self._X_NAME_RE.fullmatch(name)):
++                    pass
++                else:
++                    raise ValueError("unsupported property: " + name)
++
++        if invtz:
++            raise ValueError("component not closed: VTIMEZONE")
+ 
+     def __repr__(self):
+         return "%s(%s)" % (self.__class__.__name__, repr(self._s))
+@@ -1377,6 +1701,14 @@ def resolve_imaginary(dt):
+     return dt
+ 
+ 
++def _datetime_to_seconds(dt):
++    """
++    Convert a :class:`datetime.datetime` object to a whole number of seconds
++    since January 1, 1970 (rounding down), ignoring the time zone.
++    """
++    return (dt.replace(tzinfo=None) - EPOCH) // datetime.timedelta(seconds=1)
++
++
+ def _datetime_to_timestamp(dt):
+     """
+     Convert a :class:`datetime.datetime` object to an epoch timestamp in

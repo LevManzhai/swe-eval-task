@@ -1,0 +1,1260 @@
+diff --git a/NEWS b/NEWS
+index 26b3bb6..a349c7e 100644
+--- a/NEWS
++++ b/NEWS
+@@ -2,9 +2,7 @@ Version 4.0.0 (2026-11-01)
+ ==========================
+ 
+ ``dateutil`` 4.0 requires Python 3.11 or later and no longer depends on
+-``six``. Apart from that, the changes in this release are bug fixes, but note
+-that ``isoparse`` is now stricter about the numeric fields it accepts (see
+-below).
++``six``.
+ 
+ 
+ Deprecations
+@@ -15,31 +13,6 @@ Deprecations
+   the public API, such as ``dateutil.tz.tzname_in_python2``. (gh pr #1625)
+ 
+ 
+-Bugfixes
+---------
+-
+-- ``parser.isoparse``, and the ``isoparser`` methods ``parse_isodate``,
+-  ``parse_isotime`` and ``parse_tzstr``, now require each numeric field to be
+-  exactly the expected number of ASCII digits. Strings that were previously
+-  accepted, such as ``20200728121240`` (read as 21:24), ``2014- 4-21`` and
+-  ``2_14-04-21``, and offsets such as ``+-1:00``, now raise ``ValueError``.
+-  ``tzical`` applies the same check to ``TZOFFSETFROM`` and ``TZOFFSETTO``.
+-  Reported by @janos-gonye (gh issue #1074). Fixed by @varun3257 (gh pr #1617).
+-- Fixed an issue where iterating over a cached ``rrule`` or ``rruleset`` could
+-  hang forever if another iterator over the same rule had already completed the
+-  cache, for example when a cached ``rrule`` was included twice in an
+-  ``rruleset``. Reported by @bysiber (gh pr #1455). Fixed by @pganssle (gh pr
+-  #1655).
+-- Unpickling a ``tzutc`` now gives the ``dateutil.tz.UTC`` singleton, and
+-  unpickling a ``tzoffset`` gives the same object as calling
+-  ``tzoffset(name, offset)``. Previously unpickling bypassed the
+-  singleton-generation logic. Reported and fixed by @masipcat (gh issue #1051,
+-  gh pr #1053).
+-- ``relativedelta(yearday=366)`` now resolves to December 31 in leap years.
+-  Previously it gave December 30, the same date as ``yearday=365``. Reported
+-  and fixed by @Master-Norna (gh pr #1583).
+-
+-
+ Misc
+ ----
+ 
+@@ -112,9 +85,6 @@ Bugfixes
+   same time as a DST transition (e.g. in ``America/Bahia_Banderas`` in 2010).
+   Against the standard offsets in the tz database source, the only remaining
+   errors are in ``Europe/Paris`` in 1944 and 1945. (gh pr #1130)
+-- Fixed ``rrulestr`` raising ``ValueError`` on experimental ``X-`` parameters in
+-  an ``RRULE`` line (such as GNOME Evolution's ``X-EVOLUTION-ENDDATE``); these are
+-  now ignored as RFC 5545 permits. Fixed by @yajo (gh pr #1374)
+ - Enabled pickling and deepcopy of cached ``rrule`` and ``rruleset`` instances.
+   The cache setting is preserved, and cached results are regenerated on demand
+   without copying locks or generators. Reported by @niccokunzmann (gh issue #1369).
+diff --git a/changelog.d/1667.bugfix.rst b/changelog.d/1667.bugfix.rst
+deleted file mode 100644
+index fde7f59..0000000
+--- a/changelog.d/1667.bugfix.rst
++++ /dev/null
+@@ -1,3 +0,0 @@
+-Fixed ``tz.tzfile.dst()`` returning a negative value for times after the last
+-transition in zones that end in permanent DST, such as ``Africa/Casablanca`` in
+-the rearguard format. Reported and fixed by @pganssle (gh pr #1667)
+diff --git a/changelog.d/1674.bugfix.rst b/changelog.d/1674.bugfix.rst
+deleted file mode 100644
+index f3af9fa..0000000
+--- a/changelog.d/1674.bugfix.rst
++++ /dev/null
+@@ -1 +0,0 @@
+-``tzlocal().tzname()`` now returns ``None`` when called without a datetime (e.g. from a ``datetime.time``) in a local zone with DST, as ``utcoffset()`` and ``dst()`` already did, instead of raising ``AttributeError``. Reported and fixed by @terry9046 (gh pr #1674)
+diff --git a/src/dateutil/parser/isoparser.py b/src/dateutil/parser/isoparser.py
+index 3f3d597..c51bdea 100644
+--- a/src/dateutil/parser/isoparser.py
++++ b/src/dateutil/parser/isoparser.py
+@@ -201,15 +201,6 @@ class isoparser:
+     _TIME_SEP = b':'
+     _FRACTION_REGEX = re.compile(b'[\\.,]([0-9]+)')
+ 
+-    def _parse_digits(self, s, pos, n):
+-        """Parse exactly ``n`` ASCII digits starting at ``pos``."""
+-        digits = s[pos : pos + n]
+-        if len(digits) != n or not digits.isdigit():
+-            raise ValueError(
+-                "Expected {} digits, got {!r}".format(n, digits.decode("ascii"))
+-            )
+-        return int(digits)
+-
+     def _parse_isodate(self, dt_str):
+         try:
+             return self._parse_isodate_common(dt_str)
+@@ -224,7 +215,7 @@ class isoparser:
+             raise ValueError('ISO string too short')
+ 
+         # Year
+-        components[0] = self._parse_digits(dt_str, 0, 4)
++        components[0] = int(dt_str[0:4])
+         pos = 4
+         if pos >= len_str:
+             return components, pos
+@@ -237,7 +228,7 @@ class isoparser:
+         if len_str - pos < 2:
+             raise ValueError('Invalid common month')
+ 
+-        components[1] = self._parse_digits(dt_str, pos, 2)
++        components[1] = int(dt_str[pos:pos + 2])
+         pos += 2
+ 
+         if pos >= len_str:
+@@ -254,7 +245,7 @@ class isoparser:
+         # Day
+         if len_str - pos < 2:
+             raise ValueError('Invalid common day')
+-        components[2] = self._parse_digits(dt_str, pos, 2)
++        components[2] = int(dt_str[pos:pos + 2])
+         return components, pos + 2
+ 
+     def _parse_isodate_uncommon(self, dt_str):
+@@ -262,7 +253,7 @@ class isoparser:
+             raise ValueError('ISO string too short')
+ 
+         # All ISO formats start with the year
+-        year = self._parse_digits(dt_str, 0, 4)
++        year = int(dt_str[0:4])
+ 
+         has_sep = dt_str[4:5] == self._DATE_SEP
+ 
+@@ -270,7 +261,7 @@ class isoparser:
+         if dt_str[pos:pos + 1] == b'W':
+             # YYYY-?Www-?D?
+             pos += 1
+-            weekno = self._parse_digits(dt_str, pos, 2)
++            weekno = int(dt_str[pos:pos + 2])
+             pos += 2
+ 
+             dayno = 1
+@@ -280,7 +271,7 @@ class isoparser:
+ 
+                 pos += has_sep
+ 
+-                dayno = self._parse_digits(dt_str, pos, 1)
++                dayno = int(dt_str[pos:pos + 1])
+                 pos += 1
+ 
+             base_date = self._calculate_weekdate(year, weekno, dayno)
+@@ -289,7 +280,7 @@ class isoparser:
+             if len(dt_str) - pos < 3:
+                 raise ValueError('Invalid ordinal day')
+ 
+-            ordinal_day = self._parse_digits(dt_str, pos, 3)
++            ordinal_day = int(dt_str[pos:pos + 3])
+             pos += 3
+ 
+             if ordinal_day < 1 or ordinal_day > (365 + calendar.isleap(year)):
+@@ -364,7 +355,7 @@ class isoparser:
+ 
+             if comp < 3:
+                 # Hour, minute, second
+-                components[comp] = self._parse_digits(timestr, pos, 2)
++                components[comp] = int(timestr[pos:pos + 2])
+                 pos += 2
+ 
+             if comp == 3:
+@@ -401,14 +392,11 @@ class isoparser:
+         else:
+             raise ValueError('Time zone offset requires sign')
+ 
+-        hours = self._parse_digits(tzstr, 1, 2)
++        hours = int(tzstr[1:3])
+         if len(tzstr) == 3:
+             minutes = 0
+         else:
+-            pos = 4 if tzstr[3:4] == self._TIME_SEP else 3
+-            if len(tzstr) != pos + 2:
+-                raise ValueError("Invalid minutes in time zone offset")
+-            minutes = self._parse_digits(tzstr, pos, 2)
++            minutes = int(tzstr[(4 if tzstr[3:4] == self._TIME_SEP else 3):])
+ 
+         if zero_as_utc and hours == 0 and minutes == 0:
+             return tz.UTC
+diff --git a/src/dateutil/relativedelta.py b/src/dateutil/relativedelta.py
+index 210e92a..ad0dbab 100644
+--- a/src/dateutil/relativedelta.py
++++ b/src/dateutil/relativedelta.py
+@@ -208,11 +208,7 @@ class relativedelta:
+                 yday = nlyearday
+             elif yearday:
+                 yday = yearday
+-                # Days after February are converted as common-year days,
+-                # and leapdays=-1 moves them back over Feb 29 in leap
+-                # years. Day 366 becomes December 32, which is clamped to
+-                # December 31, so it must not be moved back.
+-                if 59 < yearday < 366:
++                if yearday > 59:
+                     self.leapdays = -1
+             if yday:
+                 ydayidx = [31, 59, 90, 120, 151, 181, 212,
+diff --git a/src/dateutil/rrule.py b/src/dateutil/rrule.py
+index bea764f..dfe87f9 100644
+--- a/src/dateutil/rrule.py
++++ b/src/dateutil/rrule.py
+@@ -142,19 +142,21 @@ class rrulebase:
+         i = 0
+         gen = self._cache_gen
+         cache = self._cache
+-        lock = self._cache_lock
++        acquire = self._cache_lock.acquire
++        release = self._cache_lock.release
+         while gen:
+             if i == len(cache):
+-                with lock:
+-                    if self._cache_complete:
+-                        break
+-                    try:
+-                        for j in range(10):
+-                            cache.append(next(gen))
+-                    except StopIteration:
+-                        self._cache_gen = gen = None
+-                        self._cache_complete = True
+-                        break
++                acquire()
++                if self._cache_complete:
++                    break
++                try:
++                    for j in range(10):
++                        cache.append(next(gen))
++                except StopIteration:
++                    self._cache_gen = gen = None
++                    self._cache_complete = True
++                    break
++                release()
+             yield cache[i]
+             i += 1
+         while i < self._len:
+@@ -1684,10 +1686,7 @@ class _rrulestr:
+                 parms = parms[1:]
+                 if name == "RRULE":
+                     for parm in parms:
+-                        if parm.startswith("X-"):
+-                            # Experimental random vendor features; safe to ignore
+-                            continue
+-                        raise ValueError("unsupported RRULE parm: " + parm)
++                        raise ValueError("unsupported RRULE parm: "+parm)
+                     rrulevals.append(value)
+                 elif name == "RDATE":
+                     for parm in parms:
+diff --git a/src/dateutil/tz/_tzfile.py b/src/dateutil/tz/_tzfile.py
+index 29287c0..e106d56 100644
+--- a/src/dateutil/tz/_tzfile.py
++++ b/src/dateutil/tz/_tzfile.py
+@@ -247,17 +247,6 @@ class tzfile(_tzinfo):
+             tti, fold = self._tz_after.get_trans_info_fromutc(
+                 timestamp, dt.year
+             )
+-
+-            # The TZ string only knows about its own transitions, so check
+-            # whether we are in a fold created by the last explicit one.
+-            if num_trans and not fold:
+-                if num_trans > 1:
+-                    tti_prev = self._ttinfos[-2]
+-                else:
+-                    tti_prev = self._tti_before
+-
+-                shift = tti_prev.utcoff - tti.utcoff
+-                fold = shift.total_seconds() > timestamp - self._trans_utc[-1]
+         elif num_trans == 0:
+             tti = self._tz_after
+             fold = 0
+@@ -267,9 +256,7 @@ class tzfile(_tzinfo):
+             if num_trans > 1 and timestamp >= self._trans_utc[1]:
+                 tti_prev, tti = self._ttinfos[idx - 2 : idx]
+             elif timestamp > self._trans_utc[-1]:
+-                # Only reachable with exactly one transition, so the
+-                # offset before it is _tti_before, not _ttinfos[-1].
+-                tti_prev = self._tti_before
++                tti_prev = self._ttinfos[-1]
+                 tti = self._tz_after
+             else:
+                 tti_prev = self._tti_before
+@@ -307,23 +294,7 @@ class tzfile(_tzinfo):
+             return self._tti_before
+         elif not num_trans or ts > lt[-1]:
+             if isinstance(self._tz_after, _TZStr):
+-                tti = self._tz_after.get_trans_info(ts, dt.year, fold)
+-
+-                # The TZ string only describes times after the last explicit
+-                # transition. If its answer for this local time is a different
+-                # offset from the last transition's, and corresponds to a time
+-                # before that transition (e.g. when the TZ string's own DST
+-                # period for that year ends after the transition), the offset
+-                # from the last explicit transition applies instead.
+-                last_tti = self._ttinfos[-1] if num_trans else None
+-                if (
+-                    last_tti is not None
+-                    and tti.utcoff != last_tti.utcoff
+-                    and ts - tti.utcoff.total_seconds() < self._trans_utc[-1]
+-                ):
+-                    return last_tti
+-
+-                return tti
++                return self._tz_after.get_trans_info(ts, dt.year, fold)
+             else:
+                 return self._tz_after
+         else:
+@@ -461,23 +432,6 @@ class tzfile(_tzinfo):
+         self._tz_str = tz_str
+         if tz_str is not None and tz_str != b"":
+             self._tz_after = _parse_tz_str(tz_str.decode())
+-
+-            # zic writes DST all year as negative DST from a made-up standard
+-            # offset (e.g. "XXX-2<+01>-1,0/0,J365/23"), so if the explicit
+-            # transitions end in that same period, they are the better source
+-            # for how much of the offset is DST.
+-            if (
+-                self._ttinfos
+-                and isinstance(self._tz_after, _TZStr)
+-                and self._tz_after.is_dst_all_year()
+-                and isdst[trans_idx[-1]]
+-                and self._ttinfos[-1].utcoff == self._tz_after.dst.utcoff
+-            ):
+-                self._tz_after.dst = _ttinfo(
+-                    self._tz_after.dst.utcoff,
+-                    self._ttinfos[-1].dstoff,
+-                    self._tz_after.dst.tzname,
+-                )
+         else:
+             if not self._ttinfos and not _ttinfo_list:
+                 raise ValueError("No time zone information found.")
+@@ -689,14 +643,6 @@ def _is_seekable(fobj):
+ 
+ 
+ def load_data(fobj):
+-    try:
+-        return _load_data(fobj)
+-    except struct.error as e:
+-        # struct.unpack fails when a read comes up short
+-        raise ValueError("Invalid TZif file: unexpected end of file") from e
+-
+-
+-def _load_data(fobj):
+     header = _TZifHeader.from_file(fobj)
+ 
+     if header.version == 1:
+@@ -1070,20 +1016,6 @@ class _TZStr:
+         end = self.end.year_to_epoch(year)
+         return start, end
+ 
+-    def is_dst_all_year(self):
+-        """Whether each year's DST period lasts until the next one starts."""
+-        std_utcoff = self.std.utcoff.total_seconds()
+-        dst_utcoff = self.dst.utcoff.total_seconds()
+-
+-        # One year of each length, since some rules depend on the leap day
+-        for year in (2023, 2024):
+-            start, end = self.transitions(year)
+-            next_start, _ = self.transitions(year + 1)
+-            if start >= end or end - dst_utcoff < next_start - std_utcoff:
+-                return False
+-
+-        return True
+-
+     def _near_new_year(self, ts, year):
+         """Whether ts is close enough to the new year that the rules for the
+         previous or next year might matter."""
+@@ -1236,7 +1168,7 @@ _NEW_YEAR_MARGIN = 10 * 86400
+ def _post_epoch_days_before_year(year):
+     """Get the number of days between 1970-01-01 and YEAR-01-01"""
+     y = year - 1
+-    return y * 365 + y // 4 - y // 100 + y // 400 + 1 - EPOCHORDINAL
++    return y * 365 + y // 4 - y // 100 + y // 400 - EPOCHORDINAL
+ 
+ 
+ class _DayOffset:
+@@ -1256,14 +1188,9 @@ class _DayOffset:
+     def year_to_epoch(self, year):
+         days_before_year = _post_epoch_days_before_year(year)
+ 
+-        # "n" counts days from 0 and includes February 29; "Jn" counts days
+-        # from 1 and never counts February 29, so in leap years, J60 (March 1)
+-        # and every day after it is one day later than its number suggests.
+         d = self.d
+-        if self.julian:
+-            d -= 1
+-            if d >= 59 and calendar.isleap(year):
+-                d += 1
++        if self.julian and d >= 59 and calendar.isleap(year):
++            d += 1
+ 
+         epoch = (days_before_year + d) * 86400
+         epoch += self.hour * 3600 + self.minute * 60 + self.second
+@@ -1314,7 +1241,6 @@ class _CalendarOffset:
+             + cls._DAYS_BEFORE_MONTH[month]
+             + (month > 2 and calendar.isleap(year))
+             + day
+-            - 1
+         )
+ 
+     # TODO: These are not actually epoch dates as they are expressed in local time
+diff --git a/src/dateutil/tz/tz.py b/src/dateutil/tz/tz.py
+index 1f19132..3ca574b 100644
+--- a/src/dateutil/tz/tz.py
++++ b/src/dateutil/tz/tz.py
+@@ -108,8 +108,7 @@ class tzutc(datetime.tzinfo, metaclass=_TzSingleton):
+     def __repr__(self):
+         return "%s()" % self.__class__.__name__
+ 
+-    def __reduce__(self):
+-        return (self.__class__, tuple())
++    __reduce__ = object.__reduce__
+ 
+ 
+ #: Convenience constant providing a :class:`tzutc()` instance
+@@ -179,8 +178,7 @@ class tzoffset(datetime.tzinfo, metaclass=_TzOffsetFactory):
+                                repr(self._name),
+                                int(self._offset.total_seconds()))
+ 
+-    def __reduce__(self):
+-        return (self.__class__, (self._name, self._offset))
++    __reduce__ = object.__reduce__
+ 
+ 
+ class tzlocal(_tzinfo):
+@@ -219,9 +217,6 @@ class tzlocal(_tzinfo):
+             return ZERO
+ 
+     def tzname(self, dt):
+-        if dt is None and self._hasdst:
+-            return None
+-
+         return self._tznames[self._isdst(dt)]
+ 
+     def is_ambiguous(self, dt):
+@@ -750,8 +745,6 @@ class tzical:
+             s = s[1:]
+         else:
+             signal = +1
+-        if not (s.isascii() and s.isdigit()):
+-            raise ValueError("invalid offset: " + s)
+         if len(s) == 4:
+             return (int(s[:2]) * 3600 + int(s[2:]) * 60) * signal
+         elif len(s) == 6:
+diff --git a/tests/_common.py b/tests/_common.py
+index b53ee5f..c0ec52e 100644
+--- a/tests/_common.py
++++ b/tests/_common.py
+@@ -151,17 +151,15 @@ class PicklableMixin:
+                         dump_kwargs=None, load_kwargs=None):
+         """
+         Assert that an object can be pickled and unpickled. This assertion
+-        assumes that the desired behavior is that the unpickled object is the same
+-        as the original, when singleton=True.
++        assumes that the desired behavior is that the unpickled object compares
++        equal to the original object, but is not the same object.
+         """
+         get_nobj = self._get_nobj_file if asfile else self._get_nobj_bytes
+         dump_kwargs = dump_kwargs or {}
+         load_kwargs = load_kwargs or {}
+ 
+         nobj = get_nobj(obj, dump_kwargs, load_kwargs)
+-        if singleton:
+-            self.assertIs(obj, nobj)
+-        else:
++        if not singleton:
+             self.assertIsNot(obj, nobj)
+         self.assertEqual(obj, nobj)
+ 
+diff --git a/tests/test_isoparser.py b/tests/test_isoparser.py
+index de377c4..617b22a 100644
+--- a/tests/test_isoparser.py
++++ b/tests/test_isoparser.py
+@@ -238,41 +238,39 @@ def test_bytes(isostr, dt):
+ 
+ ###
+ # Invalid ISO strings
+-@pytest.mark.parametrize(
+-    "isostr,exception",
+-    [
+-        ("201", ValueError),  # ISO string too short
+-        ("2012-0425", ValueError),  # Inconsistent date separators
+-        ("201204-25", ValueError),  # Inconsistent date separators
+-        ("20120425T0120:00", ValueError),  # Inconsistent time separators
+-        ("20120425T01:2000", ValueError),  # Inconsistent time separators
+-        ("14:3015", ValueError),  # Inconsistent time separator
+-        ("20120425T012500-334", ValueError),  # Wrong microsecond separator
+-        ("2001-1", ValueError),  # YYYY-M not valid
+-        ("2012-04-9", ValueError),  # YYYY-MM-D not valid
+-        ("201204", ValueError),  # YYYYMM not valid
+-        ("20120411T03:30+", ValueError),  # Time zone too short
+-        ("20120411T03:30+1234567", ValueError),  # Time zone too long
+-        ("20120411T03:30-25:40", ValueError),  # Time zone invalid
+-        ("2012-1a", ValueError),  # Invalid month
+-        ("20120411T03:30+00:60", ValueError),  # Time zone invalid minutes
+-        ("20120411T03:30+00:61", ValueError),  # Time zone invalid minutes
+-        ("20120411T033030.123456012:00", ValueError),  # No sign in time zone
+-        ("2012-W00", ValueError),  # Invalid ISO week
+-        ("2012-W55", ValueError),  # Invalid ISO week
+-        ("2012-W01-0", ValueError),  # Invalid ISO week day
+-        ("2012-W01-8", ValueError),  # Invalid ISO week day
+-        ("2013-000", ValueError),  # Invalid ordinal day
+-        ("2013-366", ValueError),  # Invalid ordinal day
+-        ("2013366", ValueError),  # Invalid ordinal day
+-        ("2014-03-12Т12:30:14", ValueError),  # Cyrillic T
+-        ("2014-04-21T24:00:01", ValueError),  # Invalid use of 24 for midnight
+-        ("2014_W01-1", ValueError),  # Invalid separator
+-        ("2014W01-1", ValueError),  # Inconsistent use of dashes
+-        ("2014-W011", ValueError),  # Inconsistent use of dashes
+-        ("20200728121240", ValueError),  # Seconds too short
+-    ],
+-)
++@pytest.mark.parametrize('isostr,exception', [
++    ('201', ValueError),                        # ISO string too short
++    ('2012-0425', ValueError),                  # Inconsistent date separators
++    ('201204-25', ValueError),                  # Inconsistent date separators
++    ('20120425T0120:00', ValueError),           # Inconsistent time separators
++    ('20120425T01:2000', ValueError),           # Inconsistent time separators
++    ('14:3015', ValueError),                    # Inconsistent time separator
++    ('20120425T012500-334', ValueError),        # Wrong microsecond separator
++    ('2001-1', ValueError),                     # YYYY-M not valid
++    ('2012-04-9', ValueError),                  # YYYY-MM-D not valid
++    ('201204', ValueError),                     # YYYYMM not valid
++    ('20120411T03:30+', ValueError),            # Time zone too short
++    ('20120411T03:30+1234567', ValueError),     # Time zone too long
++    ('20120411T03:30-25:40', ValueError),       # Time zone invalid
++    ('2012-1a', ValueError),                    # Invalid month
++    ('20120411T03:30+00:60', ValueError),       # Time zone invalid minutes
++    ('20120411T03:30+00:61', ValueError),       # Time zone invalid minutes
++    ('20120411T033030.123456012:00',            # No sign in time zone
++        ValueError),
++    ('2012-W00', ValueError),                   # Invalid ISO week
++    ('2012-W55', ValueError),                   # Invalid ISO week
++    ('2012-W01-0', ValueError),                 # Invalid ISO week day
++    ('2012-W01-8', ValueError),                 # Invalid ISO week day
++    ('2013-000', ValueError),                   # Invalid ordinal day
++    ('2013-366', ValueError),                   # Invalid ordinal day
++    ('2013366', ValueError),                    # Invalid ordinal day
++    ('2014-03-12Т12:30:14', ValueError),        # Cyrillic T
++    ('2014-04-21T24:00:01', ValueError),        # Invalid use of 24 for midnight
++    ('2014_W01-1', ValueError),                 # Invalid separator
++    ('2014W01-1', ValueError),                  # Inconsistent use of dashes
++    ('2014-W011', ValueError),                  # Inconsistent use of dashes
++
++])
+ def test_iso_raises(isostr, exception):
+     with pytest.raises(exception):
+         isoparse(isostr)
+@@ -330,21 +328,13 @@ def test_parse_tzstr_zero_as_utc(tzstr, zero_as_utc):
+     assert (type(tzi) == tz.tzutc) == zero_as_utc
+ 
+ 
+-@pytest.mark.parametrize(
+-    "tzstr,exception",
+-    [
+-        ("00:00", ValueError),  # No sign
+-        ("05:00", ValueError),  # No sign
+-        ("_00:00", ValueError),  # Invalid sign
+-        ("+25:00", ValueError),  # Offset too large
+-        ("00:0000", ValueError),  # String too long
+-        ("+01:0", ValueError),  # Minutes too short
+-        ("+01000", ValueError),  # Minutes too long
+-        ("+ 1:00", ValueError),  # Whitespace in hours
+-        ("+-1:00", ValueError),  # Sign in hours
+-        ("+01:-5", ValueError),  # Sign in minutes
+-    ],
+-)
++@pytest.mark.parametrize('tzstr,exception', [
++    ('00:00', ValueError),     # No sign
++    ('05:00', ValueError),     # No sign
++    ('_00:00', ValueError),    # Invalid sign
++    ('+25:00', ValueError),    # Offset too large
++    ('00:0000', ValueError),   # String too long
++])
+ def test_parse_tzstr_fails(tzstr, exception):
+     with pytest.raises(exception):
+         isoparser().parse_tzstr(tzstr)
+@@ -386,26 +376,16 @@ def test_parse_isodate(d, dt_fmt, as_bytes):
+     assert iparser.parse_isodate(d_str) == d
+ 
+ 
+-@pytest.mark.parametrize(
+-    "isostr,exception",
+-    [
+-        ("243", ValueError),  # ISO string too short
+-        ("2014-0423", ValueError),  # Inconsistent date separators
+-        ("201404-23", ValueError),  # Inconsistent date separators
+-        ("2014日03月14", ValueError),  # Not ASCII
+-        ("2013-02-29", ValueError),  # Not a leap year
+-        ("2014/12/03", ValueError),  # Wrong separators
+-        ("2014-04-19T", ValueError),  # Unknown components
+-        ("201202", ValueError),  # Invalid format
+-        ("2014-W1", ValueError),  # ISO week too short
+-        ("2_14-04-21", ValueError),  # Underscore in year
+-        ("+014-04-21", ValueError),  # Sign in year
+-        ("2014- 4-21", ValueError),  # Whitespace in month
+-        ("2014-04-2 ", ValueError),  # Whitespace in day
+-        ("2014- 10", ValueError),  # Whitespace in ordinal day
+-        ("2014-W1 -1", ValueError),  # Whitespace in ISO week
+-    ],
+-)
++@pytest.mark.parametrize('isostr,exception', [
++    ('243', ValueError),                        # ISO string too short
++    ('2014-0423', ValueError),                  # Inconsistent date separators
++    ('201404-23', ValueError),                  # Inconsistent date separators
++    ('2014日03月14', ValueError),                # Not ASCII
++    ('2013-02-29', ValueError),                 # Not a leap year
++    ('2014/12/03', ValueError),                 # Wrong separators
++    ('2014-04-19T', ValueError),                # Unknown components
++    ('201202', ValueError),                     # Invalid format
++])
+ def test_isodate_raises(isostr, exception):
+     with pytest.raises(exception):
+         isoparser().parse_isodate(isostr)
+@@ -494,34 +474,26 @@ def test_isotime_midnight(isostr):
+     assert iparser.parse_isotime(isostr) == time(0, 0, 0, 0)
+ 
+ 
+-@pytest.mark.parametrize(
+-    "isostr,exception",
+-    [
+-        ("3", ValueError),  # ISO string too short
+-        ("14時30分15秒", ValueError),  # Not ASCII
+-        ("14_30_15", ValueError),  # Invalid separators
+-        ("1430:15", ValueError),  # Inconsistent separator use
+-        ("25", ValueError),  # Invalid hours
+-        ("25:15", ValueError),  # Invalid hours
+-        ("14:60", ValueError),  # Invalid minutes
+-        ("14:59:61", ValueError),  # Invalid seconds
+-        ("14:30:15.34468305:00", ValueError),  # No sign in time zone
+-        ("14:30:15+", ValueError),  # Time zone too short
+-        ("14:30:15+1234567", ValueError),  # Time zone invalid
+-        ("14:59:59+25:00", ValueError),  # Invalid tz hours
+-        ("14:59:59+12:62", ValueError),  # Invalid tz minutes
+-        ("14:59:30_344583", ValueError),  # Invalid microsecond separator
+-        ("24:01", ValueError),  # 24 used for non-midnight time
+-        ("24:00:01", ValueError),  # 24 used for non-midnight time
+-        ("24:00:00.001", ValueError),  # 24 used for non-midnight time
+-        ("24:00:00.000001", ValueError),  # 24 used for non-midnight time
+-        ("14:3", ValueError),  # Minutes too short
+-        ("14:30:1", ValueError),  # Seconds too short
+-        ("1 :30", ValueError),  # Whitespace in hours
+-        ("12:+5", ValueError),  # Sign in minutes
+-        ("12:30: 5", ValueError),  # Whitespace in seconds
+-    ],
+-)
++@pytest.mark.parametrize('isostr,exception', [
++    ('3', ValueError),                          # ISO string too short
++    ('14時30分15秒', ValueError),                # Not ASCII
++    ('14_30_15', ValueError),                   # Invalid separators
++    ('1430:15', ValueError),                    # Inconsistent separator use
++    ('25', ValueError),                         # Invalid hours
++    ('25:15', ValueError),                      # Invalid hours
++    ('14:60', ValueError),                      # Invalid minutes
++    ('14:59:61', ValueError),                   # Invalid seconds
++    ('14:30:15.34468305:00', ValueError),       # No sign in time zone
++    ('14:30:15+', ValueError),                  # Time zone too short
++    ('14:30:15+1234567', ValueError),           # Time zone invalid
++    ('14:59:59+25:00', ValueError),             # Invalid tz hours
++    ('14:59:59+12:62', ValueError),             # Invalid tz minutes
++    ('14:59:30_344583', ValueError),            # Invalid microsecond separator
++    ('24:01', ValueError),                      # 24 used for non-midnight time
++    ('24:00:01', ValueError),                   # 24 used for non-midnight time
++    ('24:00:00.001', ValueError),               # 24 used for non-midnight time
++    ('24:00:00.000001', ValueError),            # 24 used for non-midnight time
++])
+ def test_isotime_raises(isostr, exception):
+     iparser = isoparser()
+     with pytest.raises(exception):
+diff --git a/tests/test_relativedelta.py b/tests/test_relativedelta.py
+index e8143bc..5ea22e1 100644
+--- a/tests/test_relativedelta.py
++++ b/tests/test_relativedelta.py
+@@ -721,16 +721,6 @@ class RelativeDeltaTest(unittest.TestCase):
+             date(2021, 5, 30),
+         ]
+ 
+-
+-@pytest.mark.parametrize("year", [1900, 2000, 2001, 2024])
+-def test_yearday_is_ordinal_day(year):
+-    first = date(year, 1, 1)
+-    days = range(1, 366 + calendar.isleap(year))
+-    assert [first + relativedelta(yearday=n) for n in days] == [
+-        first + timedelta(days=n - 1) for n in days
+-    ]
+-
+-
+ class RelativeDeltaWeeksPropertyGetterTest(unittest.TestCase):
+     """Test the weeks property getter"""
+ 
+diff --git a/tests/test_rrule.py b/tests/test_rrule.py
+index 57fe4ca..6d84085 100644
+--- a/tests/test_rrule.py
++++ b/tests/test_rrule.py
+@@ -1,7 +1,6 @@
+ import copy
+ import itertools
+ import pickle
+-import threading
+ import unittest
+ from datetime import date, datetime, timedelta
+ from functools import partial
+@@ -2664,21 +2663,6 @@ class RRuleTest(unittest.TestCase):
+                           datetime(1998, 9, 2, 9, 0),
+                           datetime(1999, 9, 2, 9, 0)])
+ 
+-    def testXNamed(self):
+-        self.assertEqual(
+-            list(
+-                rrulestr(
+-                    "DTSTART:20240122T124500\n"
+-                    "RRULE;X-EVOLUTION-ENDDATE=20240205T124500:FREQ=WEEKLY;COUNT=3;BYDAY=MO\n"
+-                )
+-            ),
+-            [
+-                datetime(2024, 1, 22, 12, 45),
+-                datetime(2024, 1, 29, 12, 45),
+-                datetime(2024, 2, 5, 12, 45),
+-            ],
+-        )
+-
+     def testStrWithTZID(self):
+         NYC = tz.gettz('America/New_York')
+         self.assertIsNotNone(NYC)
+@@ -5092,45 +5076,3 @@ def test_roundtrip_cache_setting_smoke(roundtrip, kind, state):
+         assert restored._cache is None
+     assert original._cache == original_cache
+     assert list(restored) == list(original)
+-
+-
+-def _list_with_timeout(iterable, timeout=5):
+-    # If the cache lock is never released, iterating blocks forever instead
+-    # of raising. Iterate in a background thread so the test fails after
+-    # ``timeout`` seconds instead of hanging the suite.
+-    result = []
+-    thread = threading.Thread(
+-        target=result.extend, args=(iterable,), daemon=True
+-    )
+-    thread.start()
+-    thread.join(timeout)
+-    assert not thread.is_alive(), "Iteration did not finish"
+-    return result
+-
+-
+-def test_cached_rrule_iterators_started_before_cache_complete():
+-    dtstart = datetime(2024, 1, 1)
+-    expected = list(rrule(DAILY, dtstart=dtstart, count=15))
+-    rr = rrule(DAILY, dtstart=dtstart, count=15, cache=True)
+-
+-    started = [iter(rr), iter(rr)]
+-    for iterator in started:
+-        next(iterator)
+-
+-    # Exhaust the rule with a new iterator while the two above are still
+-    # partway through.
+-    assert _list_with_timeout(rr) == expected
+-    for iterator in started:
+-        assert _list_with_timeout(iterator) == expected[1:]
+-
+-
+-def test_cached_rrule_included_twice_in_rruleset():
+-    dtstart = datetime(2024, 1, 1)
+-    expected = list(rrule(DAILY, dtstart=dtstart, count=15))
+-    rr = rrule(DAILY, dtstart=dtstart, count=15, cache=True)
+-
+-    rrset = rruleset()
+-    rrset.rrule(rr)
+-    rrset.rrule(rr)
+-
+-    assert _list_with_timeout(rrset) == expected
+diff --git a/tests/test_tz.py b/tests/test_tz.py
+index 02d7169..79b564d 100644
+--- a/tests/test_tz.py
++++ b/tests/test_tz.py
+@@ -1026,20 +1026,6 @@ def test_tzlocal_offset_unequal(tzvar, tzoff):
+         assert not (tz.tzlocal() == tzoff)
+ 
+ 
+-@mark_tzlocal_nix
+-@pytest.mark.parametrize(
+-    "tzvar, tzname",
+-    [
+-        ("UTC", "UTC"),
+-        ("EST5", "EST"),
+-        ("EST+5EDT,M3.2.0/2,M11.1.0/2", None),
+-    ],
+-)
+-def test_tzlocal_time_only_tzname(tzvar, tzname):
+-    with TZEnvContext(tzvar):
+-        assert dt_time(13, 20, tzinfo=tz.tzlocal()).tzname() == tzname
+-
+-
+ @pytest.mark.gettz
+ class GettzTest(TzSourceMixin, unittest.TestCase, TzFoldMixin):
+     gettz = staticmethod(tz.gettz)
+@@ -2080,23 +2066,6 @@ class TZICalTest(unittest.TestCase, TzFoldMixin):
+         self.assertEqual(keys, ['US-Eastern', 'US-Pacific'])
+ 
+ 
+-
+-@pytest.mark.parametrize(
+-    "offset",
+-    [
+-        "+-500",
+-        "--500",
+-        "+ 500",
+-        "-05 0",
+-        "+\u0660\u0665\u0660\u0660",  # Non-ASCII (Arabic-Indic) digits
+-    ],
+-)
+-def test_tzical_offset_non_digit(offset):
+-    tz_str = TZICAL_EST5EDT.replace("TZOFFSETTO:-0500", "TZOFFSETTO:" + offset)
+-    with pytest.raises(ValueError):
+-        tz.tzical(StringIO(tz_str))
+-
+-
+ class TZTest(unittest.TestCase):
+     def testFileStart1(self):
+         tzc = tz.tzfile(BytesIO(base64.b64decode(TZFILE_EST5EDT)))
+diff --git a/tests/test_tzfile.py b/tests/test_tzfile.py
+index 1e6bfab..8f1d122 100644
+--- a/tests/test_tzfile.py
++++ b/tests/test_tzfile.py
+@@ -794,146 +794,6 @@ def weirdzone_test_cases():
+         for dt_naive, dt_utc in dts:
+             cases["utc"].append((dt_naive.replace(tzinfo=zi), dt_utc))
+ 
+-    @add_cases
+-    def _one_transition_fold():
+-        # A zone whose only transition moves the offset backwards, so the
+-        # fold it creates has no earlier transition to compare against.
+-        AAA = ZoneOffset("AAA", ZERO)
+-        BBB = ZoneOffset("BBB", -3 * ONE_H)
+-
+-        transitions = [
+-            ZoneTransition(datetime(1976, 12, 1), AAA, BBB),
+-        ]
+-
+-        after = "BBB3"
+-
+-        zf = construct_zone(transitions, after)
+-        zi = tz.tzfile(zf, key="Etc/One_Transition_Fold")
+-        cases["varying_zones"].append((zi,))
+-
+-        dts = [
+-            (datetime(1976, 11, 30, 20), datetime(1976, 11, 30, 20), 0),
+-            (datetime(1976, 11, 30, 22), datetime(1976, 11, 30, 22), 0),
+-            (datetime(1976, 11, 30, 21), datetime(1976, 12, 1, 0), 1),
+-            (datetime(1976, 11, 30, 22), datetime(1976, 12, 1, 1), 1),
+-            (datetime(1976, 11, 30, 23, 59), datetime(1976, 12, 1, 2, 59), 1),
+-            (datetime(1976, 12, 1), datetime(1976, 12, 1, 3), 0),
+-            (datetime(2020, 1, 1), datetime(2020, 1, 1, 3), 0),
+-        ]
+-
+-        for dt_naive, dt_utc, fold in dts:
+-            dt = tz.enfold(dt_naive.replace(tzinfo=zi), fold=fold)
+-            cases["utc"].append((dt, dt_utc.replace(tzinfo=tz.UTC)))
+-
+-    @add_cases
+-    def _last_transition_fold_before_tzstr():
+-        # Like America/Ciudad_Juarez in slim builds: the last explicit
+-        # transition moves the offset backwards, and the TZ string that
+-        # takes over after it has a DST rule of its own.
+-        LMT = ZoneOffset("LMT", -timedelta(hours=7))
+-        CST = ZoneOffset("CST", -6 * ONE_H)
+-        MST = ZoneOffset("MST", -7 * ONE_H)
+-        MDT = ZoneOffset("MDT", -6 * ONE_H, ONE_H)
+-
+-        transitions = [
+-            ZoneTransition(datetime(2000, 1, 1), LMT, CST),
+-            ZoneTransition(datetime(2022, 11, 30), CST, MST),
+-        ]
+-
+-        after = "MST7MDT,M3.2.0,M11.1.0"
+-
+-        zf = construct_zone(transitions, after)
+-        zi = tz.tzfile(zf, key="Etc/Last_Transition_Fold")
+-        cases["varying_zones"].append((zi,))
+-
+-        dts = [
+-            (datetime(2022, 11, 29, 23, 30), datetime(2022, 11, 30, 5, 30), 0),
+-            (datetime(2022, 11, 29, 23), datetime(2022, 11, 30, 6), 1),
+-            (datetime(2022, 11, 29, 23, 30), datetime(2022, 11, 30, 6, 30), 1),
+-            (datetime(2022, 11, 30, 0, 30), datetime(2022, 11, 30, 7, 30), 0),
+-            (datetime(2023, 7, 1, 12), datetime(2023, 7, 1, 18), 0),
+-        ]
+-
+-        for dt_naive, dt_utc, fold in dts:
+-            dt = tz.enfold(dt_naive.replace(tzinfo=zi), fold=fold)
+-            cases["utc"].append((dt, dt_utc.replace(tzinfo=tz.UTC)))
+-
+-    @add_cases
+-    def _last_transition_inside_tzstr_dst():
+-        # Like America/Nuuk in slim builds: the last explicit transition is a
+-        # change from DST to standard time with the same offset, which falls
+-        # inside a DST period that the TZ string would otherwise give.
+-        STD3 = ZoneOffset("-03", -3 * ONE_H)
+-        DST2 = ZoneOffset("-02", -2 * ONE_H, ONE_H)
+-        STD2 = ZoneOffset("-02", -2 * ONE_H)
+-
+-        transitions = [
+-            ZoneTransition(datetime(2023, 3, 25, 22), STD3, DST2),
+-            ZoneTransition(datetime(2023, 10, 28, 23), DST2, STD2),
+-        ]
+-
+-        after = "<-02>2<-01>,M3.5.0/-1,M10.5.0/0"
+-
+-        zf = construct_zone(transitions, after)
+-        zi = tz.tzfile(zf, key="Etc/Last_Transition_Inside_TZStr_DST")
+-        cases["varying_zones"].append((zi,))
+-
+-        for dt, offset in [
+-            (datetime(2023, 10, 28, 22, 30), DST2),
+-            (datetime(2023, 10, 28, 23), STD2),
+-            (datetime(2023, 10, 28, 23, 30), STD2),
+-            (datetime(2023, 10, 29, 1), STD2),
+-        ]:
+-            for fold in (0, 1):
+-                dt_fold = tz.enfold(dt.replace(tzinfo=zi), fold=fold)
+-                cases["offset"].append((dt_fold, offset))
+-
+-        dts = [
+-            (datetime(2023, 10, 28, 22, 30), datetime(2023, 10, 29, 0, 30)),
+-            (datetime(2023, 10, 28, 23), datetime(2023, 10, 29, 1)),
+-            (datetime(2023, 10, 28, 23, 30), datetime(2023, 10, 29, 1, 30)),
+-            (datetime(2023, 10, 29, 1), datetime(2023, 10, 29, 3)),
+-            # From here on, the TZ string applies
+-            (datetime(2024, 7, 1, 12), datetime(2024, 7, 1, 13)),
+-        ]
+-
+-        for dt_naive, dt_utc in dts:
+-            cases["utc"].append(
+-                (dt_naive.replace(tzinfo=zi), dt_utc.replace(tzinfo=tz.UTC))
+-            )
+-
+-    @add_cases
+-    def _last_transition_same_offset_as_tzstr():
+-        # Like Africa/Casablanca in the rearguard format: the last explicit
+-        # transition goes to +01 as DST, and the TZ string that follows it
+-        # describes +01 as DST all year, using zic's made-up standard offset
+-        # of +02. The real DST offset is the one from the explicit transitions.
+-        STD = ZoneOffset("+00", ZERO)
+-        DST = ZoneOffset("+01", ONE_H, ONE_H)
+-
+-        transitions = [
+-            ZoneTransition(datetime(2087, 3, 1, 3), DST, STD),
+-            ZoneTransition(datetime(2087, 5, 11, 2), STD, DST),
+-        ]
+-
+-        after = "XXX-2<+01>-1,0/0,J365/23"
+-
+-        zf = construct_zone(transitions, after)
+-        zi = tz.tzfile(zf, key="Etc/Last_Transition_Same_Offset_As_TZStr")
+-        cases["varying_zones"].append((zi,))
+-
+-        for dt, fold, offset in [
+-            (datetime(2087, 5, 11, 1, 30), 0, STD),
+-            (datetime(2087, 5, 11, 2, 30), 0, STD),
+-            (datetime(2087, 5, 11, 2, 30), 1, DST),
+-            (datetime(2087, 5, 11, 3, 30), 0, DST),
+-            (datetime(2100, 1, 1), 0, DST),
+-            (datetime(2100, 7, 1), 0, DST),
+-        ]:
+-            cases["offset"].append(
+-                (tz.enfold(dt.replace(tzinfo=zi), fold), offset)
+-            )
+-
+     @add_cases
+     def _one_transition_zone_dst():
+         DST = ZoneOffset("DST", ONE_H, ONE_H)
+@@ -1754,7 +1614,6 @@ def _assert_constant_offset_around_new_year(zone, offset, years):
+ @as_list
+ def _near_min_and_max_year_cases():
+     EST = -5 * ONE_H
+-    EDT = -4 * ONE_H
+     STD = ZERO
+     DST = ONE_H
+ 
+@@ -1767,11 +1626,6 @@ def _near_min_and_max_year_cases():
+         datetime(9999, 12, 31, 23, 30),
+     ]:
+         yield "EST5EDT,M3.2.0,M11.1.0", dt, EST
+-        yield "<+00>0<+01>,0/0,J365/25", dt, DST
+-
+-        # DST all year: the rules for year 0 end DST at 01:00 on January 1st
+-        # of year 1, just as the rules for year 1 start it, so there's no gap.
+-        yield "EST5EDT,0/0,J365/25", dt, EDT
+ 
+     # The rules for year 10000 start DST on 9999-12-31.
+     for dt, offset in [
+@@ -1812,9 +1666,6 @@ def test_tzstr_near_min_and_max_year(tz_str, dt, offset):
+         # The same, with negative DST, as in the rearguard format for
+         # Africa/Casablanca.
+         "XXX-2<+01>-1,J1/0,J365/23",
+-        # The same two, spelled the way zic actually writes them
+-        "<+00>0<+01>,0/0,J365/25",
+-        "XXX-2<+01>-1,0/0,J365/23",
+     ],
+ )
+ def test_tzstr_dst_all_year(tz_str):
+@@ -1823,85 +1674,6 @@ def test_tzstr_dst_all_year(tz_str):
+     _assert_constant_offset_around_new_year(zone, ONE_H, (2023, 2024, 2100))
+ 
+ 
+-@pytest.mark.parametrize(
+-    "tz_str, std_dts, dst_dts",
+-    [
+-        # "n" counts from 0, so day 10 is January 11th
+-        (
+-            "STD0DST-1,10/0,J100/0",
+-            [datetime(2021, 1, 10, 12)],
+-            [datetime(2021, 1, 11, 12)],
+-        ),
+-        # ... and it includes February 29th: day 59 is February 29th in leap
+-        # years and March 1st otherwise
+-        (
+-            "STD0DST-1,59/0,300/0",
+-            [datetime(2024, 2, 28, 12), datetime(2023, 2, 28, 12)],
+-            [datetime(2024, 2, 29, 12), datetime(2023, 3, 1, 12)],
+-        ),
+-        # "Jn" counts from 1 and never counts February 29th, so J59 is always
+-        # February 28th and J60 is always March 1st
+-        (
+-            "STD0DST-1,J59/0,J300/0",
+-            [datetime(2024, 2, 27, 12), datetime(2023, 2, 27, 12)],
+-            [datetime(2024, 2, 28, 12), datetime(2023, 2, 28, 12)],
+-        ),
+-        (
+-            "STD0DST-1,J60/0,J300/0",
+-            [datetime(2024, 2, 29, 12), datetime(2023, 2, 28, 12)],
+-            [datetime(2024, 3, 1, 12), datetime(2023, 3, 1, 12)],
+-        ),
+-    ],
+-)
+-def test_tzstr_day_of_year_rules(tz_str, std_dts, dst_dts):
+-    """The dates of "n" and "Jn" rules match POSIX (and glibc)."""
+-    zone = tz.tzfile(construct_zone([], tz_str))
+-    for dts, tzname in ((std_dts, "STD"), (dst_dts, "DST")):
+-        for dt in dts:
+-            assert dt.replace(tzinfo=zone).tzname() == tzname, dt
+-            dt_utc = dt.replace(tzinfo=tz.UTC)
+-            assert dt_utc.astimezone(zone).tzname() == tzname, dt_utc
+-
+-
+-@pytest.mark.parametrize("version", [1, 2, 3])
+-def test_truncated_file(version):
+-    """A file cut off anywhere is either still valid or raises ValueError."""
+-    STD = ZoneOffset("STD", -5 * ONE_H)
+-    DST = ZoneOffset("DST", -4 * ONE_H, ONE_H)
+-    zf = construct_zone(
+-        [
+-            ZoneTransition(datetime(2020, 3, 8, 2), STD, DST),
+-            ZoneTransition(datetime(2020, 11, 1, 2), DST, STD),
+-        ],
+-        "STD5DST,M3.2.0,M11.1.0",
+-        version=version,
+-    )
+-    data = zf.read()
+-
+-    for length in range(len(data)):
+-        try:
+-            tz.tzfile(io.BytesIO(data[:length]))
+-        except ValueError:
+-            pass
+-
+-
+-def test_truncated_file_on_tzpath(tmp_path):
+-    """gettz skips a truncated file on TZPATH like any other invalid file."""
+-    STD = ZoneOffset("STD", ZERO)
+-    data = construct_zone(
+-        [ZoneTransition(datetime(2020, 1, 1), STD, STD)], "STD0"
+-    ).read()
+-
+-    zone_dir = tmp_path / "Fictional"
+-    zone_dir.mkdir()
+-    # Cut off inside the header
+-    (zone_dir / "Truncated").write_bytes(data[:30])
+-
+-    with set_tzpath((str(tmp_path),), block_tzdata=True):
+-        tz.gettz.cache_clear()
+-        assert tz.gettz("Fictional/Truncated") is None
+-
+-
+ def _valid_tzif_data():
+     STD = ZoneOffset("STD", ZERO)
+     return construct_zone(
+@@ -1921,9 +1693,6 @@ INVALID_TZPATH_FILES = [
+     pytest.param(
+         lambda path: path.write_bytes(b"Not a TZif file\n"), id="not_tzif"
+     ),
+-    pytest.param(
+-        lambda path: path.write_bytes(_valid_tzif_data()[:30]), id="truncated"
+-    ),
+     pytest.param(
+         _unreadable_file,
+         id="unreadable",
+@@ -2549,25 +2318,6 @@ def test_sub_minute_offset():
+     assert datetime(2000, 1, 1, tzinfo=zone).utcoffset() == ZERO
+ 
+ 
+-def test_sub_minute_offset_round_trip():
+-    """Converting to and from UTC near a sub-minute transition round trips."""
+-    # America/New_York's LMT offset is -4:56:02, so the switch to EST in 1883
+-    # creates a fold whose boundaries move when the offset is rounded.
+-    LMT = ZoneOffset("LMT", timedelta(seconds=-17762))
+-    EST = ZoneOffset("EST", timedelta(hours=-5))
+-    zone = tz.tzfile(
+-        construct_zone(
+-            [ZoneTransition(datetime(1883, 11, 18, 12, 3, 58), LMT, EST)],
+-            "EST5",
+-        )
+-    )
+-    transition = datetime(1883, 11, 18, 17, tzinfo=tz.UTC)
+-
+-    for seconds in range(-120, 121):
+-        dt_utc = transition + timedelta(seconds=seconds)
+-        assert dt_utc.astimezone(zone).astimezone(tz.UTC) == dt_utc
+-
+-
+ @pytest.mark.parametrize("protocol", range(0, pickle.HIGHEST_PROTOCOL + 1))
+ def test_sub_minute_offset_pickle(protocol):
+     """Pickling preserves sub-minute offsets."""
+diff --git a/tests/test_tzpath_data.py b/tests/test_tzpath_data.py
+index 616dda4..d562e4a 100644
+--- a/tests/test_tzpath_data.py
++++ b/tests/test_tzpath_data.py
+@@ -10,22 +10,17 @@ catch the parser mishandling something new in the data.
+ 
+ import calendar
+ import os
+-import zoneinfo
+ from datetime import datetime, timedelta
+ 
+ import pytest
+ 
+ from dateutil import tz
+-from dateutil.tz._tzfile import _TZStr
+ 
+ pytestmark = pytest.mark.tzdata_properties
+ 
+ UTC = tz.UTC
+ EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+ 
+-# The standard library's C implementation of zoneinfo is an independent
+-# implementation of the same thing, so it is the reference.
+-
+ PAST_YEARS = (1850, 1900, 1945, 1970, 1990, 2000, 2020)
+ FUTURE_YEARS = (2037, 2038, 2050, 2100, 2400, 9000)
+ FIXED_INSTANTS = [
+@@ -43,30 +38,6 @@ def _from_timestamp(ts):
+         return None
+ 
+ 
+-def _probe_instants(zone):
+-    """Instants (in UTC) around the interesting parts of a zone."""
+-    instants = list(FIXED_INSTANTS)
+-
+-    # Explicit transitions: the first few, and the last ones, which are
+-    # followed by the TZ string.
+-    transitions = list(zone._trans_utc)
+-    for ts in transitions[:3] + transitions[-10:]:
+-        for delta in (-1, 0, 1):
+-            instants.append(_from_timestamp(ts + delta))
+-
+-    # Transitions generated from the TZ string in the footer.
+-    if isinstance(zone._tz_after, _TZStr):
+-        std_offset = zone._tz_after.std.utcoff
+-        std_offset = std_offset.days * 86400 + std_offset.seconds
+-        for year in (2040, 2100):
+-            for local_ts in zone._tz_after.transitions(year):
+-                utc_ts = local_ts - std_offset
+-                for delta in (-7201, -3601, -1, 0, 1, 3599, 7199):
+-                    instants.append(_from_timestamp(utc_ts + delta))
+-
+-    return [instant for instant in instants if instant is not None]
+-
+-
+ def _keys():
+     keys = sorted(tz.available_iana_timezones())
+     assert keys
+@@ -85,80 +56,6 @@ def test_every_key_loads(tz_source):
+             assert any(zone._filename.startswith(p) for p in tzpath), key
+ 
+ 
+-def test_utc_round_trip(tz_source):
+-    """Converting from UTC to local time and back gives the same instant."""
+-    for key in _keys():
+-        zone = tz.gettz(key)
+-        for dt_utc in _probe_instants(zone):
+-            dt = dt_utc.astimezone(zone)
+-            assert dt.astimezone(UTC) == dt_utc, (key, dt_utc, dt)
+-
+-
+-def test_ambiguous_and_imaginary(tz_source):
+-    """datetime_ambiguous and datetime_exists agree with the fold offsets."""
+-    for key in _keys():
+-        zone = tz.gettz(key)
+-        for dt_utc in _probe_instants(zone):
+-            local = dt_utc.astimezone(zone).replace(tzinfo=None)
+-            # Local times an hour either side are more likely to land in a
+-            # gap or a fold near a transition.
+-            for wall in (
+-                local - timedelta(hours=1),
+-                local,
+-                local + timedelta(hours=1),
+-            ):
+-                dt = wall.replace(tzinfo=zone)
+-                offset_0 = tz.enfold(dt, fold=0).utcoffset()
+-                offset_1 = tz.enfold(dt, fold=1).utcoffset()
+-
+-                case = (key, wall)
+-                assert tz.datetime_ambiguous(dt) == (offset_0 > offset_1), case
+-                assert tz.datetime_exists(dt) == (offset_0 >= offset_1), case
+-
+-
+-def test_matches_zoneinfo(tz_source):
+-    """utcoffset, tzname and fromutc agree with the stdlib zoneinfo."""
+-    # dateutil and zoneinfo share TZPATH, and the tz_source
+-    # fixture blocks (or allows) tzdata for both of them.
+-    #
+-    # This doesn't compare dst(), which zoneinfo infers differently, and gets
+-    # wrong for some zones (e.g. gh-85102); test_dst_matches_tzdata_zi checks
+-    # dst() against the source data instead.
+-    for key in _keys():
+-        zone = tz.gettz(key)
+-        reference = zoneinfo.ZoneInfo.no_cache(key)
+-
+-        for dt_utc in _probe_instants(zone):
+-            dt = dt_utc.astimezone(zone)
+-            dt_ref = dt_utc.astimezone(reference)
+-            if (dt.replace(tzinfo=None), dt.fold) != (
+-                dt_ref.replace(tzinfo=None),
+-                dt_ref.fold,
+-            ):
+-                # zoneinfo gets some TZ strings wrong near the new year (e.g.
+-                # "0/0,J365/23" rules); only accept a difference where its
+-                # answer doesn't round trip and ours does.
+-                assert dt_ref.astimezone(UTC) != dt_utc, (key, dt_utc)
+-                assert dt.astimezone(UTC) == dt_utc, (key, dt_utc)
+-
+-            wall = dt_utc.replace(tzinfo=None)
+-            for fold in (0, 1):
+-                dt = tz.enfold(wall.replace(tzinfo=zone), fold=fold)
+-                dt_ref = wall.replace(tzinfo=reference, fold=fold)
+-                if (dt.utcoffset(), dt.tzname()) != (
+-                    dt_ref.utcoffset(),
+-                    dt_ref.tzname(),
+-                ):
+-                    # As above: zoneinfo's offset has to be one that its own
+-                    # fromutc contradicts, and ours has to be one ours agrees
+-                    # with, so a difference in a real gap still fails.
+-                    case = (key, wall, fold)
+-                    ref_rt = dt_ref.astimezone(UTC).astimezone(reference)
+-                    our_rt = dt.astimezone(UTC).astimezone(zone)
+-                    assert ref_rt.replace(tzinfo=None) != wall, case
+-                    assert our_rt.replace(tzinfo=None) == wall, case
+-
+-
+ ####
+ # dst() against the source data
+ #

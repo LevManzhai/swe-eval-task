@@ -1,0 +1,370 @@
+diff --git a/src/dateutil/parser/isoparser.py b/src/dateutil/parser/isoparser.py
+index c51bdea..3f3d597 100644
+--- a/src/dateutil/parser/isoparser.py
++++ b/src/dateutil/parser/isoparser.py
+@@ -201,6 +201,15 @@ class isoparser:
+     _TIME_SEP = b':'
+     _FRACTION_REGEX = re.compile(b'[\\.,]([0-9]+)')
+ 
++    def _parse_digits(self, s, pos, n):
++        """Parse exactly ``n`` ASCII digits starting at ``pos``."""
++        digits = s[pos : pos + n]
++        if len(digits) != n or not digits.isdigit():
++            raise ValueError(
++                "Expected {} digits, got {!r}".format(n, digits.decode("ascii"))
++            )
++        return int(digits)
++
+     def _parse_isodate(self, dt_str):
+         try:
+             return self._parse_isodate_common(dt_str)
+@@ -215,7 +224,7 @@ class isoparser:
+             raise ValueError('ISO string too short')
+ 
+         # Year
+-        components[0] = int(dt_str[0:4])
++        components[0] = self._parse_digits(dt_str, 0, 4)
+         pos = 4
+         if pos >= len_str:
+             return components, pos
+@@ -228,7 +237,7 @@ class isoparser:
+         if len_str - pos < 2:
+             raise ValueError('Invalid common month')
+ 
+-        components[1] = int(dt_str[pos:pos + 2])
++        components[1] = self._parse_digits(dt_str, pos, 2)
+         pos += 2
+ 
+         if pos >= len_str:
+@@ -245,7 +254,7 @@ class isoparser:
+         # Day
+         if len_str - pos < 2:
+             raise ValueError('Invalid common day')
+-        components[2] = int(dt_str[pos:pos + 2])
++        components[2] = self._parse_digits(dt_str, pos, 2)
+         return components, pos + 2
+ 
+     def _parse_isodate_uncommon(self, dt_str):
+@@ -253,7 +262,7 @@ class isoparser:
+             raise ValueError('ISO string too short')
+ 
+         # All ISO formats start with the year
+-        year = int(dt_str[0:4])
++        year = self._parse_digits(dt_str, 0, 4)
+ 
+         has_sep = dt_str[4:5] == self._DATE_SEP
+ 
+@@ -261,7 +270,7 @@ class isoparser:
+         if dt_str[pos:pos + 1] == b'W':
+             # YYYY-?Www-?D?
+             pos += 1
+-            weekno = int(dt_str[pos:pos + 2])
++            weekno = self._parse_digits(dt_str, pos, 2)
+             pos += 2
+ 
+             dayno = 1
+@@ -271,7 +280,7 @@ class isoparser:
+ 
+                 pos += has_sep
+ 
+-                dayno = int(dt_str[pos:pos + 1])
++                dayno = self._parse_digits(dt_str, pos, 1)
+                 pos += 1
+ 
+             base_date = self._calculate_weekdate(year, weekno, dayno)
+@@ -280,7 +289,7 @@ class isoparser:
+             if len(dt_str) - pos < 3:
+                 raise ValueError('Invalid ordinal day')
+ 
+-            ordinal_day = int(dt_str[pos:pos + 3])
++            ordinal_day = self._parse_digits(dt_str, pos, 3)
+             pos += 3
+ 
+             if ordinal_day < 1 or ordinal_day > (365 + calendar.isleap(year)):
+@@ -355,7 +364,7 @@ class isoparser:
+ 
+             if comp < 3:
+                 # Hour, minute, second
+-                components[comp] = int(timestr[pos:pos + 2])
++                components[comp] = self._parse_digits(timestr, pos, 2)
+                 pos += 2
+ 
+             if comp == 3:
+@@ -392,11 +401,14 @@ class isoparser:
+         else:
+             raise ValueError('Time zone offset requires sign')
+ 
+-        hours = int(tzstr[1:3])
++        hours = self._parse_digits(tzstr, 1, 2)
+         if len(tzstr) == 3:
+             minutes = 0
+         else:
+-            minutes = int(tzstr[(4 if tzstr[3:4] == self._TIME_SEP else 3):])
++            pos = 4 if tzstr[3:4] == self._TIME_SEP else 3
++            if len(tzstr) != pos + 2:
++                raise ValueError("Invalid minutes in time zone offset")
++            minutes = self._parse_digits(tzstr, pos, 2)
+ 
+         if zero_as_utc and hours == 0 and minutes == 0:
+             return tz.UTC
+diff --git a/src/dateutil/relativedelta.py b/src/dateutil/relativedelta.py
+index ad0dbab..210e92a 100644
+--- a/src/dateutil/relativedelta.py
++++ b/src/dateutil/relativedelta.py
+@@ -208,7 +208,11 @@ class relativedelta:
+                 yday = nlyearday
+             elif yearday:
+                 yday = yearday
+-                if yearday > 59:
++                # Days after February are converted as common-year days,
++                # and leapdays=-1 moves them back over Feb 29 in leap
++                # years. Day 366 becomes December 32, which is clamped to
++                # December 31, so it must not be moved back.
++                if 59 < yearday < 366:
+                     self.leapdays = -1
+             if yday:
+                 ydayidx = [31, 59, 90, 120, 151, 181, 212,
+diff --git a/src/dateutil/rrule.py b/src/dateutil/rrule.py
+index dfe87f9..bea764f 100644
+--- a/src/dateutil/rrule.py
++++ b/src/dateutil/rrule.py
+@@ -142,21 +142,19 @@ class rrulebase:
+         i = 0
+         gen = self._cache_gen
+         cache = self._cache
+-        acquire = self._cache_lock.acquire
+-        release = self._cache_lock.release
++        lock = self._cache_lock
+         while gen:
+             if i == len(cache):
+-                acquire()
+-                if self._cache_complete:
+-                    break
+-                try:
+-                    for j in range(10):
+-                        cache.append(next(gen))
+-                except StopIteration:
+-                    self._cache_gen = gen = None
+-                    self._cache_complete = True
+-                    break
+-                release()
++                with lock:
++                    if self._cache_complete:
++                        break
++                    try:
++                        for j in range(10):
++                            cache.append(next(gen))
++                    except StopIteration:
++                        self._cache_gen = gen = None
++                        self._cache_complete = True
++                        break
+             yield cache[i]
+             i += 1
+         while i < self._len:
+@@ -1686,7 +1684,10 @@ class _rrulestr:
+                 parms = parms[1:]
+                 if name == "RRULE":
+                     for parm in parms:
+-                        raise ValueError("unsupported RRULE parm: "+parm)
++                        if parm.startswith("X-"):
++                            # Experimental random vendor features; safe to ignore
++                            continue
++                        raise ValueError("unsupported RRULE parm: " + parm)
+                     rrulevals.append(value)
+                 elif name == "RDATE":
+                     for parm in parms:
+diff --git a/src/dateutil/tz/_tzfile.py b/src/dateutil/tz/_tzfile.py
+index e106d56..29287c0 100644
+--- a/src/dateutil/tz/_tzfile.py
++++ b/src/dateutil/tz/_tzfile.py
+@@ -247,6 +247,17 @@ class tzfile(_tzinfo):
+             tti, fold = self._tz_after.get_trans_info_fromutc(
+                 timestamp, dt.year
+             )
++
++            # The TZ string only knows about its own transitions, so check
++            # whether we are in a fold created by the last explicit one.
++            if num_trans and not fold:
++                if num_trans > 1:
++                    tti_prev = self._ttinfos[-2]
++                else:
++                    tti_prev = self._tti_before
++
++                shift = tti_prev.utcoff - tti.utcoff
++                fold = shift.total_seconds() > timestamp - self._trans_utc[-1]
+         elif num_trans == 0:
+             tti = self._tz_after
+             fold = 0
+@@ -256,7 +267,9 @@ class tzfile(_tzinfo):
+             if num_trans > 1 and timestamp >= self._trans_utc[1]:
+                 tti_prev, tti = self._ttinfos[idx - 2 : idx]
+             elif timestamp > self._trans_utc[-1]:
+-                tti_prev = self._ttinfos[-1]
++                # Only reachable with exactly one transition, so the
++                # offset before it is _tti_before, not _ttinfos[-1].
++                tti_prev = self._tti_before
+                 tti = self._tz_after
+             else:
+                 tti_prev = self._tti_before
+@@ -294,7 +307,23 @@ class tzfile(_tzinfo):
+             return self._tti_before
+         elif not num_trans or ts > lt[-1]:
+             if isinstance(self._tz_after, _TZStr):
+-                return self._tz_after.get_trans_info(ts, dt.year, fold)
++                tti = self._tz_after.get_trans_info(ts, dt.year, fold)
++
++                # The TZ string only describes times after the last explicit
++                # transition. If its answer for this local time is a different
++                # offset from the last transition's, and corresponds to a time
++                # before that transition (e.g. when the TZ string's own DST
++                # period for that year ends after the transition), the offset
++                # from the last explicit transition applies instead.
++                last_tti = self._ttinfos[-1] if num_trans else None
++                if (
++                    last_tti is not None
++                    and tti.utcoff != last_tti.utcoff
++                    and ts - tti.utcoff.total_seconds() < self._trans_utc[-1]
++                ):
++                    return last_tti
++
++                return tti
+             else:
+                 return self._tz_after
+         else:
+@@ -432,6 +461,23 @@ class tzfile(_tzinfo):
+         self._tz_str = tz_str
+         if tz_str is not None and tz_str != b"":
+             self._tz_after = _parse_tz_str(tz_str.decode())
++
++            # zic writes DST all year as negative DST from a made-up standard
++            # offset (e.g. "XXX-2<+01>-1,0/0,J365/23"), so if the explicit
++            # transitions end in that same period, they are the better source
++            # for how much of the offset is DST.
++            if (
++                self._ttinfos
++                and isinstance(self._tz_after, _TZStr)
++                and self._tz_after.is_dst_all_year()
++                and isdst[trans_idx[-1]]
++                and self._ttinfos[-1].utcoff == self._tz_after.dst.utcoff
++            ):
++                self._tz_after.dst = _ttinfo(
++                    self._tz_after.dst.utcoff,
++                    self._ttinfos[-1].dstoff,
++                    self._tz_after.dst.tzname,
++                )
+         else:
+             if not self._ttinfos and not _ttinfo_list:
+                 raise ValueError("No time zone information found.")
+@@ -643,6 +689,14 @@ def _is_seekable(fobj):
+ 
+ 
+ def load_data(fobj):
++    try:
++        return _load_data(fobj)
++    except struct.error as e:
++        # struct.unpack fails when a read comes up short
++        raise ValueError("Invalid TZif file: unexpected end of file") from e
++
++
++def _load_data(fobj):
+     header = _TZifHeader.from_file(fobj)
+ 
+     if header.version == 1:
+@@ -1016,6 +1070,20 @@ class _TZStr:
+         end = self.end.year_to_epoch(year)
+         return start, end
+ 
++    def is_dst_all_year(self):
++        """Whether each year's DST period lasts until the next one starts."""
++        std_utcoff = self.std.utcoff.total_seconds()
++        dst_utcoff = self.dst.utcoff.total_seconds()
++
++        # One year of each length, since some rules depend on the leap day
++        for year in (2023, 2024):
++            start, end = self.transitions(year)
++            next_start, _ = self.transitions(year + 1)
++            if start >= end or end - dst_utcoff < next_start - std_utcoff:
++                return False
++
++        return True
++
+     def _near_new_year(self, ts, year):
+         """Whether ts is close enough to the new year that the rules for the
+         previous or next year might matter."""
+@@ -1168,7 +1236,7 @@ _NEW_YEAR_MARGIN = 10 * 86400
+ def _post_epoch_days_before_year(year):
+     """Get the number of days between 1970-01-01 and YEAR-01-01"""
+     y = year - 1
+-    return y * 365 + y // 4 - y // 100 + y // 400 - EPOCHORDINAL
++    return y * 365 + y // 4 - y // 100 + y // 400 + 1 - EPOCHORDINAL
+ 
+ 
+ class _DayOffset:
+@@ -1188,9 +1256,14 @@ class _DayOffset:
+     def year_to_epoch(self, year):
+         days_before_year = _post_epoch_days_before_year(year)
+ 
++        # "n" counts days from 0 and includes February 29; "Jn" counts days
++        # from 1 and never counts February 29, so in leap years, J60 (March 1)
++        # and every day after it is one day later than its number suggests.
+         d = self.d
+-        if self.julian and d >= 59 and calendar.isleap(year):
+-            d += 1
++        if self.julian:
++            d -= 1
++            if d >= 59 and calendar.isleap(year):
++                d += 1
+ 
+         epoch = (days_before_year + d) * 86400
+         epoch += self.hour * 3600 + self.minute * 60 + self.second
+@@ -1241,6 +1314,7 @@ class _CalendarOffset:
+             + cls._DAYS_BEFORE_MONTH[month]
+             + (month > 2 and calendar.isleap(year))
+             + day
++            - 1
+         )
+ 
+     # TODO: These are not actually epoch dates as they are expressed in local time
+diff --git a/src/dateutil/tz/tz.py b/src/dateutil/tz/tz.py
+index 3ca574b..1f19132 100644
+--- a/src/dateutil/tz/tz.py
++++ b/src/dateutil/tz/tz.py
+@@ -108,7 +108,8 @@ class tzutc(datetime.tzinfo, metaclass=_TzSingleton):
+     def __repr__(self):
+         return "%s()" % self.__class__.__name__
+ 
+-    __reduce__ = object.__reduce__
++    def __reduce__(self):
++        return (self.__class__, tuple())
+ 
+ 
+ #: Convenience constant providing a :class:`tzutc()` instance
+@@ -178,7 +179,8 @@ class tzoffset(datetime.tzinfo, metaclass=_TzOffsetFactory):
+                                repr(self._name),
+                                int(self._offset.total_seconds()))
+ 
+-    __reduce__ = object.__reduce__
++    def __reduce__(self):
++        return (self.__class__, (self._name, self._offset))
+ 
+ 
+ class tzlocal(_tzinfo):
+@@ -217,6 +219,9 @@ class tzlocal(_tzinfo):
+             return ZERO
+ 
+     def tzname(self, dt):
++        if dt is None and self._hasdst:
++            return None
++
+         return self._tznames[self._isdst(dt)]
+ 
+     def is_ambiguous(self, dt):
+@@ -745,6 +750,8 @@ class tzical:
+             s = s[1:]
+         else:
+             signal = +1
++        if not (s.isascii() and s.isdigit()):
++            raise ValueError("invalid offset: " + s)
+         if len(s) == 4:
+             return (int(s[:2]) * 3600 + int(s[2:]) * 60) * signal
+         elif len(s) == 6:
