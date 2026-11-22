@@ -1,0 +1,1268 @@
+diff --git a/yarl/_url.py b/yarl/_url.py
+index 33930ae..825e477 100644
+--- a/yarl/_url.py
++++ b/yarl/_url.py
+@@ -1,6 +1,6 @@
+ import re
+ import warnings
+-from collections.abc import Mapping, Sequence
++from collections.abc import Callable, Mapping, Sequence
+ from enum import Enum, StrEnum
+ from functools import _CacheInfo, lru_cache
+ from importlib.util import find_spec
+@@ -58,6 +58,7 @@ from ._path import (
+     remove_dot_segments,
+     starts_with_drive_letter,
+ )
++from . import _whatwg
+ from ._query import (
+     Query,
+     QueryVariable,
+@@ -159,6 +160,8 @@ _DEFAULT_IGNORABLE_RE = re.compile(
+     "]"
+ )
+ 
++_whatwg.reject_domain_re = _DEFAULT_IGNORABLE_RE
++
+ # Zone IDs are OS-specific text strings with no format defined by the RFCs:
+ # https://datatracker.ietf.org/doc/html/rfc4007#section-11.2
+ # RFC 9844 §6.3 recommends rejecting characters inappropriate for the
+@@ -225,6 +228,8 @@ class CacheInfo(TypedDict):
+ class _InternalURLCache(TypedDict, total=False):
+     _val: SplitURLType
+     _join_path: str
++    _whatwg_src: str
++    _whatwg_record: "_whatwg.Record | None"
+     _origin: "URL"
+     absolute: bool
+     hash: int
+@@ -513,6 +518,13 @@ def _check_rfc_url(url_str: str) -> None:
+     _check_rfc_component(url_str, "fragment", fragment, _RFC_FRAGMENT_RE)
+ 
+ 
++def _requote(requoter: "Callable[[str], str]", value: str, mode: Mode) -> str:
++    """Requote a component of a parsed URL, see _whatwg_requote()."""
++    if mode is _WHATWG:
++        return _whatwg_requote(requoter, value)
++    return requoter(value)
++
++
+ def _special_authority_url(
+     scheme: str, path: str, query: str, fragment: str, empty: int, encoded: bool
+ ) -> "URL":
+@@ -533,7 +545,7 @@ def _special_authority_url(
+         url = _pre_encoded_url(url_str, _WHATWG)
+     else:
+         url = _encode_url(url_str, _WHATWG)
+-        path = PATH_REQUOTER(path)
++        path = _whatwg_requote(PATH_REQUOTER, path)
+     if not empty & EMPTY_AUTHORITY:
+         url._cache["_join_path"] = path
+     return url
+@@ -689,14 +701,16 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+                 # "http://h". RFC 3986 keeps the empty userinfo and an
+                 # empty username is "", see split_netloc_rfc().
+                 password = None
+-            raw_user = REQUOTER(username) if username else username
+-            raw_password = REQUOTER(password) if password else password
++            raw_user = _requote(REQUOTER, username, mode) if username else username
++            raw_password = (
++                _requote(REQUOTER, password, mode) if password else password
++            )
+             netloc = make_netloc(raw_user, raw_password, host, port)
+             cache["raw_user"] = raw_user
+             cache["raw_password"] = raw_password
+ 
+     if path:
+-        path = PATH_REQUOTER(path)
++        path = _requote(PATH_REQUOTER, path, mode)
+         if "." in path and (netloc or (mode is _WHATWG and scheme == "file")):
+             # A file URL always has an authority in WHATWG mode, also an
+             # empty one, and its path is absolute: "file:///a/../b" and
+@@ -720,9 +734,9 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+             # with "//" when there is no authority.
+             path = path[2:]
+     if query:
+-        query = QUERY_REQUOTER(query)
++        query = _requote(QUERY_REQUOTER, query, mode)
+     if fragment:
+-        fragment = FRAGMENT_REQUOTER(fragment)
++        fragment = _requote(FRAGMENT_REQUOTER, fragment, mode)
+ 
+     if not path and scheme == "file" and mode is _WHATWG:
+         # A file URL has a path in WHATWG mode, "/" at least: "file:" and
+@@ -782,15 +796,179 @@ def _pre_encoded_url(url_str: str, mode: Mode) -> "URL":
+ # ``lru_cache`` uses as the key directly instead of building a tuple.
+ @lru_cache
+ def encode_url(url_str: str) -> "URL":
+-    """Parse unencoded URL in WHATWG mode."""
+-    return _encode_url(url_str, Mode.WHATWG)
++    """Parse unencoded URL in WHATWG mode.
++
++    An absolute URL is parsed with the basic URL parser of the WHATWG URL
++    Standard, see _whatwg.py. A relative reference, which that parser cannot
++    parse without a base, is parsed as before; join() parses the string it
++    was made from against the base, as the standard does.
++    """
++    pre = _whatwg.preprocess(url_str)
++    if _whatwg.has_scheme(pre):
++        try:
++            rec = _whatwg.parse(url_str)
++        except ValueError:
++            # Raise the error of the former parser when it fails too.
++            legacy = _encode_url(url_str, Mode.WHATWG)
++            if _HOSTLESS_SPECIAL_RE.match(pre):
++                # "http:", "http:/" or "http:?q": without a base the standard
++                # rejects them, yarl keeps them as references to a base with
++                # the same scheme.
++                legacy._cache["_whatwg_src"] = url_str
++                return legacy
++            raise
++        url = _url_from_record(rec, url_str)
++        try:
++            legacy = _encode_url(url_str, Mode.WHATWG)
++        except ValueError:
++            return url
++        if str(legacy) == str(url) or (
++            rec.host is None
++            and not rec.special
++            and not rec.opaque
++            and _DOT_PREFIX_RE.match(pre, len(rec.scheme) + 1)
++        ):
++            # Keep what the former parser made of the URL when the result is
++            # the same, as it keeps details such as an explicit default port.
++            # It also keeps the dot segments of a path such as "sc:/./a",
++            # which str() writes in front of a path that could read as an
++            # authority.
++            legacy._cache["_whatwg_src"] = url_str
++            return legacy
++        return url
++    url = _encode_url(url_str, Mode.WHATWG)
++    url._cache["_whatwg_src"] = url_str
++    return url
++
++
++_HOSTLESS_SPECIAL_RE = re.compile(
++    r"(?:https?|wss?|ftp):[/\\]?(?:[?#].*)?\Z", re.IGNORECASE | re.DOTALL
++)
++_DOT_PREFIX_RE = re.compile(r"/\.\.?/.")
++# A "%" that does not start a percent-encoded octet.
++_INVALID_PCT_RE = re.compile("%(?![0-9A-Fa-f]{2})")
++
++
++def _whatwg_requote(requoter: "Callable[[str], str]", value: str) -> str:
++    """Requote a component the WHATWG parser percent-encoded.
++
++    The requoter normalizes the percent-encoding as yarl does, but a "%"
++    that does not start a percent-encoded octet is kept as it is, as the
++    WHATWG URL Standard keeps it, where the requoter would encode it.
++    """
++    if "%" not in value or not _INVALID_PCT_RE.search(value):
++        return requoter(value)
++    return "%".join([requoter(part) for part in _INVALID_PCT_RE.split(value)])
++
++
++def _whatwg_build_host(host: str, scheme: str, validate: bool) -> str | None:
++    """Return the host of URL.build() in WHATWG mode as URL() parses it.
++
++    The host parser of the WHATWG URL Standard decides which hosts are
++    valid and how they are written, as it does for a parsed URL: a domain
++    of a special URL is mapped with IDNA, a host of another URL is opaque.
++    None leaves an IP-literal, an IPv6 address given without brackets and a
++    URL without a scheme to the former encoder.
++    """
++    if not scheme or ":" in host or host[0] == "[":
++        return None
++    try:
++        return _whatwg.parse_host(host, scheme not in SPECIAL_SCHEMES)
++    except ValueError:
++        # Raise the error of the former encoder when it fails too.
++        encoded, whatwg_host, _ = _encode_host(host, validate_host=validate)
++        if whatwg_host is not encoded and scheme in SPECIAL_SCHEMES:
++            _whatwg_special_host(encoded, whatwg_host)
++        raise
++
++
++def _url_from_record(rec: _whatwg.Record, src: str | None) -> "URL":
++    """Make a WHATWG mode URL from a URL record of the WHATWG parser."""
++    cache: _InternalURLCache = {}
++    empty = 0
++    host = rec.host
++    scheme = rec.scheme
++    if host is None:
++        netloc = ""
++        cache["raw_host"] = None
++        cache["explicit_port"] = None
++        cache["raw_user"] = None
++        cache["raw_password"] = None
++    elif host == "":
++        netloc = ""
++        empty = EMPTY_AUTHORITY
++        cache["raw_host"] = None
++        cache["explicit_port"] = None
++        cache["raw_user"] = None
++        cache["raw_password"] = None
++    else:
++        if host[0] == "[" and not rec.legacy_host:
++            # yarl writes an IPv4-mapped address with the IPv4 address in
++            # dotted form, as RFC 5952 section 5 recommends.
++            host = f"[{ip_address(host[1:-1]).compressed}]"
++        if rec.legacy_host:
++            # An IPv6 address with an RFC 6874 zone identifier, see
++            # check_zone_id().
++            inner = host[1:-1]
++            check_zone_id(inner)
++            host = _encode_host(inner, True, reject_empty_zone=False)[0]
++        user = _whatwg_requote(REQUOTER, rec.username) or None
++        password = _whatwg_requote(REQUOTER, rec.password) or None
++        port = rec.explicit_port
++        netloc = make_netloc(user, password, host, port)
++        cache["raw_host"] = host[1:-1] if host[0] == "[" else host
++        cache["explicit_port"] = port
++        cache["raw_user"] = user
++        cache["raw_password"] = password
++    if isinstance(rec.path, str):
++        path = rec.path
++    elif rec.no_path and rec.path == [""]:
++        path = ""
++    else:
++        path = "".join([f"/{segment}" for segment in rec.path])
++    path = _whatwg_requote(PATH_REQUOTER, path)
++    query = rec.query
++    if query is None:
++        query = ""
++    elif query == "":
++        empty |= EMPTY_QUERY
++    else:
++        query = _whatwg_requote(QUERY_REQUOTER, query)
++    fragment = rec.fragment
++    if fragment is None:
++        fragment = ""
++    elif fragment == "":
++        empty |= EMPTY_FRAGMENT
++    else:
++        fragment = _whatwg_requote(FRAGMENT_REQUOTER, fragment)
++    cache["scheme"] = scheme
++    cache["raw_path"] = "/" if not path and netloc else path
++    cache["raw_query_string"] = query
++    cache["raw_fragment"] = fragment
++    if src is not None:
++        cache["_whatwg_src"] = src
++    self = object.__new__(URL)
++    self._scheme = scheme
++    self._netloc = netloc
++    self._path = path
++    self._query = query
++    self._fragment = fragment
++    self._empty = empty
++    self._cache = cache
++    self._mode = _WHATWG
++    return self
+ 
+ 
+ @lru_cache
+ def encode_url_rfc(url_str: str) -> "URL":
+     """Parse unencoded URL in RFC 3986 mode."""
+     _check_rfc_url(url_str)
+-    return _encode_url(url_str, Mode.RFC)
++    url = _encode_url(url_str, Mode.RFC)
++    if url._scheme in SCHEME_REQUIRES_HOST and url._empty & EMPTY_AUTHORITY:
++        # RFC 9110 section 4.2.1 (and RFC 6455 section 3 for ws and wss): a
++        # recipient must reject an authority with an empty host.
++        _check_missing_host(url._scheme, Mode.RFC)
++    return url
+ 
+ 
+ @lru_cache
+@@ -1107,11 +1285,17 @@ class URL:
+                 user, password, _host, port = split_netloc_rfc(authority)
+             if not _host:
+                 _check_missing_host(scheme, mode)
+-            if _host:
++            if _host and mode is _WHATWG and (
++                (spec_host := _whatwg_build_host(_host, scheme, False)) is not None
++            ):
++                _host = spec_host
++            elif _host:
+                 if "%" in _host and ":" in _host and _host[0] != "[":
+                     check_zone_id(_host)
++                # RFC 3986 mode checks the host against the grammar, as the
++                # parser does.
+                 encoded_host, whatwg_host, idna2003 = _encode_host(
+-                    _host, validate_host=False
++                    _host, validate_host=mode is not _WHATWG
+                 )
+                 if idna2003 and mode is not _WHATWG:
+                     raise ValueError(_idna2003_host_error(_host))
+@@ -1127,6 +1311,10 @@ class URL:
+                 if port is None and user is None:
+                     # As the parser does, see _encode_url().
+                     self._empty = EMPTY_AUTHORITY
++        elif host and mode is _WHATWG and (
++            (spec_host := _whatwg_build_host(host, scheme, True)) is not None
++        ):
++            _host = spec_host
+         elif host:
+             _host, whatwg_host, idna2003 = _encode_host(host, validate_host=True)
+             if idna2003 and mode is not _WHATWG:
+@@ -1206,7 +1394,7 @@ class URL:
+             # Rare: empty components, or no authority, which a special
+             # scheme in WHATWG mode still prints as "//".
+             return self._str_with_empty()
+-        if not self._path and (self._query or self._fragment):
++        if not self._path and (self._query or self._fragment) and self._slash_path:
+             path = "/"
+         else:
+             path = self._path
+@@ -1221,9 +1409,20 @@ class URL:
+             netloc = self._netloc
+         return unsplit_result(self._scheme, netloc, path, self._query, self._fragment)
+ 
++    @property
++    def _slash_path(self) -> bool:
++        """Tell if str() writes an empty path after an authority as "/".
++
++        The WHATWG URL Standard writes the empty path of a URL with a
++        non-special scheme as it is: "sc://h?q" has no "/". So does RFC 3986,
++        whose path-abempty can be empty; the schemes of RFC 9110 and RFC 6455
++        make an empty path the same as "/".
++        """
++        return not self._scheme or self._scheme in SPECIAL_SCHEMES
++
+     def _str_with_empty(self) -> str:
+         """Render a URL with empty components or without an authority."""
+-        if not self._path and self._netloc:
++        if not self._path and self._netloc and self._slash_path:
+             path = "/"
+         else:
+             path = self._path
+@@ -2528,6 +2727,39 @@ class URL:
+         if type(url) is not URL:
+             raise TypeError("url should be URL")
+ 
++        if (
++            self._mode is _WHATWG
++            and url._mode is _WHATWG
++            and (src := url._cache.get("_whatwg_src")) is not None
++            and (base := self._whatwg_base()) is not None
++            and not (
++                # yarl rejects a drive letter for an authority, like "//C|/x",
++                # against a base that is not a file URL.
++                self._scheme != "file"
++                and _is_pipe_drive_authority(url._cache.get("_join_path", ""))
++            )
++        ):
++            # Parse the string the reference was made from against the base,
++            # as the WHATWG URL Standard does.
++            try:
++                rec = _whatwg.parse(src, base)
++            except ValueError:
++                # Raise the error of the former algorithm when it fails too.
++                self._legacy_join(url)
++                raise
++            joined = _url_from_record(rec, None)
++            try:
++                legacy = self._legacy_join(url)
++            except ValueError:
++                return joined
++            # Keep what the former algorithm made of it when it is the same.
++            return legacy if str(legacy) == str(joined) else joined
++        return self._legacy_join(url)
++
++    def _legacy_join(self, url: "URL") -> "URL":
++        """join() for a reference not parsed from a string, or a base that
++        the WHATWG parser does not take."""
++
+         scheme = url._scheme or self._scheme
+         # A reference with a scheme is used as is (RFC 3986 section 5.2.2).
+         # In WHATWG mode "http:g" is still resolved against an http base, the
+@@ -2568,7 +2800,7 @@ class URL:
+                 # WHATWG reads a reference against a file URL in the file
+                 # state, as it reads one with the "file:" scheme; there "C|"
+                 # is the drive letter "C:" and "//C:" is no authority.
+-                ref = encode_url(f"file:{join_path}")
++                ref = _encode_url(f"file:{join_path}", _WHATWG)
+                 url = from_parts(
+                     scheme,
+                     ref._netloc,
+@@ -2586,7 +2818,7 @@ class URL:
+             elif scheme in SPECIAL_SCHEMES and self._mode is _WHATWG:
+                 # A relative reference with "\\" (see _backslashes()); the
+                 # query and the fragment may have changed since it was parsed.
+-                ref = encode_url(join_path)
++                ref = _encode_url(join_path, _WHATWG)
+                 url = from_parts(
+                     ref._scheme,
+                     ref._netloc,
+@@ -2647,6 +2879,28 @@ class URL:
+             self._mode,
+         )
+ 
++    def _whatwg_base(self) -> "_whatwg.Record | None":
++        """Return the URL record of an absolute WHATWG mode URL, for join().
++
++        None when the URL is relative or the WHATWG parser rejects it, like
++        one built with an IPvFuture host.
++        """
++        if "_whatwg_record" in self._cache:
++            return self._cache["_whatwg_record"]
++        rec = None
++        if self._scheme:
++            try:
++                rec = _whatwg.parse(str(self))
++            except ValueError:
++                rec = None
++            else:
++                if rec.legacy_host or str(_url_from_record(rec, None)) != str(self):
++                    # Not what the URL means, like "file:" with encoded=True,
++                    # which keeps the empty path.
++                    rec = None
++        self._cache["_whatwg_record"] = rec
++        return rec
++
+     def _join_with_empty(self, url: "URL", scheme: str) -> "URL":
+         """join() for URLs with empty components; the same algorithm as
+         join() takes for other URLs, plus the empty component rules."""
+diff --git a/yarl/_whatwg.py b/yarl/_whatwg.py
+new file mode 100644
+index 0000000..2cb9ac9
+--- /dev/null
++++ b/yarl/_whatwg.py
+@@ -0,0 +1,837 @@
++"""The basic URL parser of the WHATWG URL Standard.
++
++https://url.spec.whatwg.org/#concept-basic-url-parser
++
++WHATWG mode parses an absolute URL, and resolves a reference parsed from a
++string against a base, with this parser, so that the structure of the result
++(the host, the port, the path segments, an opaque path, and so on) and the
++inputs that fail are the ones the standard has. URL() then applies its own
++percent-encoding normalization to the result, see _url.py.
++"""
++
++import re
++import unicodedata
++from typing import Union
++from urllib.parse import unquote_to_bytes
++
++import idna
++from idna.core import check_bidi, valid_contextj
++
++SPECIAL_PORTS: dict[str, int | None] = {
++    "ftp": 21,
++    "file": None,
++    "http": 80,
++    "https": 443,
++    "ws": 80,
++    "wss": 443,
++}
++
++_C0_CONTROL_OR_SPACE = "".join(chr(i) for i in range(0x21))
++_ASCII_ALPHA = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
++_ASCII_DIGITS = frozenset("0123456789")
++_ASCII_HEX = frozenset("0123456789abcdefABCDEF")
++_SCHEME_CHARS = _ASCII_ALPHA | _ASCII_DIGITS | frozenset("+-.")
++
++
++def _set(extra: str, base: frozenset[int] | None = None) -> frozenset[int]:
++    return (base or frozenset()) | frozenset(map(ord, extra))
++
++
++C0_CONTROL_SET = frozenset(range(0x20)) | frozenset(range(0x7F, 0x100))
++FRAGMENT_SET = _set(' "<>`', C0_CONTROL_SET)
++QUERY_SET = _set(' "#<>', C0_CONTROL_SET)
++SPECIAL_QUERY_SET = _set("'", QUERY_SET)
++PATH_SET = _set("?^`{}", QUERY_SET)
++USERINFO_SET = _set("/:;=@[\\]^|", PATH_SET)
++
++_FORBIDDEN_HOST = frozenset("\x00\t\n\r #/:<>?@[\\]^|")
++_FORBIDDEN_DOMAIN = (
++    _FORBIDDEN_HOST | frozenset(chr(i) for i in range(0x20)) | frozenset("%\x7f")
++)
++
++_SURROGATE_RE = re.compile("[\ud800-\udfff]")
++
++# Code points yarl rejects in a domain although IDNA would map them, set by
++# _url.py: see _DEFAULT_IGNORABLE_RE there.
++reject_domain_re: "re.Pattern[str] | None" = None
++
++
++class Failure(ValueError):
++    """The WHATWG URL parser returned failure."""
++
++
++class Record:
++    """A URL record: https://url.spec.whatwg.org/#concept-url"""
++
++    __slots__ = (
++        "scheme",
++        "username",
++        "password",
++        "host",
++        "port",
++        "explicit_port",
++        "path",
++        "query",
++        "fragment",
++        "legacy_host",
++        "no_path",
++    )
++
++    def __init__(self) -> None:
++        self.scheme = ""
++        self.username = ""
++        self.password = ""
++        # None, or the serialized host.
++        self.host: str | None = None
++        self.port: int | None = None
++        # The port as written, also when it is the default port.
++        self.explicit_port: int | None = None
++        # A list of segments, or a str for an opaque path.
++        self.path: Union[list[str], str] = []
++        self.query: str | None = None
++        self.fragment: str | None = None
++        # An IPv6 address with an RFC 6874 zone identifier, which yarl keeps
++        # accepting although the standard has none.
++        self.legacy_host = False
++        # A special URL whose input has no path: "http://h" has the path
++        # "/", which yarl writes as the input does.
++        self.no_path = False
++
++    @property
++    def special(self) -> bool:
++        return self.scheme in SPECIAL_PORTS
++
++    @property
++    def opaque(self) -> bool:
++        return isinstance(self.path, str)
++
++    def copy(self) -> "Record":
++        r = Record()
++        for name in self.__slots__:
++            setattr(r, name, getattr(self, name))
++        if isinstance(self.path, list):
++            r.path = list(self.path)
++        return r
++
++    def serialized_path(self) -> str:
++        if isinstance(self.path, str):
++            return self.path
++        return "".join(f"/{seg}" for seg in self.path)
++
++    def href(self) -> str:
++        out = f"{self.scheme}:"
++        if self.host is not None:
++            out += "//"
++            if self.username or self.password:
++                out += self.username
++                if self.password:
++                    out += f":{self.password}"
++                out += "@"
++            out += self.host
++            if self.port is not None:
++                out += f":{self.port}"
++        path = self.serialized_path()
++        if (
++            self.host is None
++            and isinstance(self.path, list)
++            and len(self.path) > 1
++            and self.path[0] == ""
++        ):
++            out += "/."
++        out += path
++        if self.query is not None:
++            out += f"?{self.query}"
++        if self.fragment is not None:
++            out += f"#{self.fragment}"
++        return out
++
++
++def percent_encode(s: str, encode_set: frozenset[int]) -> str:
++    """UTF-8 percent-encode s with encode_set."""
++    if s.isascii() and not any(ord(c) in encode_set for c in s):
++        return s
++    out = []
++    for c in s:
++        o = ord(c)
++        if o < 0x80:
++            out.append(f"%{o:02X}" if o in encode_set else c)
++        else:
++            out.append("".join(f"%{b:02X}" for b in c.encode("utf-8")))
++    return "".join(out)
++
++
++# --- hosts ---------------------------------------------------------------
++
++
++def _ipv4_number(s: str) -> int | None:
++    if s == "":
++        return None
++    radix = 10
++    if len(s) >= 2 and s[:2] in ("0x", "0X"):
++        s = s[2:]
++        radix = 16
++    elif len(s) >= 2 and s[0] == "0":
++        s = s[1:]
++        radix = 8
++    if s == "":
++        return 0
++    if radix == 16:
++        ok = all(c in _ASCII_HEX for c in s)
++    elif radix == 10:
++        ok = all(c in _ASCII_DIGITS for c in s)
++    else:
++        ok = all(c in "01234567" for c in s)
++    if not ok:
++        return None
++    return int(s, radix)
++
++
++def ends_in_a_number(s: str) -> bool:
++    parts = s.split(".")
++    if parts[-1] == "":
++        if len(parts) == 1:
++            return False
++        parts.pop()
++    last = parts[-1]
++    if last != "" and all(c in _ASCII_DIGITS for c in last):
++        return True
++    return _ipv4_number(last) is not None
++
++
++def parse_ipv4(s: str) -> str:
++    parts = s.split(".")
++    if parts[-1] == "" and len(parts) > 1:
++        parts.pop()
++    if len(parts) > 4:
++        raise Failure(f"Invalid IPv4 address {s!r}")
++    numbers = []
++    for part in parts:
++        n = _ipv4_number(part)
++        if n is None:
++            raise Failure(f"Invalid IPv4 address {s!r}")
++        numbers.append(n)
++    if any(n > 255 for n in numbers[:-1]):
++        raise Failure(f"Invalid IPv4 address {s!r}")
++    if numbers[-1] >= 256 ** (5 - len(numbers)):
++        raise Failure(f"Invalid IPv4 address {s!r}")
++    ipv4 = numbers[-1]
++    for i, n in enumerate(numbers[:-1]):
++        ipv4 += n * 256 ** (3 - i)
++    return ".".join(str(ipv4 >> shift & 255) for shift in (24, 16, 8, 0))
++
++
++def parse_ipv6(s: str) -> list[int]:
++    address = [0] * 8
++    piece_index = 0
++    compress: int | None = None
++    pointer = 0
++    n = len(s)
++
++    def c_at(i: int) -> str:
++        return s[i] if i < n else ""
++
++    if c_at(pointer) == ":":
++        if c_at(pointer + 1) != ":":
++            raise Failure("Invalid IPv6 address")
++        pointer += 2
++        piece_index += 1
++        compress = piece_index
++    while c_at(pointer) != "":
++        if piece_index == 8:
++            raise Failure("Invalid IPv6 address")
++        if c_at(pointer) == ":":
++            if compress is not None:
++                raise Failure("Invalid IPv6 address")
++            pointer += 1
++            piece_index += 1
++            compress = piece_index
++            continue
++        value = length = 0
++        while length < 4 and c_at(pointer) != "" and c_at(pointer) in _ASCII_HEX:
++            value = value * 0x10 + int(c_at(pointer), 16)
++            pointer += 1
++            length += 1
++        if c_at(pointer) == ".":
++            if length == 0:
++                raise Failure("Invalid IPv6 address")
++            pointer -= length
++            if piece_index > 6:
++                raise Failure("Invalid IPv6 address")
++            numbers_seen = 0
++            while c_at(pointer) != "":
++                ipv4_piece: int | None = None
++                if numbers_seen > 0:
++                    if c_at(pointer) == "." and numbers_seen < 4:
++                        pointer += 1
++                    else:
++                        raise Failure("Invalid IPv6 address")
++                if c_at(pointer) == "" or c_at(pointer) not in _ASCII_DIGITS:
++                    raise Failure("Invalid IPv6 address")
++                while c_at(pointer) != "" and c_at(pointer) in _ASCII_DIGITS:
++                    number = int(c_at(pointer))
++                    if ipv4_piece is None:
++                        ipv4_piece = number
++                    elif ipv4_piece == 0:
++                        raise Failure("Invalid IPv6 address")
++                    else:
++                        ipv4_piece = ipv4_piece * 10 + number
++                    if ipv4_piece > 255:
++                        raise Failure("Invalid IPv6 address")
++                    pointer += 1
++                assert ipv4_piece is not None
++                address[piece_index] = address[piece_index] * 0x100 + ipv4_piece
++                numbers_seen += 1
++                if numbers_seen in (2, 4):
++                    piece_index += 1
++            if numbers_seen != 4:
++                raise Failure("Invalid IPv6 address")
++            break
++        elif c_at(pointer) == ":":
++            pointer += 1
++            if c_at(pointer) == "":
++                raise Failure("Invalid IPv6 address")
++        elif c_at(pointer) != "":
++            raise Failure("Invalid IPv6 address")
++        address[piece_index] = value
++        piece_index += 1
++    if compress is not None:
++        swaps = piece_index - compress
++        piece_index = 7
++        while piece_index != 0 and swaps > 0:
++            address[piece_index], address[compress + swaps - 1] = (
++                address[compress + swaps - 1],
++                address[piece_index],
++            )
++            piece_index -= 1
++            swaps -= 1
++    elif piece_index != 8:
++        raise Failure("Invalid IPv6 address")
++    return address
++
++
++def serialize_ipv6(address: list[int]) -> str:
++    # Find the first longest run of at least two zero pieces.
++    compress = None
++    best = 1
++    i = 0
++    while i < 8:
++        if address[i] == 0:
++            j = i
++            while j < 8 and address[j] == 0:
++                j += 1
++            if j - i > best:
++                best = j - i
++                compress = i
++            i = j
++        else:
++            i += 1
++    out = ""
++    ignore0 = False
++    for i in range(8):
++        if ignore0 and address[i] == 0:
++            continue
++        ignore0 = False
++        if compress == i:
++            out += "::" if i == 0 else ":"
++            ignore0 = True
++            continue
++        out += f"{address[i]:x}"
++        if i != 7:
++            out += ":"
++    return out
++
++
++def _uts46_valid_label(label: str) -> bool:
++    """The validity criteria of UTS #46 section 4.1, as the standard sets them.
++
++    CheckHyphens and UseSTD3ASCIIRules are false, CheckJoiners is true;
++    CheckBidi is checked for the whole domain by the caller.
++    """
++    if not label:
++        return True
++    if unicodedata.normalize("NFC", label) != label:
++        return False
++    if label[:4] == "xn--":
++        return False
++    if unicodedata.category(label[0])[0] == "M":
++        return False
++    try:
++        if idna.uts46_remap(label, std3_rules=False) != label:
++            return False
++    except idna.IDNAError:
++        return False
++    for pos, c in enumerate(label):
++        if c in "\u200c\u200d":
++            try:
++                if not valid_contextj(label, pos):
++                    return False
++            except ValueError:
++                return False
++    return True
++
++
++_RTL = frozenset(("R", "AL", "AN"))
++
++
++def uts46_to_ascii(domain: str) -> str:
++    """UTS #46 ToASCII with the options of the WHATWG domain to ASCII."""
++    try:
++        mapped = idna.uts46_remap(domain, std3_rules=False)
++    except idna.IDNAError as e:
++        raise Failure(f"Invalid domain {domain!r}") from e
++    labels = mapped.split(".")
++    unicode_labels = []
++    for label in labels:
++        if label[:4] == "xn--":
++            if not label.isascii():
++                raise Failure(f"Invalid domain {domain!r}")
++            try:
++                decoded = label[4:].encode("ascii").decode("punycode")
++            except (UnicodeError, ValueError, IndexError) as e:
++                raise Failure(f"Invalid domain {domain!r}") from e
++            if decoded == "" or decoded.isascii():
++                raise Failure(f"Invalid domain {domain!r}")
++            if not _uts46_valid_label(decoded):
++                raise Failure(f"Invalid domain {domain!r}")
++            unicode_labels.append(decoded)
++        else:
++            if not _uts46_valid_label(label):
++                raise Failure(f"Invalid domain {domain!r}")
++            unicode_labels.append(label)
++    if any(
++        unicodedata.bidirectional(c) in _RTL for label in unicode_labels for c in label
++    ):
++        for label in unicode_labels:
++            if not label:
++                continue
++            try:
++                check_bidi(label, check_ltr=True)
++            except (idna.IDNAError, ValueError) as e:
++                raise Failure(f"Invalid domain {domain!r}") from e
++    out = []
++    for label in unicode_labels:
++        if label.isascii():
++            out.append(label)
++        else:
++            try:
++                out.append("xn--" + label.encode("punycode").decode("ascii"))
++            except UnicodeError as e:  # pragma: no cover
++                raise Failure(f"Invalid domain {domain!r}") from e
++    return ".".join(out)
++
++
++def domain_to_ascii(domain: str) -> str:
++    if domain.isascii():
++        # yarl does not check the Punycode of an ASCII "xn--" label.
++        result = domain.lower()
++    else:
++        result = uts46_to_ascii(domain)
++    if result == "":
++        raise Failure("Empty host")
++    for c in result:
++        if c in _FORBIDDEN_DOMAIN:
++            raise Failure(f"Forbidden code point {c!r} in host {result!r}")
++    return result
++
++
++def parse_opaque_host(s: str) -> str:
++    for c in s:
++        if c in _FORBIDDEN_HOST:
++            raise Failure(f"Forbidden code point {c!r} in host {s!r}")
++    return percent_encode(s, C0_CONTROL_SET)
++
++
++def parse_host(s: str, is_opaque: bool, record: Record | None = None) -> str:
++    if s[:1] == "[":
++        if s[-1:] != "]":
++            raise Failure(f"Invalid IPv6 host {s!r}")
++        inner = s[1:-1]
++        if "%" in inner and record is not None:
++            # Legacy: an RFC 6874 zone identifier, checked by the caller.
++            record.legacy_host = True
++            return s
++        return f"[{serialize_ipv6(parse_ipv6(inner))}]"
++    if is_opaque:
++        return parse_opaque_host(s)
++    domain = unquote_to_bytes(s).decode("utf-8", "replace") if "%" in s else s
++    if (
++        reject_domain_re is not None
++        and not domain.isascii()
++        and (m := reject_domain_re.search(domain))
++    ):
++        raise Failure(f"Host {domain!r} cannot contain {m.group()!r}")
++    ascii_domain = domain_to_ascii(domain)
++    if ends_in_a_number(ascii_domain):
++        return parse_ipv4(ascii_domain)
++    return ascii_domain
++
++
++# --- the parser ----------------------------------------------------------
++
++
++def _is_windows_drive_letter(s: str) -> bool:
++    return len(s) == 2 and s[0] in _ASCII_ALPHA and s[1] in ":|"
++
++
++def _is_normalized_windows_drive_letter(s: str) -> bool:
++    return len(s) == 2 and s[0] in _ASCII_ALPHA and s[1] == ":"
++
++
++def _starts_with_windows_drive_letter(s: str, pointer: int) -> bool:
++    rest = s[pointer:]
++    return (
++        len(rest) >= 2
++        and _is_windows_drive_letter(rest[:2])
++        and (len(rest) == 2 or rest[2] in "/\\?#")
++    )
++
++
++_SINGLE_DOT = frozenset((".", "%2e"))
++_DOUBLE_DOT = frozenset(("..", ".%2e", "%2e.", "%2e%2e"))
++
++
++def _shorten_path(url: Record) -> None:
++    path = url.path
++    assert isinstance(path, list)
++    if url.scheme == "file" and len(path) == 1:
++        if _is_normalized_windows_drive_letter(path[0]):
++            return
++    if path:
++        path.pop()
++
++
++def preprocess(s: str) -> str:
++    s = s.strip(_C0_CONTROL_OR_SPACE)
++    for c in "\t\n\r":
++        if c in s:
++            s = s.replace(c, "")
++    if _SURROGATE_RE.search(s):
++        # yarl drops a lone surrogate, which cannot be encoded as UTF-8.
++        s = _SURROGATE_RE.sub("", s)
++    return s
++
++
++def has_scheme(s: str) -> bool:
++    """Tell if the scheme state finds a scheme in the preprocessed s."""
++    i = s.find(":")
++    if i <= 0 or s[0] not in _ASCII_ALPHA:
++        return False
++    return all(c in _SCHEME_CHARS for c in s[1:i])
++
++
++def parse(s: str, base: Record | None = None) -> Record:  # noqa: C901
++    """Run the basic URL parser on s with an optional base."""
++    s = preprocess(s)
++    url = Record()
++    state = "scheme start"
++    buffer = ""
++    at_sign_seen = inside_brackets = password_token_seen = False
++    pointer = 0
++    n = len(s)
++    while True:
++        c = s[pointer] if pointer < n else ""  # "" is EOF
++        if state == "scheme start":
++            if c and c in _ASCII_ALPHA:
++                buffer += c.lower()
++                state = "scheme"
++            else:
++                state = "no scheme"
++                pointer -= 1
++        elif state == "scheme":
++            if c and c in _SCHEME_CHARS:
++                buffer += c.lower()
++            elif c == ":":
++                url.scheme = buffer
++                buffer = ""
++                if url.scheme == "file":
++                    state = "file"
++                elif url.special and base is not None and base.scheme == url.scheme:
++                    state = "special relative or authority"
++                elif url.special:
++                    state = "special authority slashes"
++                elif s[pointer + 1 : pointer + 2] == "/":
++                    state = "path or authority"
++                    pointer += 1
++                else:
++                    url.path = ""
++                    state = "opaque path"
++            else:
++                buffer = ""
++                state = "no scheme"
++                pointer = -1
++        elif state == "no scheme":
++            if base is None or (base.opaque and c != "#"):
++                raise Failure(f"Invalid URL {s!r}: no scheme and no usable base")
++            if base.opaque and c == "#":
++                url.scheme = base.scheme
++                url.path = base.path
++                url.query = base.query
++                url.fragment = ""
++                state = "fragment"
++            elif base.scheme != "file":
++                state = "relative"
++                pointer -= 1
++            else:
++                state = "file"
++                pointer -= 1
++        elif state == "special relative or authority":
++            if c == "/" and s[pointer + 1 : pointer + 2] == "/":
++                state = "special authority ignore slashes"
++                pointer += 1
++            else:
++                state = "relative"
++                pointer -= 1
++        elif state == "path or authority":
++            if c == "/":
++                state = "authority"
++            else:
++                state = "path"
++                pointer -= 1
++        elif state == "relative":
++            assert base is not None
++            url.scheme = base.scheme
++            if c == "/":
++                state = "relative slash"
++            elif url.special and c == "\\":
++                state = "relative slash"
++            else:
++                _copy_authority(url, base)
++                url.path = list(base.path)
++                url.query = base.query
++                if c == "?":
++                    url.query = ""
++                    state = "query"
++                elif c == "#":
++                    url.fragment = ""
++                    state = "fragment"
++                elif c != "":
++                    url.query = None
++                    _shorten_path(url)
++                    state = "path"
++                    pointer -= 1
++        elif state == "relative slash":
++            assert base is not None
++            if url.special and c in ("/", "\\"):
++                state = "special authority ignore slashes"
++            elif c == "/":
++                state = "authority"
++            else:
++                _copy_authority(url, base)
++                state = "path"
++                pointer -= 1
++        elif state == "special authority slashes":
++            if c == "/" and s[pointer + 1 : pointer + 2] == "/":
++                state = "special authority ignore slashes"
++                pointer += 1
++            else:
++                state = "special authority ignore slashes"
++                pointer -= 1
++        elif state == "special authority ignore slashes":
++            if c not in ("/", "\\"):
++                state = "authority"
++                pointer -= 1
++        elif state == "authority":
++            if c == "@":
++                if at_sign_seen:
++                    buffer = "%40" + buffer
++                at_sign_seen = True
++                for cp in buffer:
++                    if cp == ":" and not password_token_seen:
++                        password_token_seen = True
++                        continue
++                    encoded = percent_encode(cp, USERINFO_SET)
++                    if password_token_seen:
++                        url.password += encoded
++                    else:
++                        url.username += encoded
++                buffer = ""
++            elif c in ("", "/", "?", "#") or (url.special and c == "\\"):
++                if at_sign_seen and buffer == "":
++                    raise Failure(f"Invalid URL {s!r}: credentials without a host")
++                pointer -= len(buffer) + 1
++                buffer = ""
++                state = "host"
++            else:
++                buffer += c
++        elif state == "host":
++            if c == ":" and not inside_brackets:
++                if buffer == "":
++                    raise Failure(f"Invalid URL {s!r}: missing host")
++                url.host = parse_host(buffer, not url.special, url)
++                buffer = ""
++                state = "port"
++            elif c in ("", "/", "?", "#") or (url.special and c == "\\"):
++                pointer -= 1
++                if url.special and buffer == "":
++                    raise Failure(f"Invalid URL {s!r}: missing host")
++                url.host = parse_host(buffer, not url.special, url) if buffer else ""
++                buffer = ""
++                state = "path start"
++            else:
++                if c == "[":
++                    inside_brackets = True
++                elif c == "]":
++                    inside_brackets = False
++                buffer += c
++        elif state == "port":
++            if c and c in _ASCII_DIGITS:
++                buffer += c
++            elif c in ("", "/", "?", "#") or (url.special and c == "\\"):
++                if buffer != "":
++                    if len(buffer.lstrip("0")) > 5 or int(buffer) > 65535:
++                        raise Failure(f"Invalid URL {s!r}: port out of range")
++                    port = int(buffer)
++                    url.explicit_port = port
++                    url.port = None if SPECIAL_PORTS.get(url.scheme) == port else port
++                    buffer = ""
++                state = "path start"
++                pointer -= 1
++            else:
++                raise Failure(f"Invalid URL {s!r}: invalid port")
++        elif state == "file":
++            url.scheme = "file"
++            url.host = ""
++            if c in ("/", "\\"):
++                state = "file slash"
++            elif base is not None and base.scheme == "file":
++                url.host = base.host
++                url.path = list(base.path)
++                url.query = base.query
++                if c == "?":
++                    url.query = ""
++                    state = "query"
++                elif c == "#":
++                    url.fragment = ""
++                    state = "fragment"
++                elif c != "":
++                    url.query = None
++                    if not _starts_with_windows_drive_letter(s, pointer):
++                        _shorten_path(url)
++                    else:
++                        url.path = []
++                    state = "path"
++                    pointer -= 1
++            else:
++                state = "path"
++                pointer -= 1
++        elif state == "file slash":
++            if c in ("/", "\\"):
++                state = "file host"
++            else:
++                if base is not None and base.scheme == "file":
++                    url.host = base.host
++                    if (
++                        not _starts_with_windows_drive_letter(s, pointer)
++                        and isinstance(base.path, list)
++                        and base.path
++                        and _is_normalized_windows_drive_letter(base.path[0])
++                    ):
++                        assert isinstance(url.path, list)
++                        url.path.append(base.path[0])
++                state = "path"
++                pointer -= 1
++        elif state == "file host":
++            if c in ("", "/", "\\", "?", "#"):
++                pointer -= 1
++                if _is_windows_drive_letter(buffer):
++                    state = "path"
++                elif buffer == "":
++                    url.host = ""
++                    state = "path start"
++                else:
++                    host = parse_host(buffer, False, url)
++                    if host == "localhost":
++                        host = ""
++                    url.host = host
++                    buffer = ""
++                    state = "path start"
++            else:
++                buffer += c
++        elif state == "path start":
++            if url.special:
++                state = "path"
++                if c not in ("/", "\\"):
++                    url.no_path = c in ("", "?", "#") and url.scheme != "file"
++                    pointer -= 1
++            elif c == "?":
++                url.query = ""
++                state = "query"
++            elif c == "#":
++                url.fragment = ""
++                state = "fragment"
++            elif c != "":
++                state = "path"
++                if c != "/":
++                    pointer -= 1
++        elif state == "path":
++            path = url.path
++            assert isinstance(path, list)
++            slash = c == "/" or (url.special and c == "\\")
++            if c in ("", "?", "#") or slash:
++                low = buffer.lower()
++                if low in _DOUBLE_DOT:
++                    _shorten_path(url)
++                    if not slash:
++                        path.append("")
++                elif low in _SINGLE_DOT and not slash:
++                    path.append("")
++                elif low not in _SINGLE_DOT:
++                    if (
++                        url.scheme == "file"
++                        and not path
++                        and _is_windows_drive_letter(buffer)
++                    ):
++                        buffer = buffer[0] + ":"
++                    path.append(buffer)
++                buffer = ""
++                if c == "?":
++                    url.query = ""
++                    state = "query"
++                elif c == "#":
++                    url.fragment = ""
++                    state = "fragment"
++            else:
++                buffer += percent_encode(c, PATH_SET)
++        elif state == "opaque path":
++            assert isinstance(url.path, str)
++            if c == "?":
++                url.query = ""
++                state = "query"
++            elif c == "#":
++                url.fragment = ""
++                state = "fragment"
++            elif c == " ":
++                nxt = s[pointer + 1 : pointer + 2]
++                url.path += "%20" if nxt in ("?", "#") else " "
++            elif c != "":
++                url.path += percent_encode(c, C0_CONTROL_SET)
++        elif state == "query":
++            if c in ("", "#"):
++                encode_set = SPECIAL_QUERY_SET if url.special else QUERY_SET
++                # yarl writes a space in the query as "+", not as "%20".
++                buffer = buffer.replace(" ", "+")
++                url.query = (url.query or "") + percent_encode(buffer, encode_set)
++                buffer = ""
++                if c == "#":
++                    url.fragment = ""
++                    state = "fragment"
++            else:
++                buffer += c
++        elif state == "fragment":
++            if c != "":
++                url.fragment = (url.fragment or "") + percent_encode(c, FRAGMENT_SET)
++        else:  # pragma: no cover
++            raise AssertionError(state)
++        if pointer >= n:
++            break
++        pointer += 1
++    return url
++
++
++def _copy_authority(url: Record, base: Record) -> None:
++    url.username = base.username
++    url.password = base.password
++    url.host = base.host
++    url.port = base.port
++    url.explicit_port = base.explicit_port
++    url.legacy_host = base.legacy_host

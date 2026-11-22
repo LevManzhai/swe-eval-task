@@ -26,6 +26,7 @@ because that's how I got to the ones that work.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
+| [`tasks/yarl-url-standards`](tasks/yarl-url-standards) | [yarl](https://github.com/aio-libs/yarl) | Bug hunt: ten WHATWG URL Standard and RFC 3986 conformance bugs, graded on the standard's own test data | **Accepted**: 0 of 3 attempts passed (353, 351, 357 / 375) |
 | [`tasks/dateutil-tz-edge-cases`](tasks/dateutil-tz-edge-cases) | [dateutil](https://github.com/dateutil/dateutil) | Bug hunt: twelve time zone, TZ string, parser and recurrence bugs, no oracle | **Accepted**: 0 of 3 attempts passed (108, 109, 109 / 115) |
 | [`tasks/more-itertools-edge-cases`](tasks/more-itertools-edge-cases) | [more-itertools](https://github.com/more-itertools/more-itertools) | Bug hunt: sixteen size, argument, error, `numeric_range` and laziness bugs, no oracle | **Accepted**: 0 of 3 attempts passed (549, 549, 554 / 558) |
 | [`tasks/click-cli-edge-cases`](tasks/click-cli-edge-cases) | [click](https://github.com/pallets/click) | Bug hunt: thirteen help, value-source, terminal and strict-flag bugs, no oracle | **Accepted**: 0 of 3 attempts passed (60, 60, 60 / 64) |

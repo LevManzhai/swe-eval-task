@@ -1,0 +1,3120 @@
+diff --git a/CHANGES/1970.bugfix.rst b/CHANGES/1970.bugfix.rst
+deleted file mode 100644
+index ba5e5fb..0000000
+--- a/CHANGES/1970.bugfix.rst
++++ /dev/null
+@@ -1,7 +0,0 @@
+-Rejected an empty authority for the ``http``, ``https``, ``ws``, ``wss`` and
+-``ftp`` schemes in WHATWG mode, as the WHATWG URL Standard does:
+-``http://``, ``http:///`` and ``http://?q`` were accepted. A URL of these
+-schemes without an authority, such as ``http:?q``, is still a reference to
+-a base and is now printed without ``//``, as ``http:?q`` instead of
+-``http://?q``
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/1971.bugfix.rst b/CHANGES/1971.bugfix.rst
+deleted file mode 100644
+index 0bb24d3..0000000
+--- a/CHANGES/1971.bugfix.rst
++++ /dev/null
+@@ -1,7 +0,0 @@
+-Rejected an empty authority for the ``http``, ``https``, ``ws``, ``wss`` and
+-``ftp`` schemes in RFC 3986 mode as well, as :rfc:`9110#section-4.2.1` does
+-for ``http`` and ``https``: ``http://``, ``http:///path`` and ``http://?q``
+-were accepted there, while an empty host was rejected only next to userinfo
+-or a port. The RFC 3986 oracle of the conformance report applies the same
+-rule, so ``http://user@/`` and the like count as agreeing with yarl
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/1996.bugfix.rst b/CHANGES/1996.bugfix.rst
+deleted file mode 100644
+index 3f02d07..0000000
+--- a/CHANGES/1996.bugfix.rst
++++ /dev/null
+@@ -1,9 +0,0 @@
+-Fixed :meth:`URL.join() <yarl.URL.join>` for a reference with an empty
+-authority, such as ``///a/b``, against a base whose scheme needs a host
+-(``http``, ``https``, ``ws``, ``wss`` and ``ftp``): the host of the base was
+-kept in both modes. WHATWG mode now reads the host after the slashes, as the
+-WHATWG URL Standard does, so the result is ``http://a/b``, and RFC 3986 mode
+-rejects the reference, since the result would have an empty host. WHATWG
+-mode also rejects a reference of these schemes without an authority, such as
+-``http:``, against a base with another scheme
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/1999.bugfix.rst b/CHANGES/1999.bugfix.rst
+deleted file mode 100644
+index a6f53b0..0000000
+--- a/CHANGES/1999.bugfix.rst
++++ /dev/null
+@@ -1,11 +0,0 @@
+-Parsed the host of a URL whose scheme is not special as an opaque host in
+-the default WHATWG mode, as the WHATWG URL Standard does: it is no longer
+-lowercased or encoded with IDNA, its control and non-ASCII characters are
+-percent-encoded, and only the forbidden host code points are rejected, so
+-``sc://faß.ExAmPlE/`` is ``sc://fa%C3%9F.ExAmPlE/`` and ``sc://%/`` is
+-accepted. :meth:`~yarl.URL.build`, :meth:`~yarl.URL.with_host` and
+-:meth:`~yarl.URL.with_scheme` follow, and :attr:`~yarl.URL.host` decodes
+-the non-ASCII characters of such a host. In both modes such a URL also
+-keeps its empty path before a query or a fragment, so ``sc://h?x`` is no
+-longer written as ``sc://h/?x``
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/2000.bugfix.rst b/CHANGES/2000.bugfix.rst
+deleted file mode 100644
+index 361e548..0000000
+--- a/CHANGES/2000.bugfix.rst
++++ /dev/null
+@@ -1,8 +0,0 @@
+-Rejected in the default WHATWG mode the resolution of a relative reference
+-other than a fragment against a base URL with an opaque path, as the
+-WHATWG URL Standard does: :meth:`~yarl.URL.join` now raises
+-:exc:`ValueError` for ``i`` or ``?i`` against ``sc:sd``, while ``#i``
+-still gives ``sc:sd#i``. In RFC 3986 mode such a join removes the dot
+-segments of the merged path as :rfc:`3986#section-5.2.4` does, so ``../i``
+-against ``sc:sd/sd`` is ``sc:/i`` instead of ``sc:i``
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/2001.bugfix.rst b/CHANGES/2001.bugfix.rst
+deleted file mode 100644
+index fdaf997..0000000
+--- a/CHANGES/2001.bugfix.rst
++++ /dev/null
+@@ -1,6 +0,0 @@
+-Kept an IPv6 address in the host as written, only lowercased, in RFC 3986
+-mode, since RFC 3986 does not compress it: ``http://[1:0::]`` and
+-``http://[::127.0.0.1]`` are no longer written as ``http://[1::]`` and
+-``http://[::7f00:1]``. WHATWG mode still writes the compressed form, as the
+-WHATWG URL Standard does, and a change to WHATWG mode compresses the address
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/2002.bugfix.rst b/CHANGES/2002.bugfix.rst
+deleted file mode 100644
+index 125d6de..0000000
+--- a/CHANGES/2002.bugfix.rst
++++ /dev/null
+@@ -1,7 +0,0 @@
+-Started accepting ``[``, ``]`` and, for a scheme that is not special,
+-``\`` in the userinfo in WHATWG mode, and encoding the userinfo with the
+-userinfo percent-encode set of the WHATWG URL Standard there: ``;`` and
+-``=`` are now percent-encoded, while ``%`` and percent-encoded octets are
+-kept as written, so ``http://a;b%c@h/`` is ``http://a%3Bb%c@h/``. RFC 3986
+-mode still rejects these URLs
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/2008.bugfix.rst b/CHANGES/2008.bugfix.rst
+deleted file mode 100644
+index 4995474..0000000
+--- a/CHANGES/2008.bugfix.rst
++++ /dev/null
+@@ -1,6 +0,0 @@
+-Started accepting ``"``, a backtick, ``{`` and ``}`` in the host of a
+-special URL in WHATWG mode, as the WHATWG URL Standard only rejects its
+-forbidden domain code points, so ``http://A{b}/`` is ``http://a{b}/``.
+-Only the non-ASCII labels of such a host go through IDNA. RFC 3986 mode
+-still rejects these hosts
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/2010.bugfix.rst b/CHANGES/2010.bugfix.rst
+deleted file mode 100644
+index 93f68de..0000000
+--- a/CHANGES/2010.bugfix.rst
++++ /dev/null
+@@ -1,7 +0,0 @@
+-Started keeping a ``%`` that does not start a percent-encoded octet as
+-written in the path, the query and the fragment of a parsed URL in WHATWG
+-mode, as the WHATWG URL Standard does, so ``http://example.com/foo%2zbar``
+-no longer becomes ``http://example.com/foo%252zbar``. Builder methods that
+-take decoded values still encode ``%`` as ``%25``, and RFC 3986 mode still
+-rejects such a URL string
+--- by :user:`asvetlov`.
+diff --git a/CHANGES/2034.bugfix.rst b/CHANGES/2034.bugfix.rst
+deleted file mode 100644
+index 7691298..0000000
+--- a/CHANGES/2034.bugfix.rst
++++ /dev/null
+@@ -1,4 +0,0 @@
+-Fixed :meth:`URL.build() <yarl.URL.build>` silently ignoring ``port=0``
+-when no ``host`` was given, and when ``authority`` was given too; it now
+-raises :exc:`ValueError` for both, as it already did for any other port
+--- by :user:`Yasser-Ameur`.
+diff --git a/docs/api.rst b/docs/api.rst
+index 4ee6135..bb71df5 100644
+--- a/docs/api.rst
++++ b/docs/api.rst
+@@ -78,9 +78,11 @@ one, as :rfc:`3986#section-5.3` requires: ``http://example.com/p?`` and
+ ``http://example.com/p`` are different URLs, and so are ``sc:///p`` and
+ ``sc:/p``. The ``raw_``/decoded properties return ``''`` for both an empty
+ and a missing component; ``str()`` and comparisons tell them apart.
+-In the default WHATWG mode, ``file`` URLs always have an authority and
+-print ``//``; in RFC 3986 mode ``//`` is only printed when the URL has one,
+-so ``URL('file:/p', mode='rfc')`` stays ``file:/p``. Whether an empty authority, query or
++In the default WHATWG mode, URLs with one of the *special* schemes of the
++WHATWG URL Standard (``http``, ``https``, ``ws``, ``wss``, ``ftp`` and
++``file``) always have an authority and print ``//``; in RFC 3986 mode
++``//`` is only printed when the URL has one, so ``URL('file:/p',
++mode='rfc')`` stays ``file:/p``. Whether an empty authority, query or
+ fragment makes two URLs different follows the same rule, so ``file:/p``
+ and ``file:///p`` are equal in WHATWG mode but not in RFC 3986 mode.
+ 
+@@ -143,62 +145,6 @@ same scheme, see there.
+    ``http:example.com/`` and ``http:///example.com/`` were URLs without a
+    host in WHATWG mode, printed as ``http:///example.com/``.
+ 
+-The other special schemes of the WHATWG URL Standard (``http``, ``https``,
+-``ws``, ``wss`` and ``ftp``) need a host, so an empty authority is rejected
+-in both modes: ``http://``, ``http:///`` and ``http://?q`` are invalid, as
+-they are for the WHATWG URL Standard and, for ``http`` and ``https``, for
+-:rfc:`9110#section-4.2.1`. RFC 3986 mode rejects ``http:///path`` for the
+-same reason, where WHATWG mode reads ``path`` as the host, see above. A URL
+-without an authority, such as ``http:`` or ``http:?q``, is kept as a
+-reference to a base for :meth:`URL.join` and is printed without ``//``.
+-``encoded=True`` keeps all of them, as it does not check the host.
+-
+-.. doctest::
+-
+-   >>> URL('http://?q')
+-   Traceback (most recent call last):
+-     ...
+-   ValueError: Invalid URL: host is required for absolute urls with the http scheme
+-   >>> URL('http:?q')
+-   URL('http:?q')
+-   >>> URL('http://example.com/path').join(URL('http:?q'))
+-   URL('http://example.com/path?q')
+-   >>> URL('http:///path', mode='rfc')
+-   Traceback (most recent call last):
+-     ...
+-   ValueError: Invalid URL: host is required for absolute urls with the http scheme
+-
+-.. versionchanged:: 1.26
+-
+-   WHATWG mode rejects an empty authority for ``http``, ``https``, ``ws``,
+-   ``wss`` and ``ftp``, and prints a URL of these schemes without an
+-   authority without ``//``; previously ``http://?q`` was accepted, and
+-   ``http:?q`` was printed as ``http://?q``. RFC 3986 mode rejects an empty
+-   authority for these schemes too; previously it rejected an empty host
+-   only next to userinfo or a port.
+-
+-The same applies to :meth:`URL.join`. A reference with an empty authority,
+-such as ``///a/b``, against a base with one of these schemes takes the host
+-after the slashes in WHATWG mode, as the WHATWG URL Standard does, and is
+-rejected in RFC 3986 mode, where the result would have an empty host. A
+-reference without an authority, such as ``http:``, is rejected in WHATWG mode
+-against a base with another scheme.
+-
+-.. doctest::
+-
+-   >>> URL('http://example.com/x').join(URL('///a/b'))
+-   URL('http://a/b')
+-   >>> URL('http://example.com/x', mode='rfc').join(URL('///a/b', mode='rfc'))
+-   Traceback (most recent call last):
+-     ...
+-   ValueError: Invalid URL: joining '///a/b' gives an empty host, which the http scheme does not allow
+-
+-.. versionchanged:: 1.26
+-
+-   ``URL('http://example.com/x').join(URL('///a/b'))`` kept the host of the
+-   base in both modes, giving ``http://example.com/a/b``, and
+-   ``URL('https://example.com/').join(URL('http:'))`` gave ``http:``.
+-
+ In WHATWG mode, leading and trailing C0 control characters and spaces are
+ stripped, and tabs and newlines are removed, as the WHATWG URL Standard does
+ and as :rfc:`3986#appendix-C` recommends for user-typed URIs; RFC 3986 mode
+@@ -237,77 +183,13 @@ string that contains one:
+    A backslash is read as a slash in WHATWG mode; previously it was rejected
+    in the authority and percent-encoded elsewhere.
+ 
+-In WHATWG mode a ``%`` that does not start a percent-encoded octet is kept
+-as written in the path, the query and the fragment of a parsed URL string,
+-as the WHATWG URL Standard does; :attr:`URL.path` and the other decoded
+-attributes keep it too. :meth:`URL.build`, :meth:`URL.with_path` and the
+-other methods that take decoded components still encode a ``%`` as ``%25``
+-in both modes, since there it is a percent sign. RFC 3986 mode rejects such
+-a URL string:
+-
+-.. doctest::
+-
+-   >>> URL('http://example.com/100%?a=%zz')
+-   URL('http://example.com/100%?a=%zz')
+-   >>> URL('http://example.com/100%?a=%zz').path
+-   '/100%'
+-   >>> URL('http://example.com/').with_path('/100%')
+-   URL('http://example.com/100%25')
+-
+-.. versionchanged:: 1.26
+-
+-   A ``%`` that does not start a percent-encoded octet is kept in WHATWG
+-   mode; previously it was encoded as ``%25``.
+-
+-In WHATWG mode the host of a URL whose scheme is not special is an *opaque
+-host*, as the WHATWG URL Standard parses it: it is neither lowercased nor
+-encoded with IDNA, its control and non-ASCII characters are percent-encoded
+-as UTF-8, and only NUL, tab, line feed, carriage return, space and
+-``#/:<>?@[\]^|`` are rejected, so ``"``, ``{`` and a ``%`` that does not
+-start a percent-encoded octet are allowed.
+-:attr:`URL.host` decodes the non-ASCII characters. An IPv6 address in
+-brackets is parsed as usual. RFC 3986 mode, the special schemes and a
+-relative URL encode the host as a domain, and so does
+-:meth:`URL.with_scheme` when it moves an opaque host to a special scheme,
+-which raises :exc:`ValueError` for a host that is not a valid domain.
+-
+-.. doctest::
+-
+-   >>> URL('sc://Ñ.Example/')
+-   URL('sc://%C3%91.Example/')
+-   >>> URL('sc://Ñ.Example/').host
+-   'Ñ.Example'
+-   >>> URL('sc://Ñ.Example/', mode='rfc')
+-   URL('sc://xn--ida.example/', mode='rfc')
+-   >>> URL('sc://Ñ.Example/').with_scheme('http')
+-   URL('http://xn--ida.example/')
+-
+-A URL whose scheme is not special keeps an empty path in both modes, also
+-before a query or a fragment, as both standards write it: ``sc://h?q`` is
+-not ``sc://h/?q``. A special URL and a relative URL get the path ``/``.
+-:attr:`URL.path` is ``/`` for all of them, and an empty path still compares
+-equal to ``/``.
+-
+-.. doctest::
+-
+-   >>> URL('sc://h?q'), URL('http://h?q')
+-   (URL('sc://h?q'), URL('http://h/?q'))
+-
+-.. versionchanged:: 1.26
+-
+-   The host of a URL whose scheme is not special is an opaque host in WHATWG
+-   mode; previously it was lowercased and encoded with IDNA, and ``"`` or a
+-   lone ``%`` in it were rejected. An empty path before a query or a fragment
+-   was written as ``/`` for every scheme.
+-
+ RFC 3986 mode takes IRIs (:rfc:`3987`): non-ASCII characters are
+ percent-encoded as UTF-8, and a non-ASCII host is encoded with IDNA2008.
+ Any other character outside the grammar of the two RFCs makes the URL
+ string invalid, where WHATWG mode percent-encodes or removes it: a space,
+ ``"``, ``<``, ``>``, ``^``, a backtick, ``{``, ``|``, ``}``, a control
+ character, ``[`` or ``]`` outside an IP-literal host, a second ``#``, a
+-``%`` that does not start a percent-encoded octet (WHATWG mode keeps it as
+-written, see above), a code point that
++``%`` that does not start a percent-encoded octet, a code point that
+ :rfc:`3987` excludes (such as ``U+FFFF``, a C1 control, a bidi formatting
+ character, or a private-use character outside the query), an invalid scheme,
+ and a ``:`` in the first segment of a relative path. Only parsing a string is
+@@ -353,9 +235,7 @@ The *host* is validated the same way as by :meth:`URL.build` and
+ :meth:`URL.with_host`: a :exc:`ValueError` is raised for a host that is
+ neither a valid IP address nor a valid *reg-name* (:rfc:`3986#section-3.2.2`),
+ for example one containing a space, a control character or a character that
+-turns into a URL delimiter after IDNA normalization. The default WHATWG mode
+-also accepts ``"``, a backtick, ``{`` and ``}``, which the WHATWG URL Standard
+-allows in a domain, so ``http://A{b}/`` is ``http://a{b}/``. An IPv6 zone
++turns into a URL delimiter after IDNA normalization. An IPv6 zone
+ identifier is accepted in both modes only in the :rfc:`6874` form,
+ ``%25`` followed by the percent-encoded zone identifier, as in
+ ``http://[fe80::1%25eth0]/``; an empty one (``http://[fe80::1%25]/``) is
+@@ -410,7 +290,7 @@ drive letter replaces the path. :meth:`URL.build`, :meth:`URL.with_path`,
+ an ordinary segment and rejects ``|``.
+ RFC 3986 mode also rejects an authority with more than one ``@``, since
+ userinfo cannot contain ``@`` (WHATWG mode percent-encodes all but the last
+-one, see :attr:`URL.raw_user`), and a non-ASCII host that IDNA2008 (:rfc:`5891`) cannot encode, such
++one), and a non-ASCII host that IDNA2008 (:rfc:`5891`) cannot encode, such
+ as one with an emoji, which WHATWG mode accepts as UTS #46 does.
+ An IPvFuture address (:rfc:`3986#section-3.2.2`), such as ``[v1.x]``, is
+ accepted in RFC 3986 mode and keeps its brackets, which are part of the
+@@ -624,29 +504,11 @@ There are two kinds of properties: *decoded* and *encoded* (with
+    As for :attr:`URL.user`, an empty *user* is ``''`` in RFC 3986 mode
+    and ``None`` in WHATWG mode.
+ 
+-   WHATWG mode encodes the *user* and the *password* with the userinfo
+-   percent-encode set of the WHATWG URL Standard: the userinfo goes up to
+-   the last ``"@"``, and ``[``, ``]``, ``;``, ``=`` and, for a scheme that
+-   is not special, ``\`` in it are percent-encoded, while ``%`` and
+-   percent-encoded octets are kept as written. RFC 3986 mode rejects the
+-   characters its userinfo cannot have, and keeps ``;`` and ``=``:
+-
+-   .. doctest::
+-
+-      >>> URL('http://a;b@example.com').raw_user
+-      'a%3Bb'
+-      >>> URL('http://a;b@example.com', mode='rfc').raw_user
+-      'a;b'
+-      >>> URL('http://a[b]:p%c@example.com')
+-      URL('http://a%5Bb%5D:p%c@example.com')
+-
+    .. versionchanged:: 1.26
+ 
+       An empty *user* is ``''`` in RFC 3986 mode, which keeps an empty
+       userinfo.
+ 
+-      WHATWG mode encodes the userinfo as the WHATWG URL Standard does.
+-
+ 
+ .. attribute:: URL.password
+ 
+@@ -707,26 +569,9 @@ There are two kinds of properties: *decoded* and *encoded* (with
+    Encoded *host* part of URL, ``None`` for relative URLs
+    (:ref:`yarl-api-relative-urls`).
+ 
+-   Brackets are stripped for IPv6. Host is converted to lowercase and an
+-   IPv6 address is validated. WHATWG mode converts the address to the
+-   compressed form; RFC 3986 mode keeps it as written, as
+-   :rfc:`3986#section-6.2.2` does not compress it, so ``[1:0::]`` and ``[1::]`` are different hosts
+-   there.
+-
+-   .. doctest::
+-
+-      >>> URL('http://[1:0::]/').host
+-      '1::'
+-      >>> URL('http://[1:0::]/', mode='rfc').host
+-      '1:0::'
+-
+-   .. versionchanged:: 1.26
+-
+-      RFC 3986 mode keeps an IPv6 address as written.
+-
++   Brackets are stripped for IPv6. Host is converted to lowercase,
++   address is validated and converted to compressed form.
+    An IPvFuture address (RFC 3986 mode only) keeps its brackets.
+-   The opaque host of a URL whose scheme is not special keeps its case in
+-   WHATWG mode, and only its non-ASCII characters are percent-decoded.
+ 
+    For IPv6 addresses that carry an :rfc:`6874` zone identifier, the
+    ``%25`` zone separator is decoded to ``%`` and the zone identifier is
+@@ -1680,28 +1525,6 @@ The path is encoded if needed.
+       >>> URL('urn:example:animal').join(URL('#ferret'))
+       URL('urn:example:animal#ferret')
+ 
+-   The WHATWG URL Standard resolves nothing but a fragment against a base
+-   with an opaque path, that is a URL with a scheme other than ``http``,
+-   ``https``, ``ws``, ``wss``, ``ftp`` and ``file``, no authority and a
+-   path that does not start with ``/``, such as ``urn:example:animal``.
+-   In WHATWG mode any other ``url`` without a scheme raises
+-   :exc:`ValueError` against such a base, while RFC 3986 mode merges the
+-   paths:
+-
+-   .. doctest::
+-
+-      >>> URL('urn:example:animal').join(URL('ferret'))
+-      Traceback (most recent call last):
+-        ...
+-      ValueError: Invalid URL: cannot resolve 'ferret' against 'urn:example:animal', which has an opaque path
+-      >>> URL('urn:example:animal', mode='rfc').join(URL('ferret', mode='rfc'))
+-      URL('urn:ferret', mode='rfc')
+-
+-   .. versionchanged:: 1.26
+-
+-      In WHATWG mode, resolving a ``url`` other than a fragment against a
+-      base with an opaque path raises :exc:`ValueError`.
+-
+    In WHATWG mode, a ``url`` with the same scheme as the base but without
+    ``//``, like ``http:page.html``, is resolved as a relative reference,
+    which :rfc:`3986#section-5.4.2` permits and the WHATWG URL Standard
+diff --git a/docs/spelling_wordlist.txt b/docs/spelling_wordlist.txt
+index 725e457..edd49ed 100644
+--- a/docs/spelling_wordlist.txt
++++ b/docs/spelling_wordlist.txt
+@@ -44,7 +44,6 @@ hardcoded
+ hostless
+ hostnames
+ ignorable
+-lowercased
+ macOS
+ mailto
+ manylinux
+diff --git a/tests/test_quoting.py b/tests/test_quoting.py
+index efd88ca..fea7641 100644
+--- a/tests/test_quoting.py
++++ b/tests/test_quoting.py
+@@ -86,54 +86,6 @@ def test_quote_unfinished_tail_non_ascii3_non_strict(quoter: type[_Quoter]) -> N
+     assert quoter()("%🐍") == "%25%F0%9F%90%8D"
+ 
+ 
+-@pytest.mark.parametrize(
+-    ("value", "expected"),
+-    [
+-        ("%", "%"),
+-        ("a%", "a%"),
+-        ("%2", "%2"),
+-        ("%HH", "%HH"),
+-        ("%2zbar", "%2zbar"),
+-        ("%2e%2", ".%2"),
+-        # A decoded hex digit right after a kept "%" stays escaped, so that
+-        # it cannot complete a "%XX" escape that was not in the input
+-        ("%%41", "%%41"),
+-        ("%4%31", "%4%31"),
+-        ("%4%61", "%4%61"),
+-        ("%%31%32", "%%312"),
+-        ("%%312", "%%312"),
+-        ("%%7e", "%~"),
+-        ("%z%31", "%z1"),
+-        ("%4G%31", "%4G1"),
+-        ("%%%%", "%%%%"),
+-        ("%2\u00c2\u00a9", "%2%C3%82%C2%A9"),
+-        ("%#", "%%23"),
+-        ("%a\ud800", "%a"),
+-        ("%\ud800", "%"),
+-        ("%25%zz%7e%2f", "%25%zz~%2F"),
+-    ],
+-)
+-def test_quote_keep_invalid_pct(
+-    quoter: type[_Quoter], value: str, expected: str
+-) -> None:
+-    assert quoter(keep_invalid_pct=True)(value) == expected
+-
+-
+-def test_quote_keep_invalid_pct_returns_same_object(quoter: type[_Quoter]) -> None:
+-    value = "a%zz%GH%"
+-    assert quoter(keep_invalid_pct=True)(value) is value
+-
+-
+-def test_quote_keep_invalid_pct_qs(quoter: type[_Quoter]) -> None:
+-    q = quoter(safe="?/:@", protected="=+&;", qs=True, keep_invalid_pct=True)
+-    assert q("a b=%GH&%3D%") == "a+b=%GH&%3D%"
+-
+-
+-def test_quote_keep_invalid_pct_requires_requote(quoter: type[_Quoter]) -> None:
+-    with pytest.raises(ValueError, match="keep_invalid_pct requires requote"):
+-        quoter(requote=False, keep_invalid_pct=True)
+-
+-
+ def test_quote_from_bytes(quoter: type[_Quoter]) -> None:
+     assert quoter()("archaeological arcana") == "archaeological%20arcana"
+     assert quoter()("") == ""
+diff --git a/tests/test_rfc3986.py b/tests/test_rfc3986.py
+index 3390abf..f7f5081 100644
+--- a/tests/test_rfc3986.py
++++ b/tests/test_rfc3986.py
+@@ -15,7 +15,7 @@ from collections.abc import Callable
+ 
+ import pytest
+ 
+-from yarl import URL, Mode
++from yarl import URL
+ from yarl._path import normalize_path, remove_dot_segments
+ 
+ 
+@@ -172,14 +172,6 @@ def test_numeric_reg_name_round_trips(url: str) -> None:
+     assert str(URL(url, mode="rfc")) == url
+ 
+ 
+-# Section 3.2.1: the userinfo can have every sub-delim, WHATWG
+-# percent-encodes ";" and "=" in it.
+-def test_userinfo_sub_delims_round_trip_rfc_mode() -> None:
+-    url = "http://!$&'()*+,;=@example.com/"
+-    assert str(URL(url, mode="rfc")) == url
+-    assert str(URL(url)) == "http://!$&'()*+,%3B%3D@example.com/"
+-
+-
+ # Section 3.2.2: an IPvFuture literal, which WHATWG does not have, keeps its
+ # brackets; without them it would be a reg-name.
+ def test_ipvfuture_round_trips_rfc_mode() -> None:
+@@ -260,7 +252,6 @@ def test_backslash_rejected(url: str) -> None:
+ 
+ 
+ PCT_TEMPLATES = {
+-    "user": "http://{}@example.com/",
+     "path": "http://example.com/{}",
+     "query": "http://example.com/?{}",
+     "fragment": "http://example.com/#{}",
+@@ -268,29 +259,21 @@ PCT_TEMPLATES = {
+ 
+ 
+ # Sections 2.3 and 6.2.2.2: percent-encoded unreserved characters are
+-# equivalent to the characters themselves and should be decoded. WHATWG mode
+-# keeps the userinfo as written, as WHATWG does, see
+-# test_url_userinfo_encoding.py.
+-@pytest.mark.parametrize("mode", ["whatwg", "rfc"])
++# equivalent to the characters themselves and should be decoded.
+ @pytest.mark.parametrize("component", PCT_TEMPLATES)
+-def test_unreserved_percent_encoding_decoded(component: str, mode: Mode) -> None:
++def test_unreserved_percent_encoding_decoded(component: str) -> None:
+     template = PCT_TEMPLATES[component]
+-    encoded = "%41%7a%30%2d%2E%5f%7E"
+-    url = URL(template.format(encoded), mode=mode)
+-    kept = component == "user" and mode == "whatwg"
+-    assert str(url) == template.format(encoded if kept else "Az0-._~")
++    assert str(URL(template.format("%41%7a%30%2d%2E%5f%7E"))) == template.format(
++        "Az0-._~"
++    )
+ 
+ 
+ # Sections 2.1 and 6.2.2.1: hex digits of percent-encodings are
+ # case-insensitive and should be normalized to uppercase.
+-@pytest.mark.parametrize("mode", ["whatwg", "rfc"])
+ @pytest.mark.parametrize("component", PCT_TEMPLATES)
+-def test_percent_encoding_uppercased(component: str, mode: Mode) -> None:
++def test_percent_encoding_uppercased(component: str) -> None:
+     template = PCT_TEMPLATES[component]
+-    encoded = "%c3%a9%5b"
+-    url = URL(template.format(encoded), mode=mode)
+-    kept = component == "user" and mode == "whatwg"
+-    assert str(url) == template.format(encoded if kept else "%C3%A9%5B")
++    assert str(URL(template.format("%c3%a9%5b"))) == template.format("%C3%A9%5B")
+ 
+ 
+ # Sections 2.2 and 6.2.2.2: a percent-encoded reserved character is not
+@@ -298,7 +281,6 @@ def test_percent_encoding_uppercased(component: str, mode: Mode) -> None:
+ RESERVED = ":/?#[]@!$&'()*+,;="
+ # Reserved characters that yarl decodes in each component.
+ RESERVED_DECODED = {
+-    "user": "",
+     "path": "",
+     "query": ":/?@!$'()*,",
+     "fragment": ":/?@!$&'()*+,;=",
+@@ -550,15 +532,11 @@ def test_join_target_components(base: str, reference: str, expected: str) -> Non
+         ("ws://a/b/c", "d", "ws://a/b/d"),
+         ("foo://a/b/c", "../d", "foo://a/d"),
+         ("foo:/a/b", "c", "foo:/a/c"),
+-        ("foo:a/b", "c", "foo:a/c"),
+         ("urn:example:a", "#f", "urn:example:a#f"),
+-        ("sc:sd/sd", "../i", "sc:/i"),
+-        ("sc:sd/sd?", "../i", "sc:/i"),
+     ],
+ )
+ def test_join_scheme_independent(base: str, reference: str, expected: str) -> None:
+-    joined = URL(base, mode="rfc").join(URL(reference, mode="rfc"))
+-    assert str(joined) == expected
++    assert str(URL(base).join(URL(reference))) == expected
+ 
+ 
+ # Section 6.2: equivalent URIs after syntax-based and scheme-based
+diff --git a/tests/test_rfc5952.py b/tests/test_rfc5952.py
+index 655cdb7..d857e03 100644
+--- a/tests/test_rfc5952.py
++++ b/tests/test_rfc5952.py
+@@ -4,16 +4,12 @@ https://www.rfc-editor.org/rfc/rfc5952
+ 
+ RFC 3986 section 3.2.2 carries IPv6 addresses inside IP-literals, and
+ section 6.2.2.1 allows normalizing them; yarl emits the canonical text
+-form recommended by RFC 5952 section 4 in WHATWG mode, as the WHATWG URL
+-Standard does. RFC 3986 mode keeps the address as written, only
+-lowercased, since section 6.2.2 does not compress it.
++form recommended by RFC 5952 section 4.
+ """
+ 
+-from collections.abc import Callable
+-
+ import pytest
+ 
+-from yarl import URL, Mode
++from yarl import URL
+ 
+ CANONICAL = [
+     # Section 2.1: leading zeros.
+@@ -91,38 +87,3 @@ def test_build_brackets_ipv6_host() -> None:
+     url = URL.build(scheme="http", host="2001:DB8::0001", port=8080)
+     assert str(url) == "http://[2001:db8::1]:8080"
+     assert url.host_port_subcomponent == "[2001:db8::1]:8080"
+-
+-
+-@pytest.mark.parametrize(("address", "canonical"), CANONICAL)
+-def test_rfc_mode_keeps_address_as_written(address: str, canonical: str) -> None:
+-    url = URL(f"http://[{address}]/", mode="rfc")
+-    assert url.raw_host == address.lower()
+-    assert url.host == address.lower()
+-    assert str(url) == f"http://[{address.lower()}]/"
+-    assert str(URL(url, mode="whatwg")) == f"http://[{canonical}]/"
+-
+-
+-@pytest.mark.parametrize(
+-    "make",
+-    [
+-        lambda mode: URL("http://[1:0::]/", mode=mode),
+-        lambda mode: URL.build(scheme="http", host="1:0::", mode=mode),
+-        lambda mode: URL.build(scheme="http", authority="[1:0::]", mode=mode),
+-        lambda mode: URL("http://h/", mode=mode).with_host("1:0::"),
+-        lambda mode: URL("http://h/", mode=mode).join(URL("//[1:0::]/", mode=mode)),
+-        lambda mode: URL("sc://[1:0::]/", mode=mode).with_scheme("http"),
+-    ],
+-)
+-def test_written_address_by_mode(make: Callable[[Mode], URL]) -> None:
+-    assert make(Mode.RFC).raw_host == "1:0::"
+-    assert make(Mode.WHATWG).raw_host == "1::"
+-
+-
+-def test_rfc_mode_written_forms_differ() -> None:
+-    assert URL("http://[1:0::]/", mode="rfc") != URL("http://[1::]/", mode="rfc")
+-
+-
+-def test_rfc_mode_keeps_zone_id() -> None:
+-    url = URL("http://[FE80:0::1%25eth0]/", mode="rfc")
+-    assert str(url) == "http://[fe80:0::1%25eth0]/"
+-    assert str(URL(url, mode="whatwg")) == "http://[fe80::1%25eth0]/"
+diff --git a/tests/test_rfc_schemes.py b/tests/test_rfc_schemes.py
+index 5a4c48c..6d752ca 100644
+--- a/tests/test_rfc_schemes.py
++++ b/tests/test_rfc_schemes.py
+@@ -75,15 +75,6 @@ def test_http_empty_host_rejected(url: str) -> None:
+         URL(url)
+ 
+ 
+-@pytest.mark.parametrize(
+-    "url",
+-    ["http://user@/", "http:///path", "https:///path", "http://?", "http://#"],
+-)
+-def test_http_empty_host_rejected_rfc_mode(url: str) -> None:
+-    with pytest.raises(ValueError):
+-        URL(url, mode="rfc")
+-
+-
+ # RFC 8089 appendix B: forms of a local file URI.
+ @pytest.mark.parametrize(
+     ("url", "host", "path"),
+diff --git a/tests/test_url.py b/tests/test_url.py
+index 904e20a..22a4360 100644
+--- a/tests/test_url.py
++++ b/tests/test_url.py
+@@ -2305,10 +2305,8 @@ def test_join_drops_base_fragment(reference: str, expected: str) -> None:
+         ("mailto:user@example.com", "#frag", "mailto:user@example.com#frag"),
+         ("foo://host/a/b", "c", "foo://host/a/c"),
+         ("foo://host/a/b", "//other/c", "foo://other/c"),
+-        ("foo:/a/b", "../c", "foo:/c"),
+         ("foo://host/a", "foo:b", "foo:b"),
+         ("foo://host/a", "bar:b", "bar:b"),
+-        ("foo:a", "foo:b", "foo:b"),
+     ],
+ )
+ def test_join_scheme_outside_uses_relative(
+@@ -2317,56 +2315,6 @@ def test_join_scheme_outside_uses_relative(
+     assert str(URL(base).join(URL(reference))) == expected
+ 
+ 
+-OPAQUE_PATH_JOINS = [
+-    ("urn:isbn:0451450523", "?q", "urn:isbn:0451450523?q"),
+-    ("foo:a/b", "../c", "foo:/c"),
+-    ("foo:", "c", "foo:c"),
+-    ("sc:sd", "i", "sc:i"),
+-    ("sc:sd/sd", "i", "sc:sd/i"),
+-    ("sc:sd", "../i", "sc:i"),
+-    ("sc:sd/sd", "../i", "sc:/i"),
+-    ("sc:sd", "/i", "sc:/i"),
+-    ("sc:sd/sd", "/i", "sc:/i"),
+-    ("sc:sd", "?i", "sc:sd?i"),
+-    ("sc:sd/sd", "?i", "sc:sd/sd?i"),
+-    ("sc:sd", "?#x", "sc:sd?#x"),
+-    ("sc:sd", "//h/p", "sc://h/p"),
+-    ("sc:sd", "", "sc:sd"),
+-    ("a:", "test-a-colon.html", "a:test-a-colon.html"),
+-    ("a:b", "test-a-colon-b.html", "a:test-a-colon-b.html"),
+-]
+-
+-
+-@pytest.mark.parametrize(("base", "reference", "expected"), OPAQUE_PATH_JOINS)
+-def test_join_opaque_path_base_rfc(base: str, reference: str, expected: str) -> None:
+-    joined = URL(base, mode="rfc").join(URL(reference, mode="rfc"))
+-    assert str(joined) == expected
+-
+-
+-@pytest.mark.parametrize(("base", "reference", "expected"), OPAQUE_PATH_JOINS)
+-def test_join_opaque_path_base_whatwg(base: str, reference: str, expected: str) -> None:
+-    # WHATWG resolves only a fragment against a base with an opaque path.
+-    with pytest.raises(ValueError, match="opaque path"):
+-        URL(base).join(URL(reference))
+-
+-
+-@pytest.mark.parametrize(
+-    ("base", "reference", "expected"),
+-    [
+-        ("mailto:user@example.com", "#frag", "mailto:user@example.com#frag"),
+-        ("sc:sd", "#x", "sc:sd#x"),
+-        ("sc:sd?q", "#", "sc:sd?q#"),
+-        ("a:", "#x", "a:#x"),
+-    ],
+-)
+-@pytest.mark.parametrize("mode", [Mode.WHATWG, Mode.RFC])
+-def test_join_opaque_path_base_fragment(
+-    base: str, reference: str, expected: str, mode: Mode
+-) -> None:
+-    joined = URL(base, mode=mode).join(URL(reference, mode=mode))
+-    assert str(joined) == expected
+-
+-
+ @pytest.mark.parametrize(
+     ("url", "raw_path", "path"),
+     [
+@@ -2545,10 +2493,6 @@ def test_join_preserves_leading_slash() -> None:
+     assert new.path == "/_msearch"
+ 
+ 
+-def test_empty_authority() -> None:
+-    assert URL("file:///").authority == ""
+-
+-
+ def test_split_result_non_decoded() -> None:
+     with pytest.raises(ValueError):
+         URL(SplitResult("http", "example.com", "path", "qs", "frag"))
+diff --git a/tests/test_url_build.py b/tests/test_url_build.py
+index 27111dd..a5950a2 100644
+--- a/tests/test_url_build.py
++++ b/tests/test_url_build.py
+@@ -1,5 +1,3 @@
+-from typing import Literal
+-
+ import pytest
+ 
+ from yarl import URL
+@@ -246,37 +244,6 @@ def test_build_with_authority_and_host() -> None:
+         URL.build(authority="host.com", host="example.com")
+ 
+ 
+-@pytest.mark.parametrize("mode", ["whatwg", "rfc"])
+-@pytest.mark.parametrize("encoded", [False, True])
+-@pytest.mark.parametrize("scheme", ["http", "sc"])
+-def test_build_with_port_zero_without_host(
+-    scheme: str, encoded: bool, mode: Literal["rfc", "whatwg"]
+-) -> None:
+-    # Port 0 is a port like any other, so it needs a host as port=81 does.
+-    with pytest.raises(
+-        ValueError, match=r"^Can't build URL with \"port\" but without \"host\"\.$"
+-    ):
+-        URL.build(scheme=scheme, port=0, encoded=encoded, mode=mode)
+-
+-
+-def test_build_with_authority_and_port_zero() -> None:
+-    with pytest.raises(
+-        ValueError,
+-        match=r"^Can't mix \"authority\" with \"user\", \"password\", \"host\" or \"port\"\.$",
+-    ):
+-        URL.build(scheme="http", authority="example.com:81", port=0)
+-
+-
+-def test_build_with_host_and_port_zero() -> None:
+-    u = URL.build(scheme="http", host="example.com", port=0)
+-    assert str(u) == "http://example.com:0"
+-    assert u.port == 0
+-
+-
+-def test_build_without_host_and_port() -> None:
+-    assert str(URL.build(scheme="http", port=None)) == "http:"
+-
+-
+ @pytest.mark.parametrize(
+     ("host", "is_authority"),
+     [
+diff --git a/tests/test_url_empty_components.py b/tests/test_url_empty_components.py
+index e7c8a07..ed544a5 100644
+--- a/tests/test_url_empty_components.py
++++ b/tests/test_url_empty_components.py
+@@ -241,8 +241,6 @@ def test_human_repr() -> None:
+         ("http://example.org/foo/bar?", "#f", "http://example.org/foo/bar?#f"),
+         ("http://example.org/foo/bar", "foo://", "foo://"),
+         ("file://host/", "///C:/", "file:///C:/"),
+-        # http needs a host, so WHATWG reads it after the slashes.
+-        ("http://example.com/x", "///a", "http://a"),
+         ("file://host/", "file:///C:/", "file:///C:/"),
+         ("sc:///pa/pa", "i", "sc:///pa/i"),
+         ("sc:///pa/pa", "?i", "sc:///pa/pa?i"),
+@@ -288,12 +286,11 @@ def test_mode_change_keeps_empty_components() -> None:
+     assert str(base.join(URL("b?"))) == "sc:///b?"
+ 
+ 
+-# WHATWG always writes "//" for a file URL; RFC 3986 only when the URL has
+-# an authority. Other special schemes need a host, "http:/" has none.
++# WHATWG always writes "//" for a special scheme; RFC 3986 only when the
++# URL has an authority.
+ @pytest.mark.parametrize(
+     ("url", "whatwg", "rfc"),
+     [
+-        ("http:/", "http:/", "http:/"),
+         ("file:/p", "file:///p", "file:/p"),
+         ("file:///p", "file:///p", "file:///p"),
+         ("gopher:/x", "gopher:/x", "gopher:/x"),
+@@ -311,12 +308,11 @@ def test_build_special_scheme_by_mode() -> None:
+ 
+ 
+ # URLs are equal exactly when they print the same: RFC mode prints the
+-# empty authority of a file URL, WHATWG mode always prints "//".
++# empty authority of a special scheme, WHATWG mode always prints "//".
+ @pytest.mark.parametrize(
+     ("first", "second", "equal"),
+     [
+         (URL("file:/p"), URL("file:///p"), True),
+-        (URL("http:/"), URL("http:/", mode="rfc"), True),
+         (URL("file:/p", mode="rfc"), URL("file:///p", mode="rfc"), False),
+         (URL("file:/p"), URL("file:///p", mode="rfc"), True),
+         (URL("http:/x"), URL("http:/x", mode="rfc"), False),
+diff --git a/tests/test_url_join_empty_authority.py b/tests/test_url_join_empty_authority.py
+deleted file mode 100644
+index fea843b..0000000
+--- a/tests/test_url_join_empty_authority.py
++++ /dev/null
+@@ -1,173 +0,0 @@
+-"""join() of a reference with an empty authority against a base needing a host.
+-
+-RFC 3986 section 5.2.2 takes the empty authority of a reference such as
+-"///a", and RFC 9110 section 4.2.1 rejects the resulting "http:///a", so RFC
+-3986 mode fails. The WHATWG URL Standard skips all the slashes after a
+-special scheme other than file and reads the host after them, so in WHATWG
+-mode "///a/b" against an http base is "http://a/b".
+-"""
+-
+-import pickle
+-
+-import pytest
+-
+-from yarl import URL
+-
+-
+-@pytest.mark.parametrize(
+-    ("base", "reference", "expected"),
+-    [
+-        ("http://example.org/", "///test", "http://test"),
+-        ("http://example.org/", "///example.org/path", "http://example.org/path"),
+-        ("http://example.org/", "///example.org/../path", "http://example.org/path"),
+-        ("http://example.org/", "////a/b", "http://a/b"),
+-        ("http://example.org/", "///\\//\\//test", "http://test"),
+-        (
+-            "http://example.org/",
+-            "/\\/\\//example.org/../path",
+-            "http://example.org/path",
+-        ),
+-        ("http://example.org/", "///a?q#f", "http://a/?q#f"),
+-        ("http://example.org/", "///a?", "http://a/?"),
+-        ("http://example.org/", "///u:p@h:81/x", "http://u:p@h:81/x"),
+-        ("http://example.org/", "///[::1]/x", "http://[::1]/x"),
+-        ("http://example.org/", "/\\/\\/[::1]/x", "http://[::1]/x"),
+-        ("http://example.org/", "///%5Bu%5D@h/x", "http://%5Bu%5D@h/x"),
+-        ("http://example.org/", "///%41/x", "http://a/x"),
+-        ("http://example.org/", "///%C3%B1/x", "http://xn--ida/x"),
+-        ("http://example.org/", "///0x7f.1/", "http://127.0.0.1/"),
+-        ("https://example.org/a", "///b", "https://b"),
+-        ("ws://example.org/a", "///b:8080", "ws://b:8080"),
+-        ("ftp://example.org/a", "///b/c", "ftp://b/c"),
+-        # Other schemes keep the empty authority of the reference.
+-        ("sc://x/", "///a", "sc:///a"),
+-        ("file://h/", "///a", "file:///a"),
+-    ],
+-)
+-def test_join_whatwg(base: str, reference: str, expected: str) -> None:
+-    assert str(URL(base).join(URL(reference))) == expected
+-
+-
+-@pytest.mark.parametrize(
+-    "reference",
+-    [
+-        "//",
+-        "///",
+-        "//?q",
+-        "///#f",
+-        "///a%2Fb",
+-        # The port and the brackets of the host are read as written.
+-        "///h:%38%30/x",
+-        "/\\/\\/h:%38%30/x",
+-        "///%5B::1%5D/x",
+-        "///C|/x",
+-    ],
+-)
+-def test_join_whatwg_empty_host_rejected(reference: str) -> None:
+-    with pytest.raises(ValueError):
+-        URL("http://example.org/").join(URL(reference))
+-
+-
+-@pytest.mark.parametrize(
+-    ("reference", "expected"),
+-    [
+-        # A space before the query is part of the path, not trailing space.
+-        ("///h/a%41 ?q", "http://h/aA%20?q"),
+-        ("///h/a ?q", "http://h/a%20?q"),
+-    ],
+-)
+-def test_join_whatwg_space_before_query(reference: str, expected: str) -> None:
+-    assert str(URL("http://example.org/").join(URL(reference))) == expected
+-
+-
+-def test_join_whatwg_space_in_host_rejected() -> None:
+-    with pytest.raises(ValueError):
+-        URL("http://example.org/").join(URL("///%41 ?q"))
+-
+-
+-@pytest.mark.parametrize(
+-    ("reference", "expected"),
+-    [
+-        ("///a/%41", "file:///a/A"),
+-        ("////server/%41", "file:////server/A"),
+-        ("///[::1]/x", "file:///%5B::1%5D/x"),
+-        # A space before the query is part of the file name.
+-        ("///a/%41 ?q", "file:///a/A%20?q"),
+-        ("///C|/a ?q", "file:///C:/a%20?q"),
+-    ],
+-)
+-def test_join_file_base_keeps_empty_authority(reference: str, expected: str) -> None:
+-    assert str(URL("file://server/dir/page").join(URL(reference))) == expected
+-
+-
+-@pytest.mark.parametrize(
+-    ("reference", "expected"),
+-    [
+-        ("///%5Bu%5D@h/old", "http://%5Bu%5D@h/new"),
+-        ("///h/old", "http://h/new"),
+-    ],
+-)
+-def test_join_whatwg_edited_reference(reference: str, expected: str) -> None:
+-    url = URL(reference).with_name("new")
+-    assert str(URL("http://example.org/").join(url)) == expected
+-
+-
+-@pytest.mark.parametrize("reference", ["///[::1]/old", "///%5B::1%5D/old"])
+-def test_join_whatwg_edited_reference_ip_literal_rejected(reference: str) -> None:
+-    # with_name() drops the path as written, so the host is read from the
+-    # quoted path, where "[" and "%5B" look the same; both are rejected.
+-    url = URL(reference).with_name("new")
+-    with pytest.raises(ValueError):
+-        URL("http://example.org/").join(url)
+-
+-
+-def test_join_whatwg_written_path_kept() -> None:
+-    # The path as written survives a new query and pickling.
+-    url = URL("///[::1]/x").with_query(a="1")
+-    base = URL("http://example.org/")
+-    assert str(base.join(url)) == "http://[::1]/x?a=1"
+-    assert str(base.join(pickle.loads(pickle.dumps(url)))) == "http://[::1]/x?a=1"
+-
+-
+-@pytest.mark.parametrize(
+-    "base", ["http://example.org/", "https://example.org/a", "ws://example.org/"]
+-)
+-@pytest.mark.parametrize("reference", ["///test", "///example.org/../path", "//"])
+-def test_join_rfc_empty_host_rejected(base: str, reference: str) -> None:
+-    with pytest.raises(ValueError, match="empty host"):
+-        URL(base, mode="rfc").join(URL(reference, mode="rfc"))
+-
+-
+-def test_join_rfc_reference_escaped_brackets_rejected() -> None:
+-    with pytest.raises(ValueError):
+-        URL("http://example.org/").join(URL("///%5B::1%5D/x", mode="rfc"))
+-
+-
+-def test_join_rfc_other_scheme_keeps_empty_authority() -> None:
+-    base = URL("sc://x/", mode="rfc")
+-    assert str(base.join(URL("///a", mode="rfc"))) == "sc:///a"
+-
+-
+-@pytest.mark.parametrize("base", ["https://example.org/a", "sc://x/", "file:///a"])
+-@pytest.mark.parametrize("reference", ["http:", "http:?q", "http:/", "ws:"])
+-def test_join_whatwg_hostless_special_reference_rejected(
+-    base: str, reference: str
+-) -> None:
+-    # Only a base with the same scheme makes these references.
+-    with pytest.raises(ValueError, match="host is required"):
+-        URL(base).join(URL(reference))
+-
+-
+-@pytest.mark.parametrize(
+-    ("reference", "expected"),
+-    [("http:", "http://h/p?q"), ("http:?x", "http://h/p?x")],
+-)
+-def test_join_whatwg_hostless_special_reference_same_scheme(
+-    reference: str, expected: str
+-) -> None:
+-    assert str(URL("http://h/p?q").join(URL(reference))) == expected
+-
+-
+-def test_join_rfc_hostless_special_reference() -> None:
+-    base = URL("https://example.org/foo/bar", mode="rfc")
+-    assert str(base.join(URL("http:", mode="rfc"))) == "http:"
+diff --git a/tests/test_url_opaque_host.py b/tests/test_url_opaque_host.py
+deleted file mode 100644
+index 72c754e..0000000
+--- a/tests/test_url_opaque_host.py
++++ /dev/null
+@@ -1,217 +0,0 @@
+-"""WHATWG mode parses the host of a non-special URL as an opaque host."""
+-
+-import pytest
+-
+-from yarl import URL, Mode
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "whatwg", "rfc"),
+-    [
+-        ("sc://faß.ExAmPlE/", "sc://fa%C3%9F.ExAmPlE/", "sc://xn--fa-hia.example/"),
+-        ("sc://ñ.test/", "sc://%C3%B1.test/", "sc://xn--ida.test/"),
+-        ("sc://ñ", "sc://%C3%B1", "sc://xn--ida"),
+-        ("sc://H%4fSt/p", "sc://H%4fSt/p", "sc://h%4fst/p"),
+-        ("sc://u:p@ÑA:1/", "sc://u:p@%C3%91A:1/", "sc://u:p@xn--a-qga:1/"),
+-        ("sc://[::1]/", "sc://[::1]/", "sc://[::1]/"),
+-        ("sc://1.2.3.4/", "sc://1.2.3.4/", "sc://1.2.3.4/"),
+-    ],
+-)
+-def test_parsed(url: str, whatwg: str, rfc: str) -> None:
+-    assert str(URL(url)) == whatwg
+-    assert str(URL(url, mode="rfc")) == rfc
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "expected"),
+-    [
+-        ("sc://%/", "sc://%/"),
+-        ("sc://\x01\x1f\x7f!/", "sc://%01%1F%7F!/"),
+-        ("foo://!\"$%&'()*+,-.;=_`{}~/", "foo://!\"$%&'()*+,-.;=_`{}~/"),
+-    ],
+-)
+-def test_outside_rfc_grammar(url: str, expected: str) -> None:
+-    assert str(URL(url)) == expected
+-    with pytest.raises(ValueError):
+-        URL(url, mode="rfc")
+-
+-
+-@pytest.mark.parametrize("char", "\x00 #/<>?@[\\]^|")
+-def test_forbidden_host_code_point(char: str) -> None:
+-    with pytest.raises(ValueError, match="cannot contain"):
+-        URL("sc://h").with_host(f"a{char}b")
+-
+-
+-def test_ipvfuture_rejected() -> None:
+-    with pytest.raises(ValueError, match="IPvFuture"):
+-        URL("sc://[v1.x]/")
+-
+-
+-@pytest.mark.parametrize(
+-    ("raw_host", "host"),
+-    [
+-        ("%C3%B1", "ñ"),
+-        ("Ex%41%c3%b1", "Ex%41ñ"),
+-        ("a%FF%C3%B1%E2%82", "a%FFñ%E2%82"),
+-        ("%", "%"),
+-        ("a%251", "a%251"),
+-    ],
+-)
+-def test_host(raw_host: str, host: str) -> None:
+-    url = URL(f"sc://{raw_host}/")
+-    assert url.raw_host == raw_host
+-    assert url.host_subcomponent == raw_host
+-    assert url.host == host
+-    assert url.with_host(host).host == host
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "expected"),
+-    [
+-        ("sc://%C3%B1/", "sc://ñ/"),
+-        # The NFKC form of U+FF0F is "/", which URL() rejects in a host.
+-        ("sc://a%EF%BC%8Fb/", "sc://a%EF%BC%8Fb/"),
+-    ],
+-)
+-def test_human_repr_host(url: str, expected: str) -> None:
+-    assert URL(url).human_repr() == expected
+-    assert URL(expected) == URL(url)
+-
+-
+-def test_host_ipv6() -> None:
+-    assert URL("sc://[fe80::1%25eth0]/").host == "fe80::1%eth0"
+-
+-
+-def test_host_rfc_mode() -> None:
+-    assert URL("sc://ñ", mode="rfc").host == "ñ"
+-
+-
+-def test_host_encoded() -> None:
+-    url = URL("sc://Xn--Ida/", encoded=True)
+-    assert url.raw_host == "Xn--Ida"
+-    assert url.host == "Xn--Ida"
+-
+-
+-def test_relative_reference_host_is_a_domain() -> None:
+-    # Without a scheme there is no telling if the host is opaque.
+-    assert str(URL("//Ñ/x")) == "//xn--ida/x"
+-
+-
+-def test_build_host() -> None:
+-    assert str(URL.build(scheme="sc", host="Ñ")) == "sc://%C3%91"
+-    assert str(URL.build(scheme="sc", host="::1")) == "sc://[::1]"
+-    url = URL.build(scheme="sc", host="Ñ", mode="rfc")
+-    assert str(url) == "sc://xn--ida"
+-
+-
+-def test_build_authority() -> None:
+-    url = URL.build(scheme="sc", authority="u@Ñ:1")
+-    assert str(url) == "sc://u@%C3%91:1"
+-    url = URL.build(scheme="sc", authority="u@[::1]:1")
+-    assert str(url) == "sc://u@[::1]:1"
+-
+-
+-def test_build_uppercase_scheme() -> None:
+-    # URL.build() keeps the scheme as given; "HTTP" is still special.
+-    assert str(URL.build(scheme="HTTP", host="Ñ")) == "HTTP://xn--ida"
+-    url = URL.build(scheme="HTTP", host="h", query_string="q")
+-    assert str(url) == "HTTP://h/?q"
+-    assert url.human_repr() == "HTTP://h/?q="
+-    assert url.with_host("Ñ").host == "ñ"
+-
+-
+-def test_build_encoded() -> None:
+-    assert str(URL.build(scheme="sc", host="Ñ", encoded=True)) == "sc://Ñ"
+-
+-
+-def test_with_host() -> None:
+-    url = URL("sc://h/p").with_host("ExÑ")
+-    assert str(url) == "sc://Ex%C3%91/p"
+-    assert url == URL("sc://ExÑ/p")
+-    assert str(URL("sc://h/p").with_host("::1")) == "sc://[::1]/p"
+-    assert str(URL("sc://h/p", mode="rfc").with_host("ExÑ")) == "sc://xn--ex-0ja/p"
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "scheme", "expected"),
+-    [
+-        ("sc://ExAmPlE/", "http", "http://example/"),
+-        ("sc://u@ñ:1/", "https", "https://u@xn--ida:1/"),
+-        ("sc://LocalHost/x", "file", "file:///x"),
+-        ("sc://ExAmPlE/", "other", "other://ExAmPlE/"),
+-        ("sc://[::1]/", "http", "http://[::1]/"),
+-        ("sc://A{b/", "http", "http://a{b/"),
+-    ],
+-)
+-def test_with_scheme(url: str, scheme: str, expected: str) -> None:
+-    assert str(URL(url).with_scheme(scheme)) == expected
+-
+-
+-@pytest.mark.parametrize("host", ["A%7Cb", "%", "%01"])
+-def test_with_scheme_invalid_domain(host: str) -> None:
+-    # As URL(f"http://{host}/") does.
+-    with pytest.raises(ValueError):
+-        URL(f"sc://{host}/").with_scheme("http")
+-
+-
+-def test_with_scheme_encoded() -> None:
+-    # The URL does not remember that it was built from encoded parts.
+-    url = URL("sc://A|b/", encoded=True)
+-    assert str(url) == "sc://A|b/"
+-    with pytest.raises(ValueError):
+-        url.with_scheme("http")
+-
+-
+-def test_mode_change() -> None:
+-    url = URL("sc://%C3%91/")
+-    assert str(URL(url, mode="rfc")) == "sc://%C3%91/"
+-    assert str(URL(URL("sc://Ñ/", mode="rfc"), mode="whatwg")) == "sc://xn--ida/"
+-
+-
+-@pytest.mark.parametrize(
+-    ("reference", "whatwg", "rfc"),
+-    [
+-        ("x", "sc://%C3%B1/x", "sc://xn--ida/x"),
+-        ("?x", "sc://%C3%B1?x", "sc://xn--ida?x"),
+-        ("#x", "sc://%C3%B1#x", "sc://xn--ida#x"),
+-        ("other://Ñ/", "other://%C3%91/", "other://xn--ida/"),
+-    ],
+-)
+-def test_join(reference: str, whatwg: str, rfc: str) -> None:
+-    assert str(URL("sc://ñ").join(URL(reference))) == whatwg
+-    base = URL("sc://ñ", mode="rfc")
+-    assert str(base.join(URL(reference, mode="rfc"))) == rfc
+-
+-
+-@pytest.mark.parametrize("mode", [Mode.WHATWG, Mode.RFC])
+-@pytest.mark.parametrize(
+-    ("url", "expected"),
+-    [
+-        ("sc://h?x=1", "sc://h?x=1"),
+-        ("sc://h#x", "sc://h#x"),
+-        ("sc://h?", "sc://h?"),
+-        ("sc://h#", "sc://h#"),
+-        ("sc://h?x=1#y", "sc://h?x=1#y"),
+-        ("sc://h", "sc://h"),
+-        ("http://h?x=1", "http://h/?x=1"),
+-        ("http://h#", "http://h/#"),
+-        ("//h?x=1", "//h/?x=1"),
+-    ],
+-)
+-def test_empty_path(url: str, expected: str, mode: Mode) -> None:
+-    parsed = URL(url, mode=mode)
+-    assert str(parsed) == expected
+-    assert parsed.human_repr() == expected
+-    assert parsed.raw_path == "/"
+-
+-
+-def test_empty_path_built() -> None:
+-    assert str(URL("sc://h").with_query(a="1")) == "sc://h?a=1"
+-    assert str(URL("sc://h").with_fragment("f")) == "sc://h#f"
+-    assert str(URL.build(scheme="sc", host="h", query_string="q")) == "sc://h?q"
+-
+-
+-def test_empty_path_equal_to_slash() -> None:
+-    # As "sc://h" and "sc://h/" do, the URLs compare equal.
+-    assert URL("sc://h?x") == URL("sc://h/?x")
+-    assert hash(URL("sc://h?x")) == hash(URL("sc://h/?x"))
+diff --git a/tests/test_url_percent_host.py b/tests/test_url_percent_host.py
+index f0e3fa0..db59ae7 100644
+--- a/tests/test_url_percent_host.py
++++ b/tests/test_url_percent_host.py
+@@ -16,9 +16,6 @@ from yarl import URL
+         ("file://%41/p", "file://a/p"),
+         ("http://%30x7f.1/", "http://127.0.0.1/"),
+         ("http://127.0.0.1%31/", "http://127.0.0.11/"),
+-        # Not in the RFC 3986 reg-name, but not a forbidden domain code point.
+-        ("http://ho%22st/", 'http://ho"st/'),
+-        ("http://ho%7Bst/", "http://ho{st/"),
+     ],
+ )
+ def test_decoded(url: str, expected: str) -> None:
+@@ -37,6 +34,7 @@ def test_decoded(url: str, expected: str) -> None:
+         "http://ho%7Cst/",
+         "http://%25/",
+         "http://%2541/",
++        # Not in the RFC 3986 reg-name, which yarl keeps to.
+         # Invalid UTF-8 decodes to U+FFFD, which IDNA rejects.
+         "https://example.com%80/",
+         # A noncharacter.
+diff --git a/tests/test_url_rfc_grammar.py b/tests/test_url_rfc_grammar.py
+index 8f794de..3e25bb6 100644
+--- a/tests/test_url_rfc_grammar.py
++++ b/tests/test_url_rfc_grammar.py
+@@ -94,7 +94,6 @@ def test_outside_grammar_rejected(url: str, message: str) -> None:
+     [
+         ("http://example.com/a b", "http://example.com/a%20b"),
+         ("http://example.com/#a#b", "http://example.com/#a%23b"),
+-        ("http://example.com/%zz", "http://example.com/%zz"),
+         (" http://example.com/a\tb ", "http://example.com/ab"),
+     ],
+ )
+diff --git a/tests/test_url_special_authority.py b/tests/test_url_special_authority.py
+index dc69506..44d3a07 100644
+--- a/tests/test_url_special_authority.py
++++ b/tests/test_url_special_authority.py
+@@ -64,24 +64,6 @@ def test_rejected(url: str) -> None:
+         URL(url)
+ 
+ 
+-@pytest.mark.parametrize(
+-    ("url", "whatwg", "rfc"),
+-    [
+-        # Nothing to read as a host: kept as a reference to a base.
+-        ("http:", "http:", "http:"),
+-        ("http:/", "http:/", "http:/"),
+-        ("http:?q", "http:?q", "http:?q"),
+-        # file and non-special schemes are not affected.
+-        ("file:p", "file:///p", "file:p"),
+-        ("sc:example.com/", "sc:example.com/", "sc:example.com/"),
+-    ],
+-)
+-def test_kept_without_authority(url: str, whatwg: str, rfc: str) -> None:
+-    assert URL(url).raw_host is None
+-    assert str(URL(url)) == whatwg
+-    assert str(URL(url, mode="rfc")) == rfc
+-
+-
+ @pytest.mark.parametrize(
+     "url",
+     [
+diff --git a/tests/test_url_special_empty_host.py b/tests/test_url_special_empty_host.py
+deleted file mode 100644
+index 3030c73..0000000
+--- a/tests/test_url_special_empty_host.py
++++ /dev/null
+@@ -1,107 +0,0 @@
+-"""An empty host is rejected for the special schemes that need one.
+-
+-The WHATWG host parser fails on an empty host for every special scheme but
+-file, and RFC 9110 section 4.2.1 rejects an http URI with an empty host, so
+-"http://", "http:///" and "http://?q" are invalid in both modes. "http:" and
+-"http:?q" have no authority: they are references to a base, and are written
+-out without "//".
+-"""
+-
+-import pickle
+-from collections.abc import Callable
+-from typing import Literal
+-
+-import pytest
+-
+-from yarl import URL
+-
+-
+-@pytest.mark.parametrize(
+-    "url",
+-    [
+-        "http://",
+-        "http:///",
+-        "http:////",
+-        "http://?",
+-        "http://#",
+-        "http://?q",
+-        "http:///?q",
+-        "http://#f",
+-        "HTTP://?",
+-        "https://",
+-        "ws://",
+-        "wss://?q",
+-        "ftp://#f",
+-    ],
+-)
+-@pytest.mark.parametrize("mode", ["whatwg", "rfc"])
+-def test_rejected(url: str, mode: Literal["whatwg", "rfc"]) -> None:
+-    with pytest.raises(ValueError, match="host is required"):
+-        URL(url, mode=mode)
+-
+-
+-def test_path_after_empty_authority() -> None:
+-    # WHATWG mode skips the slashes and reads "p" as the host.
+-    assert str(URL("http:///p")) == "http://p"
+-    with pytest.raises(ValueError, match="host is required"):
+-        URL("http:///p", mode="rfc")
+-
+-
+-@pytest.mark.parametrize("url", ["file://", "sc://", "sc://?q"])
+-def test_other_schemes(url: str) -> None:
+-    # A file URL and a non-special URL may have an empty host.
+-    assert URL(url).raw_host is None
+-
+-
+-@pytest.mark.parametrize("url", ["http:", "http:/", "http:?q=1", "http:#f", "ws:?"])
+-def test_reference_without_authority(url: str) -> None:
+-    whatwg_url = URL(url)
+-    assert str(whatwg_url) == url
+-    assert whatwg_url.raw_host is None
+-    assert whatwg_url.raw_authority == ""
+-    assert whatwg_url.human_repr() == url
+-    assert URL(str(whatwg_url)) == whatwg_url
+-    assert pickle.loads(pickle.dumps(whatwg_url)) == whatwg_url
+-    rfc_url = URL(url, mode="rfc")
+-    assert str(rfc_url) == url
+-    assert whatwg_url == rfc_url
+-    assert hash(whatwg_url) == hash(rfc_url)
+-
+-
+-def test_reference_not_equal_with_root_path() -> None:
+-    assert URL("http:") != URL("http:/")
+-
+-
+-@pytest.mark.parametrize(
+-    ("make", "expected"),
+-    [
+-        (lambda: URL.build(scheme="http"), "http:"),
+-        (lambda: URL.build(scheme="https", query_string="q"), "https:?q"),
+-        (lambda: URL("http:").with_query("a=1"), "http:?a=1"),
+-        (lambda: URL("http:").with_fragment("f"), "http:#f"),
+-        (lambda: URL("http:?q").parent, "http:"),
+-    ],
+-)
+-def test_derived(make: Callable[[], URL], expected: str) -> None:
+-    assert str(make()) == expected
+-
+-
+-@pytest.mark.parametrize(
+-    ("reference", "expected"),
+-    [
+-        ("http:", "http://h/a?x"),
+-        ("http:?q", "http://h/a?q"),
+-        ("http:#f", "http://h/a?x#f"),
+-    ],
+-)
+-def test_join(reference: str, expected: str) -> None:
+-    # Against a base with the same scheme it is a relative reference.
+-    assert str(URL("http://h/a?x").join(URL(reference))) == expected
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "expected"),
+-    [("http:", "http:"), ("sc://", "sc://"), ("file://", "file:///")],
+-)
+-def test_mode_change(url: str, expected: str) -> None:
+-    assert str(URL(URL(url, mode="rfc"))) == expected
+diff --git a/tests/test_url_update_netloc.py b/tests/test_url_update_netloc.py
+index f9575c8..79a04e7 100644
+--- a/tests/test_url_update_netloc.py
++++ b/tests/test_url_update_netloc.py
+@@ -321,11 +321,6 @@ def test_with_port_keeps_query_and_fragment() -> None:
+     assert str(url.with_port(8888)) == "http://example.com:8888/?a=1#frag"
+ 
+ 
+-def test_with_port_percent_encoded() -> None:
+-    url = URL("http://user%name:pass%word@example.com/")
+-    assert str(url.with_port(808)) == "http://user%name:pass%word@example.com:808/"
+-
+-
+ def test_with_port_for_relative_url() -> None:
+     with pytest.raises(ValueError):
+         URL("path/to").with_port(1234)
+diff --git a/tests/test_url_userinfo_encoding.py b/tests/test_url_userinfo_encoding.py
+deleted file mode 100644
+index b64f67f..0000000
+--- a/tests/test_url_userinfo_encoding.py
++++ /dev/null
+@@ -1,153 +0,0 @@
+-"""WHATWG mode encodes the userinfo with the userinfo percent-encode set.
+-
+-The WHATWG URL Standard splits the userinfo at the last "@" and keeps "[",
+-"]" and, for a scheme that is not special, "\\" in it, percent-encoded. RFC
+-3986 has none of them in its userinfo, so RFC mode rejects them.
+-"""
+-
+-import pytest
+-
+-from yarl import URL
+-
+-# The cases of the WPT URL corpus, with the base they are joined with.
+-WPT_CASES = [
+-    pytest.param(
+-        "http://&a:foo(b]c@d:2/",
+-        "http://example.org/foo/bar",
+-        "http://&a:foo(b%5Dc@d:2/",
+-        id="bracket-in-password",
+-    ),
+-    pytest.param(
+-        "https://user:pass[\x7f@foo/bar",
+-        "http://example.org",
+-        "https://user:pass%5B%7F@foo/bar",
+-        id="bracket-and-del-in-password",
+-    ),
+-    pytest.param(
+-        "wss:// !\"$%&'()*+,-.;<=>@[]^_`{|}~@host/",
+-        None,
+-        "wss://%20!%22$%&'()*+,-.%3B%3C%3D%3E%40%5B%5D%5E_%60%7B%7C%7D~@host/",
+-        id="special-username",
+-    ),
+-    pytest.param(
+-        "wss://joe: !\"$%&'()*+,-.:;<=>@[]^_`{|}~@host/",
+-        None,
+-        "wss://joe:%20!%22$%&'()*+,-.%3A%3B%3C%3D%3E%40%5B%5D%5E_%60%7B%7C%7D~@host/",
+-        id="special-password",
+-    ),
+-    pytest.param(
+-        "foo:// !\"$%&'()*+,-.;<=>@[\\]^_`{|}~@host/",
+-        None,
+-        "foo://%20!%22$%&'()*+,-.%3B%3C%3D%3E%40%5B%5C%5D%5E_%60%7B%7C%7D~@host/",
+-        id="non-special-username",
+-    ),
+-    pytest.param(
+-        "foo://joe: !\"$%&'()*+,-.:;<=>@[\\]^_`{|}~@host/",
+-        None,
+-        "foo://joe:%20!%22$%&'()*+,-.%3A%3B%3C%3D%3E%40%5B%5C%5D%5E_%60%7B%7C%7D~@host/",
+-        id="non-special-password",
+-    ),
+-]
+-
+-
+-@pytest.mark.parametrize(("url", "base", "expected"), WPT_CASES)
+-def test_wpt_whatwg_mode(url: str, base: str | None, expected: str) -> None:
+-    parsed = URL(url) if base is None else URL(base).join(URL(url))
+-    assert str(parsed) == expected
+-    assert URL(expected) == parsed
+-
+-
+-@pytest.mark.parametrize(("url", "base", "expected"), WPT_CASES)
+-def test_wpt_rfc_mode_rejects(url: str, base: str | None, expected: str) -> None:
+-    with pytest.raises(ValueError, match="RFC 3986|userinfo cannot contain '@'"):
+-        URL(url, mode="rfc")
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "expected", "user"),
+-    [
+-        ("http://a;b=c@h/", "http://a%3Bb%3Dc@h/", "a;b=c"),
+-        # "%" is kept as written, also when it starts no percent-encoded
+-        # octet, and so are the percent-encoded octets.
+-        ("http://a%b@h/", "http://a%b@h/", "a%b"),
+-        ("http://a%41%3b@h/", "http://a%41%3b@h/", "aA;"),
+-        ("http://a@b@h/", "http://a%40b@h/", "a@b"),
+-        ("http://[a]@h/", "http://%5Ba%5D@h/", "[a]"),
+-        ("http://[a@h/", "http://%5Ba@h/", "[a"),
+-        ("http://é@h/", "http://%C3%A9@h/", "é"),
+-        ("sc://a\\b@h/", "sc://a%5Cb@h/", "a\\b"),
+-    ],
+-)
+-def test_parse_whatwg_mode(url: str, expected: str, user: str) -> None:
+-    parsed = URL(url)
+-    assert str(parsed) == expected
+-    assert parsed.user == user
+-    assert parsed.host == "h"
+-
+-
+-@pytest.mark.parametrize(
+-    "url",
+-    [
+-        # A special scheme reads "\\" as "/", so it ends the authority; with
+-        # encoded=True it is not read, and it is rejected as before.
+-        "http://a\\b@h/",
+-        "//a\\b@h/",
+-        # "\\" is a forbidden host code point.
+-        "sc://a@h\\b/",
+-        # Brackets in the host still have to be an IP-literal.
+-        "http://a[b]@h[::1]/",
+-        "http://a@[h/",
+-    ],
+-)
+-def test_encoded_rejected(url: str) -> None:
+-    with pytest.raises(ValueError):
+-        URL(url, encoded=True)
+-
+-
+-def test_encoded_keeps_userinfo() -> None:
+-    url = URL("sc://a[\\]b@h/", encoded=True)
+-    assert str(url) == "sc://a[\\]b@h/"
+-    assert url.raw_user == "a[\\]b"
+-    assert url.host == "h"
+-
+-
+-def test_rfc_mode_keeps_sub_delims() -> None:
+-    assert str(URL("http://a;b=c@h/", mode="rfc")) == "http://a;b=c@h/"
+-
+-
+-def test_build_whatwg_mode() -> None:
+-    url = URL.build(scheme="http", user="a;b=%", password="c;d", host="h")
+-    assert str(url) == "http://a%3Bb%3D%25:c%3Bd@h"
+-    assert url.user == "a;b=%"
+-    assert url.password == "c;d"
+-    assert url == URL(str(url))
+-
+-
+-def test_build_rfc_mode() -> None:
+-    url = URL.build(scheme="http", user="a;b", password="c=d", host="h", mode="rfc")
+-    assert str(url) == "http://a;b:c=d@h"
+-
+-
+-def test_build_authority() -> None:
+-    url = URL.build(scheme="http", authority="a[b]:c;d@h")
+-    assert str(url) == "http://a%5Bb%5D:c%3Bd@h"
+-
+-
+-def test_with_user_and_password() -> None:
+-    url = URL("http://h/").with_user("a;b").with_password("x=y")
+-    assert str(url) == "http://a%3Bb:x%3Dy@h/"
+-    rfc_url = URL("http://h/", mode="rfc").with_user("a;b").with_password("x=y")
+-    assert str(rfc_url) == "http://a;b:x=y@h/"
+-
+-
+-def test_mode_change() -> None:
+-    rfc_url = URL("http://a;b:c=d@h/", mode="rfc")
+-    whatwg_url = URL(rfc_url, mode="whatwg")
+-    assert str(whatwg_url) == "http://a%3Bb:c%3Dd@h/"
+-    assert whatwg_url == URL("http://a;b:c=d@h/")
+-    assert whatwg_url.user == "a;b"
+-
+-
+-def test_join_rfc_reference() -> None:
+-    joined = URL("http://x/").join(URL("//a;b@h/p", mode="rfc"))
+-    assert str(joined) == "http://a%3Bb@h/p"
+diff --git a/tests/test_url_userinfo_whatwg.py b/tests/test_url_userinfo_whatwg.py
+index 2d59d0a..21e3dce 100644
+--- a/tests/test_url_userinfo_whatwg.py
++++ b/tests/test_url_userinfo_whatwg.py
+@@ -195,21 +195,6 @@ def test_mode_change(url: str, whatwg: str) -> None:
+     assert str(URL(whatwg_url, mode="rfc")) == str(whatwg_url)
+ 
+ 
+-def test_mode_change_password_with_colon() -> None:
+-    # The password "p:" is not empty, though the authority has ":@" in it.
+-    rfc_url = URL("sc://u:p:@h/", encoded=True, mode="rfc")
+-    whatwg_url = URL(rfc_url, mode="whatwg")
+-    assert str(whatwg_url) == "sc://u:p%3A@h/"
+-    assert whatwg_url.raw_password == "p%3A"
+-    assert whatwg_url == URL("sc://u:p:@h/")
+-
+-
+-def test_with_scheme_encoded_password_with_colon() -> None:
+-    # encoded=True keeps ":" in the password, which is not empty.
+-    url = URL("sc://u:p:@h/", encoded=True)
+-    assert str(url.with_scheme("http")) == "http://u:p:@h/"
+-
+-
+ @pytest.mark.parametrize(
+     ("base", "ref", "whatwg", "rfc"),
+     [
+diff --git a/tests/test_url_whatwg_domain.py b/tests/test_url_whatwg_domain.py
+deleted file mode 100644
+index faa3c90..0000000
+--- a/tests/test_url_whatwg_domain.py
++++ /dev/null
+@@ -1,140 +0,0 @@
+-"""WHATWG mode keeps '"', "`", "{" and "}" in the host of a special URL.
+-
+-The WHATWG URL Standard only rejects the forbidden domain code points in a
+-domain; RFC 3986 mode keeps to the reg-name grammar, which has none of them.
+-"""
+-
+-import pytest
+-
+-from yarl import URL
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "host"),
+-    [
+-        ("http://!\"$&'()*+,-.;=_`{}~/", "!\"$&'()*+,-.;=_`{}~"),
+-        ("wss://!\"$&'()*+,-.;=_`{}~/", "!\"$&'()*+,-.;=_`{}~"),
+-        ('https://a"b/', 'a"b'),
+-        ("ftp://a`b/", "a`b"),
+-    ],
+-)
+-def test_parsed(url: str, host: str) -> None:
+-    parsed = URL(url)
+-    assert str(parsed) == url
+-    assert parsed.host == host
+-    assert URL(str(parsed)) == parsed
+-    with pytest.raises(ValueError, match="do not allow"):
+-        URL(url, mode="rfc")
+-
+-
+-def test_lowercased() -> None:
+-    assert str(URL("http://A{B}/")) == "http://a{b}/"
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "expected", "host"),
+-    [
+-        ("http://faß.A{b}/", "http://xn--fa-hia.a{b}/", "faß.a{b}"),
+-        ("http://faß。a{b}.ñ/", "http://xn--fa-hia.a{b}.xn--ida/", "faß.a{b}.ñ"),
+-        ("http://ñ{b}/", "http://xn--{b}-6ma/", "ñ{b}"),
+-        ("http://a｛b/", "http://a{b/", "a{b"),
+-        ("http://faß.a｛b｝/", "http://xn--fa-hia.a{b}/", "faß.a{b}"),
+-        ("http://Faß{B}.example/", "http://xn--fa{b}-mqa.example/", "faß{b}.example"),
+-        ("http://☃{b}.ß/", "http://xn--{b}-rm5a.xn--zca/", "☃{b}.ß"),
+-    ],
+-)
+-def test_non_ascii(url: str, expected: str, host: str) -> None:
+-    # UTS #46 maps the host and a label with "{" is encoded with Punycode,
+-    # so "faß" is not mapped to "fass" as the IDNA2003 fallback for the
+-    # whole host would do.
+-    parsed = URL(url)
+-    assert str(parsed) == expected
+-    assert parsed.host == host
+-    with pytest.raises(ValueError):
+-        URL(url, mode="rfc")
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "host"),
+-    [
+-        ("http://xn--fa{b}-mqa/", "faß{b}"),
+-        ("http://xn--fa{b}-mqa.xn--ida/", "faß{b}.ñ"),
+-        # Not Punycode, kept as written.
+-        ("http://xn--{b}/", "xn--{b}"),
+-    ],
+-)
+-def test_decoded_a_label(url: str, host: str) -> None:
+-    parsed = URL(url)
+-    assert str(parsed) == url
+-    assert parsed.host == host
+-
+-
+-@pytest.mark.parametrize(
+-    "url",
+-    [
+-        # A noncharacter, which UTS #46 and IDNA2003 reject.
+-        "http://a\ufdd0{b}/",
+-        # Left-to-right and right-to-left letters in one label.
+-        "http://x{\u05d0}/",
+-        "http://x{\u05d0}.com/",
+-        # A right-to-left label must not end with "}".
+-        "http://\u05d0{\u05d1}/",
+-        # A label must not start with a combining mark.
+-        "http://\u0301{b}/",
+-        "http://a.\u0301{b}/",
+-    ],
+-)
+-def test_invalid_label(url: str) -> None:
+-    with pytest.raises(ValueError):
+-        URL(url)
+-
+-
+-def test_bidi_label() -> None:
+-    # A left-to-right label next to a right-to-left one.
+-    assert str(URL("http://1{a}.\u05d0/")) == "http://1{a}.xn--4db/"
+-
+-
+-@pytest.mark.parametrize("char", "^|<> %")
+-def test_forbidden_domain_code_point_parsed(char: str) -> None:
+-    with pytest.raises(ValueError):
+-        URL(f"http://a{{{char}}}/")
+-
+-
+-@pytest.mark.parametrize("char", "\x00\t\n\r #%/:<>?@[\\]^|\x7f")
+-def test_forbidden_domain_code_point_with_host(char: str) -> None:
+-    with pytest.raises(ValueError, match="cannot contain"):
+-        URL("http://example.com/").with_host(f"a{{{char}}}")
+-
+-
+-@pytest.mark.parametrize("url", ["http://a{b}%7C/", "http://a{b}.1/"])
+-def test_rejected(url: str) -> None:
+-    with pytest.raises(ValueError):
+-        URL(url)
+-
+-
+-def test_build() -> None:
+-    assert str(URL.build(scheme="http", host="A{b}")) == "http://a{b}"
+-    assert str(URL.build(scheme="http", authority="u@a{b}:1")) == "http://u@a{b}:1"
+-    with pytest.raises(ValueError, match=r"cannot contain '\{' \(at position 1\)"):
+-        URL.build(scheme="http", host="a{b}", mode="rfc")
+-
+-
+-def test_with_host() -> None:
+-    assert str(URL("http://example.com/p").with_host('A"b')) == 'http://a"b/p'
+-    with pytest.raises(ValueError, match="cannot contain '\"'"):
+-        URL("http://example.com/p", mode="rfc").with_host('a"b')
+-
+-
+-def test_with_host_non_ascii_rfc() -> None:
+-    with pytest.raises(ValueError, match=r"cannot contain '\{' \(at position 5\)"):
+-        URL("http://example.com/p", mode="rfc").with_host("faß.a{b}")
+-
+-
+-def test_with_scheme() -> None:
+-    assert str(URL("sc://faß.A{b}/").with_scheme("https")) == "https://xn--fa-hia.a{b}/"
+-
+-
+-def test_join() -> None:
+-    assert str(URL("http://example.com/a").join(URL("//a`b/c"))) == "http://a`b/c"
+-    with pytest.raises(ValueError):
+-        URL("//a`b/c", mode="rfc")
+diff --git a/tests/test_url_whatwg_invalid_percent.py b/tests/test_url_whatwg_invalid_percent.py
+deleted file mode 100644
+index 85d1b4f..0000000
+--- a/tests/test_url_whatwg_invalid_percent.py
++++ /dev/null
+@@ -1,139 +0,0 @@
+-"""A "%" that does not start a "%XX" escape.
+-
+-The WHATWG URL Standard keeps such a "%" as written in the path, the query
+-and the fragment (a validation error, not a failure). RFC 3986 does not allow
+-it, so RFC mode rejects it.
+-"""
+-
+-import pytest
+-
+-from yarl import URL
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "expected", "path", "query_string", "fragment"),
+-    [
+-        (
+-            "http://example.com/foo/%2e%2",
+-            "http://example.com/foo/.%2",
+-            "/foo/.%2",
+-            "",
+-            "",
+-        ),
+-        ("http://example.com/foo%", "http://example.com/foo%", "/foo%", "", ""),
+-        ("http://example.com/foo%2", "http://example.com/foo%2", "/foo%2", "", ""),
+-        (
+-            "http://example.com/foo%2zbar",
+-            "http://example.com/foo%2zbar",
+-            "/foo%2zbar",
+-            "",
+-            "",
+-        ),
+-        (
+-            "http://example.com/foo%2Â©zbar",
+-            "http://example.com/foo%2%C3%82%C2%A9zbar",
+-            "/foo%2Â©zbar",
+-            "",
+-            "",
+-        ),
+-        ("wow:%NBD", "wow:%NBD", "%NBD", "", ""),
+-        ("wow:%1G", "wow:%1G", "%1G", "", ""),
+-        (
+-            "http://example.org/test?%GH",
+-            "http://example.org/test?%GH",
+-            "/test",
+-            "%GH",
+-            "",
+-        ),
+-        (
+-            "http://example.org/test?a#%GH",
+-            "http://example.org/test?a#%GH",
+-            "/test",
+-            "a",
+-            "%GH",
+-        ),
+-    ],
+-)
+-def test_whatwg_keeps_invalid_percent(
+-    url: str, expected: str, path: str, query_string: str, fragment: str
+-) -> None:
+-    parsed = URL(url)
+-    assert str(parsed) == expected
+-    assert parsed.path == path
+-    assert parsed.query_string == query_string
+-    assert parsed.fragment == fragment
+-    assert URL(expected) == parsed
+-
+-    with pytest.raises(ValueError, match="not followed by two hexadecimal digits"):
+-        URL(url, mode="rfc")
+-
+-
+-def test_valid_escapes_unchanged() -> None:
+-    url = URL("http://example.com/%7e%2f%zz?%3d%GH#%41%")
+-    assert str(url) == "http://example.com/~%2F%zz?%3D%GH#A%"
+-    assert url.raw_path == "/~%2F%zz"
+-    assert url.path == "/~/%zz"
+-    assert url.query == {"=%GH": ""}
+-
+-
+-@pytest.mark.parametrize(
+-    ("url", "expected"),
+-    [
+-        ("http://h/%4%31", "http://h/%4%31"),
+-        ("http://h/%%34%31", "http://h/%%341"),
+-        ("http://h/?%4%31", "http://h/?%4%31"),
+-        ("http://h/#%4%31", "http://h/#%4%31"),
+-    ],
+-)
+-def test_kept_percent_does_not_combine_with_decoded_digits(
+-    url: str, expected: str
+-) -> None:
+-    # Decoding "%31" after "%4" would make the new escape "%41"
+-    parsed = URL(url)
+-    assert str(parsed) == expected
+-    assert URL(expected) == parsed
+-
+-
+-def test_dot_segments() -> None:
+-    assert str(URL("http://example.com/a%/../b%")) == "http://example.com/b%"
+-
+-
+-def test_join() -> None:
+-    base = URL("http://example.com/a/b")
+-    assert str(base.join(URL("foo%"))) == "http://example.com/a/foo%"
+-    assert str(base.join(URL("../x%2zy"))) == "http://example.com/x%2zy"
+-    assert str(base.join(URL("?%GH"))) == "http://example.com/a/b?%GH"
+-    assert str(base.join(URL("#%GH"))) == "http://example.com/a/b#%GH"
+-    assert str(base.join(URL("http:/a/foo%"))) == "http://example.com/a/foo%"
+-
+-
+-def test_special_authority_path() -> None:
+-    assert str(URL("http:/a/foo%")) == "http://a/foo%"
+-
+-
+-def test_built_values_are_decoded() -> None:
+-    # A "%" in a value that is not encoded is a percent sign, so the
+-    # builders encode it as "%25" in both modes.
+-    url = URL.build(
+-        scheme="http", host="h", path="/p%", query_string="%GH", fragment="%GH"
+-    )
+-    assert str(url) == "http://h/p%25?%25GH#%25GH"
+-    assert url.path == "/p%"
+-    parsed = URL("http://h/foo%2z")
+-    assert str(parsed / "x%") == "http://h/foo%2z/x%25"
+-    assert str(parsed.with_path("/p%")) == "http://h/p%25"
+-    assert str(parsed.with_query("a=%GH")) == "http://h/foo%2z?a=%25GH"
+-    assert str(parsed.with_fragment("%GH")) == "http://h/foo%2z#%25GH"
+-
+-
+-def test_encoded_unchanged() -> None:
+-    url = URL.build(
+-        scheme="http",
+-        host="h",
+-        path="/p%",
+-        query_string="%GH",
+-        fragment="%GH",
+-        encoded=True,
+-        mode="rfc",
+-    )
+-    assert str(url) == "http://h/p%?%GH#%GH"
+diff --git a/yarl/_parse.py b/yarl/_parse.py
+index 42aa243..ed7fae7 100644
+--- a/yarl/_parse.py
++++ b/yarl/_parse.py
+@@ -97,23 +97,13 @@ def split_url(url: str) -> tuple[str, str, str, str, str, int]:
+         # Backslash is not valid in the authority component per RFC 3986.
+         # WHATWG parsers treat \ as a path separator for special schemes, so
+         # accepting it in the authority can cause host parsing ambiguity.
+-        # Other schemes keep it, percent-encoded, in the userinfo, which goes
+-        # up to the last "@" as in split_netloc().
+-        if "\\" in netloc and (
+-            not scheme or scheme in SPECIAL_SCHEMES or "\\" in netloc.rpartition("@")[2]
+-        ):
++        if "\\" in netloc:
+             raise ValueError(
+                 "Invalid URL: backslash ('\\') is not allowed in the authority "
+                 "component per RFC 3986."
+             )
+         has_left_bracket = "[" in netloc
+         has_right_bracket = "]" in netloc
+-        if (has_left_bracket or has_right_bracket) and "@" in netloc:
+-            # Brackets in the userinfo are no IP-literal, WHATWG percent-encodes
+-            # them.
+-            hostinfo = netloc.rpartition("@")[2]
+-            has_left_bracket = "[" in hostinfo
+-            has_right_bracket = "]" in hostinfo
+         if (has_left_bracket and not has_right_bracket) or (
+             has_right_bracket and not has_left_bracket
+         ):
+@@ -316,18 +306,6 @@ def unsplit_result_empty(
+     return f"{url}#{fragment}" if fragment or empty & EMPTY_FRAGMENT else url
+ 
+ 
+-def quote_userinfo(value: str, whatwg: bool) -> str:
+-    """Encode a username or password that is not encoded.
+-
+-    WHATWG mode also encodes ";" and "=", which are in the userinfo
+-    percent-encode set of the WHATWG URL Standard; RFC 3986 allows them.
+-    """
+-    value = QUOTER(value)
+-    if whatwg and (";" in value or "=" in value):
+-        value = value.replace(";", "%3B").replace("=", "%3D")
+-    return value
+-
+-
+ @lru_cache  # match the same size as urlsplit
+ def make_netloc(
+     user: str | None,
+@@ -335,12 +313,10 @@ def make_netloc(
+     host: str | None,
+     port: int | None,
+     encode: bool = False,
+-    whatwg: bool = False,
+ ) -> str:
+     """Make netloc from parts.
+ 
+-    The user and password are encoded if encode is True, see
+-    quote_userinfo() for whatwg. A user that is
++    The user and password are encoded if encode is True. A user that is
+     not None is written with "@" even when it is empty, as RFC 3986 mode
+     keeps an empty userinfo; WHATWG mode passes None for an empty user.
+ 
+@@ -357,12 +333,12 @@ def make_netloc(
+         if not user:
+             user = ""
+         elif encode:
+-            user = quote_userinfo(user, whatwg)
++            user = QUOTER(user)
+         if encode:
+-            password = quote_userinfo(password, whatwg)
++            password = QUOTER(password)
+         user = f"{user}:{password}"
+     elif user and encode:
+-        user = quote_userinfo(user, whatwg)
++        user = QUOTER(user)
+     return f"{user}@{ret}"
+ 
+ 
+diff --git a/yarl/_quoters.py b/yarl/_quoters.py
+index 0e59e96..40cf678 100644
+--- a/yarl/_quoters.py
++++ b/yarl/_quoters.py
+@@ -13,14 +13,6 @@ QUERY_REQUOTER = _Quoter(safe="?/:@", protected="=+&;", qs=True)
+ QUERY_PART_QUOTER = _Quoter(safe="?/:@", qs=True, requote=False)
+ FRAGMENT_QUOTER = _Quoter(safe="?/:@", requote=False)
+ FRAGMENT_REQUOTER = _Quoter(safe="?/:@")
+-# WHATWG mode keeps a "%" that does not start a "%XX" escape in parsed URLs
+-WHATWG_PATH_REQUOTER = _Quoter(
+-    safe="@:", protected=":/@!$&'()*+,;=", keep_invalid_pct=True
+-)
+-WHATWG_QUERY_REQUOTER = _Quoter(
+-    safe="?/:@", protected="=+&;", qs=True, keep_invalid_pct=True
+-)
+-WHATWG_FRAGMENT_REQUOTER = _Quoter(safe="?/:@", keep_invalid_pct=True)
+ 
+ UNQUOTER = _Unquoter()
+ PATH_SAFE_UNQUOTER = _Unquoter(ignore="/%")
+diff --git a/yarl/_quoting_c.pyx b/yarl/_quoting_c.pyx
+index 7e47538..5f17ee4 100644
+--- a/yarl/_quoting_c.pyx
++++ b/yarl/_quoting_c.pyx
+@@ -171,20 +171,6 @@ cdef inline void _release_writer(Writer* writer):
+         PyMem_Free(writer.buf)
+ 
+ 
+-cdef inline bint _completes_kept_pct(Writer* writer, Py_UCS4 ch) noexcept:
+-    # A kept '%' followed by the decoded hex digit ch would read as a
+-    # '%XX' escape that was not in the input
+-    if _from_hex(ch) == -1:
+-        return False
+-    if writer.pos >= 1 and writer.buf[writer.pos - 1] == b'%':
+-        return True
+-    return (
+-        writer.pos >= 2
+-        and writer.buf[writer.pos - 2] == b'%'
+-        and _from_hex(<Py_UCS4><uint8_t>writer.buf[writer.pos - 1]) != -1
+-    )
+-
+-
+ cdef inline int _write_char(Writer* writer, Py_UCS4 ch, bint changed):
+     cdef char * buf
+     cdef Py_ssize_t size
+@@ -286,24 +272,17 @@ cdef inline int _write_utf8(Writer* writer, Py_UCS4 symbol):
+ cdef class _Quoter:
+     cdef bint _qs
+     cdef bint _requote
+-    cdef bint _keep_invalid_pct
+ 
+     cdef uint8_t _safe_table[ASCII_TABLE_SIZE]
+     cdef uint8_t _protected_table[ASCII_TABLE_SIZE]
+ 
+     def __init__(
+             self, *, str safe='', str protected='', bint qs=False, bint requote=True,
+-            bint keep_invalid_pct=False,
+     ):
+         cdef Py_UCS4 ch
+ 
+-        if keep_invalid_pct and not requote:
+-            raise ValueError("keep_invalid_pct requires requote")
+         self._qs = qs
+         self._requote = requote
+-        # A '%' that does not start a '%XX' escape is kept as is, as the
+-        # WHATWG URL Standard does, instead of being encoded as '%25'
+-        self._keep_invalid_pct = keep_invalid_pct
+ 
+         if not self._qs:
+             memcpy(self._safe_table,
+@@ -396,7 +375,7 @@ cdef class _Quoter:
+         while idx < length:
+             ch = PyUnicode_READ(kind, data, idx)
+             idx += 1
+-            if ch == '%' and self._requote:
++            if ch == '%' and self._requote and idx < length:
+                 # Lone surrogates are dropped (see _skip_surrogates), so look
+                 # through them for the two hex digits of the "%XX" escape; this
+                 # keeps the C quoter consistent with the pure-Python backend,
+@@ -419,10 +398,7 @@ cdef class _Quoter:
+                                 raise
+                             continue
+ 
+-                        if bit_at(self._safe_table, ch) and not (
+-                            self._keep_invalid_pct
+-                            and _completes_kept_pct(writer, ch)
+-                        ):
++                        if bit_at(self._safe_table, ch):
+                             if _write_char(writer, ch, True) < 0:
+                                 raise
+                             continue
+@@ -432,10 +408,8 @@ cdef class _Quoter:
+                     if _write_pct(writer, ch, changed) < 0:
+                         raise
+                     continue
+-                if self._keep_invalid_pct:
+-                    if _write_char(writer, ch, False) < 0:
+-                        raise
+-                    continue
++                else:
++                    ch = '%'
+ 
+             if self._write(writer, ch) < 0:
+                 raise
+diff --git a/yarl/_quoting_py.py b/yarl/_quoting_py.py
+index be0215e..f8673db 100644
+--- a/yarl/_quoting_py.py
++++ b/yarl/_quoting_py.py
+@@ -44,16 +44,6 @@ _UTF8_LEADS = {
+ }
+ 
+ 
+-def _completes_kept_pct(ret: bytearray, ch: str) -> bool:
+-    # A kept '%' followed by the decoded hex digit ch would read as a
+-    # '%XX' escape that was not in the input
+-    if ch not in hexdigits:
+-        return False
+-    if ret[-1:] == b"%":
+-        return True
+-    return ret[-2:-1] == b"%" and chr(ret[-1]) in hexdigits
+-
+-
+ class _Quoter:
+     def __init__(
+         self,
+@@ -62,7 +52,6 @@ class _Quoter:
+         protected: str = "",
+         qs: bool = False,
+         requote: bool = True,
+-        keep_invalid_pct: bool = False,
+     ) -> None:
+         if not safe.isascii() or not protected.isascii():
+             raise ValueError("Only safe symbols with ORD < 128 are allowed")
+@@ -74,15 +63,10 @@ class _Quoter:
+             )
+         if qs and (" " in safe or " " in protected):
+             raise ValueError("safe and protected cannot contain ' ' when qs is enabled")
+-        if keep_invalid_pct and not requote:
+-            raise ValueError("keep_invalid_pct requires requote")
+         self._safe = safe
+         self._protected = protected
+         self._qs = qs
+         self._requote = requote
+-        # A '%' that does not start a '%XX' escape is kept as is, as the
+-        # WHATWG URL Standard does, instead of being encoded as '%25'
+-        self._invalid_pct = b"%" if keep_invalid_pct else b"%25"
+ 
+     @overload
+     def __call__(self, val: str) -> str: ...
+@@ -104,8 +88,6 @@ class _Quoter:
+             safe += QS
+         safe += self._protected
+         bsafe = safe.encode("ascii")
+-        invalid_pct = self._invalid_pct
+-        keep_invalid_pct = invalid_pct == b"%"
+         idx = 0
+         while idx < len(bval):
+             ch = bval[idx]
+@@ -118,23 +100,21 @@ class _Quoter:
+                 if len(pct) == 3:  # pragma: no branch   # peephole optimizer
+                     buf = pct[1:]
+                     if not _IS_HEX.match(buf):
+-                        ret.extend(invalid_pct)
++                        ret.extend(b"%25")
+                         pct.clear()
+                         idx -= 2
+                         continue
+                     try:
+                         unquoted = chr(int(pct[1:].decode("ascii"), base=16))
+                     except ValueError:
+-                        ret.extend(invalid_pct)
++                        ret.extend(b"%25")
+                         pct.clear()
+                         idx -= 2
+                         continue
+ 
+                     if unquoted in self._protected:
+                         ret.extend(pct)
+-                    elif unquoted in safe and not (
+-                        keep_invalid_pct and _completes_kept_pct(ret, unquoted)
+-                    ):
++                    elif unquoted in safe:
+                         ret.append(ord(unquoted))
+                     else:
+                         ret.extend(pct)
+@@ -142,7 +122,7 @@ class _Quoter:
+ 
+                 # special case, if we have only one char after "%"
+                 elif len(pct) == 2 and idx == len(bval):
+-                    ret.extend(invalid_pct)
++                    ret.extend(b"%25")
+                     pct.clear()
+                     idx -= 1
+ 
+@@ -154,7 +134,7 @@ class _Quoter:
+ 
+                 # special case if "%" is last char
+                 if idx == len(bval):
+-                    ret.extend(invalid_pct)
++                    ret.extend(b"%25")
+ 
+                 continue
+ 
+diff --git a/yarl/_url.py b/yarl/_url.py
+index fba3fa4..33930ae 100644
+--- a/yarl/_url.py
++++ b/yarl/_url.py
+@@ -38,7 +38,6 @@ from ._parse import (
+     WHATWG_C0_CONTROL_OR_SPACE,
+     ZONE_ID_RE,
+     SplitURLType,
+-    _check_netloc,
+     check_zone_id,
+     has_dot_prefix,
+     make_netloc,
+@@ -79,9 +78,6 @@ from ._quoters import (
+     QUOTER,
+     REQUOTER,
+     UNQUOTER,
+-    WHATWG_FRAGMENT_REQUOTER,
+-    WHATWG_PATH_REQUOTER,
+-    WHATWG_QUERY_REQUOTER,
+     ZONE_ID_UNQUOTER,
+     human_quote,
+ )
+@@ -118,11 +114,6 @@ NOT_REG_NAME = re.compile(
+     """,
+     re.VERBOSE,
+ )
+-# The characters that a WHATWG domain can have and an RFC 3986 reg-name
+-# cannot: WHATWG only rejects the forbidden domain code points.
+-_WHATWG_ONLY_HOST_RE = re.compile(r'["`{}]')
+-# NOT_REG_NAME with those characters allowed.
+-_NOT_WHATWG_DOMAIN_RE = re.compile(r"[^a-z0-9\-._~!$&'()*+,;=%\"`{}]|%(?![0-9a-f]{2})")
+ 
+ # Invisible default-ignorable / format code points that must not appear in a
+ # host (soft hyphen, zero-width space, word joiner, bidi controls, variation
+@@ -329,32 +320,6 @@ def _check_whatwg_file_authority(authority: str) -> None:
+         )
+ 
+ 
+-# The characters the userinfo percent-encode set of the WHATWG URL Standard
+-# leaves alone: the unreserved characters, the sub-delims other than ";" and
+-# "=", and "%", which is kept as written, also when it starts no
+-# percent-encoded octet.
+-_WHATWG_USERINFO_UNSAFE_RE = re.compile(r"[^A-Za-z0-9\-._~!$&'()*+,%]+")
+-
+-
+-def _quote_userinfo_match(match: "re.Match[str]") -> str:
+-    return quote(match.group(), safe="", errors="ignore")
+-
+-
+-def _whatwg_requote_userinfo(value: str) -> str:
+-    """Encode a parsed username or password as WHATWG mode does.
+-
+-    The WHATWG URL Standard splits the userinfo at the last "@" and
+-    percent-encodes the username and the password with the userinfo
+-    percent-encode set, so "http://a b;@c@h" has the username "a%20b%3B%40c".
+-    A "%" is kept as written, "http://a%b@h" stays as it is. RFC 3986 mode
+-    accepts only a valid userinfo, which it requotes. See quote_userinfo()
+-    in _parse.py for a value that is not encoded.
+-    """
+-    if value.isascii() and value.isalnum():
+-        return value
+-    return _WHATWG_USERINFO_UNSAFE_RE.sub(_quote_userinfo_match, value)
+-
+-
+ def _empty_path(scheme: str, mode: Mode) -> str:
+     """Return the path of a URL whose path became empty.
+ 
+@@ -422,20 +387,13 @@ def _is_pipe_drive_authority(join_path: str) -> bool:
+     )
+ 
+ 
+-def _rfc_host_error(host: str) -> str:
+-    """Explain why RFC 3986 mode rejected a host that WHATWG mode accepts.
++def _idna2003_host_error(host: str) -> str:
++    """Explain why RFC 3986 mode rejected a non-ASCII host.
+ 
+-    A domain can have '"', "`", "{" and "}", which an RFC 3986 reg-name
+-    cannot, see _encode_host(). RFC 3987 converts an internationalized host
+-    with IDNA, now IDNA2008 (RFC 5891), which disallows code points such as
+-    emoji. WHATWG mode keeps the IDNA2003 fallback of _idna_encode(), as
+-    UTS #46 accepts them.
++    RFC 3987 converts an internationalized host with IDNA, now IDNA2008
++    (RFC 5891), which disallows code points such as emoji. WHATWG mode keeps
++    the IDNA2003 fallback of _idna_encode(), as UTS #46 accepts them.
+     """
+-    if invalid := _WHATWG_ONLY_HOST_RE.search(host):
+-        return (
+-            f"Host {host!r} cannot contain {invalid.group()!r}"
+-            f" (at position {invalid.start()})"
+-        )
+     return f"Host {host!r} is not a valid IDNA2008 name"
+ 
+ 
+@@ -575,7 +533,7 @@ def _special_authority_url(
+         url = _pre_encoded_url(url_str, _WHATWG)
+     else:
+         url = _encode_url(url_str, _WHATWG)
+-        path = WHATWG_PATH_REQUOTER(path)
++        path = PATH_REQUOTER(path)
+     if not empty & EMPTY_AUTHORITY:
+         url._cache["_join_path"] = path
+     return url
+@@ -661,33 +619,13 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+     ):
+         # A drive letter means something else when the reference is joined
+         # with a file URL, see join(); it is kept for that.
+-        cache["_join_path"] = (
+-            f"//{netloc}{path}" if netloc or empty & EMPTY_AUTHORITY else path
+-        )
++        cache["_join_path"] = f"//{netloc}{path}" if netloc else path
+         if netloc[1:] == "|":
+             # Not a host, so the file URL is the only meaning it has.
+             path = _whatwg_file_drive(netloc, path)
+             netloc = ""
+             empty |= EMPTY_AUTHORITY
+     if not netloc:  # netloc
+-        if empty & EMPTY_AUTHORITY and scheme in SCHEME_REQUIRES_HOST:
+-            # The WHATWG host parser fails on the empty host, and RFC 9110
+-            # section 4.2.1 rejects it: "http://", "http:///" and "http://?q"
+-            # are invalid. "http:" and "http:?q" have no authority, they are
+-            # references to a base.
+-            _check_missing_host(scheme, mode)
+-        elif (
+-            empty & EMPTY_AUTHORITY
+-            and not scheme
+-            and mode is _WHATWG
+-            and ("%" in path or "[" in path)
+-            and "_join_path" not in cache
+-        ):
+-            # Against an http base join() reads the path of "///h/p" as an
+-            # authority, where "%38" and "[" must stay as written; the path
+-            # quoter would decode the first and encode the second. "//" keeps
+-            # the empty authority for a file base.
+-            cache["_join_path"] = f"//{path}"
+         host = ""
+     else:
+         if ":" in netloc or "@" in netloc or "[" in netloc:
+@@ -712,25 +650,18 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+         # the host, producing a ``str(url)`` that yarl cannot re-parse
+         # (#1829). Validate like the builder APIs do, but keep accepting an
+         # empty IPv6 zone identifier, which parsing has always allowed (#998).
++        encoded, whatwg_host, idna2003 = _encode_host(
++            host, validate_host=True, reject_empty_zone=False
++        )
++        if idna2003 and mode is not _WHATWG:
++            raise ValueError(_idna2003_host_error(host))
++        host = encoded
+         if (
+-            scheme not in SPECIAL_SCHEMES
++            whatwg_host is not host
+             and mode is _WHATWG
+-            and _is_opaque_host(scheme, host)
++            and (scheme in SPECIAL_SCHEMES or host[0] == "[")
+         ):
+-            host = _encode_opaque_host(host)
+-        else:
+-            encoded, whatwg_host, not_rfc = _encode_host(
+-                host, validate_host=True, reject_empty_zone=False
+-            )
+-            if not_rfc and mode is not _WHATWG:
+-                raise ValueError(_rfc_host_error(host))
+-            host = encoded
+-            if (
+-                whatwg_host is not host
+-                and mode is _WHATWG
+-                and (scheme in SPECIAL_SCHEMES or host[0] == "[")
+-            ):
+-                host = _whatwg_special_host(host, whatwg_host)
++            host = _whatwg_special_host(host, whatwg_host)
+         if mode is _WHATWG and scheme == "file":
+             _check_whatwg_file_authority(netloc)
+             if host == "localhost":
+@@ -752,24 +683,20 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+             cache["raw_user"] = None
+             cache["raw_password"] = None
+         else:
+-            if mode is _WHATWG:
++            if not password and mode is _WHATWG:
+                 # WHATWG writes ":" only before a password that is not
+                 # empty: "http://a:@h" is "http://a@h", "http://:@h" is
+                 # "http://h". RFC 3986 keeps the empty userinfo and an
+                 # empty username is "", see split_netloc_rfc().
+-                raw_user = _whatwg_requote_userinfo(username) if username else None
+-                raw_password = _whatwg_requote_userinfo(password) if password else None
+-            else:
+-                raw_user = REQUOTER(username) if username else username
+-                raw_password = REQUOTER(password) if password else password
++                password = None
++            raw_user = REQUOTER(username) if username else username
++            raw_password = REQUOTER(password) if password else password
+             netloc = make_netloc(raw_user, raw_password, host, port)
+             cache["raw_user"] = raw_user
+             cache["raw_password"] = raw_password
+ 
+     if path:
+-        # WHATWG mode keeps a "%" that does not start a "%XX" escape, RFC
+-        # mode encodes it as "%25"
+-        path = (WHATWG_PATH_REQUOTER if mode is _WHATWG else PATH_REQUOTER)(path)
++        path = PATH_REQUOTER(path)
+         if "." in path and (netloc or (mode is _WHATWG and scheme == "file")):
+             # A file URL always has an authority in WHATWG mode, also an
+             # empty one, and its path is absolute: "file:///a/../b" and
+@@ -793,11 +720,9 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+             # with "//" when there is no authority.
+             path = path[2:]
+     if query:
+-        query = (WHATWG_QUERY_REQUOTER if mode is _WHATWG else QUERY_REQUOTER)(query)
++        query = QUERY_REQUOTER(query)
+     if fragment:
+-        fragment = (WHATWG_FRAGMENT_REQUOTER if mode is _WHATWG else FRAGMENT_REQUOTER)(
+-            fragment
+-        )
++        fragment = FRAGMENT_REQUOTER(fragment)
+ 
+     if not path and scheme == "file" and mode is _WHATWG:
+         # A file URL has a path in WHATWG mode, "/" at least: "file:" and
+@@ -1121,13 +1046,13 @@ class URL:
+         """Creates and returns a new URL"""
+         mode = _WHATWG if mode is None else _to_mode(mode)  # type: ignore[redundant-expr]
+ 
+-        if authority and (user or password or host or port is not None):
++        if authority and (user or password or host or port):
+             raise ValueError(
+                 'Can\'t mix "authority" with "user", "password", "host" or "port".'
+             )
+         if port is not None and not isinstance(port, int):
+             raise TypeError(f"The port is required to be int, got {type(port)!r}.")
+-        if port is not None and not host:
++        if port and not host:
+             raise ValueError('Can\'t build URL with "port" but without "host".')
+         if query and query_string:
+             raise ValueError('Only one of "query" or "query_string" should be passed')
+@@ -1182,21 +1107,14 @@ class URL:
+                 user, password, _host, port = split_netloc_rfc(authority)
+             if not _host:
+                 _check_missing_host(scheme, mode)
+-            if (
+-                _host
+-                and scheme not in SPECIAL_SCHEMES
+-                and mode is _WHATWG
+-                and _is_opaque_host(scheme, _host)
+-            ):
+-                _host = _encode_opaque_host(_host)
+-            elif _host:
++            if _host:
+                 if "%" in _host and ":" in _host and _host[0] != "[":
+                     check_zone_id(_host)
+-                encoded_host, whatwg_host, not_rfc = _encode_host(
++                encoded_host, whatwg_host, idna2003 = _encode_host(
+                     _host, validate_host=False
+                 )
+-                if not_rfc and mode is not _WHATWG:
+-                    raise ValueError(_rfc_host_error(_host))
++                if idna2003 and mode is not _WHATWG:
++                    raise ValueError(_idna2003_host_error(_host))
+                 _host = encoded_host
+                 if (
+                     whatwg_host is not _host
+@@ -1209,17 +1127,10 @@ class URL:
+                 if port is None and user is None:
+                     # As the parser does, see _encode_url().
+                     self._empty = EMPTY_AUTHORITY
+-        elif (
+-            host
+-            and scheme not in SPECIAL_SCHEMES
+-            and mode is _WHATWG
+-            and _is_opaque_host(scheme, host)
+-        ):
+-            _host = _encode_opaque_host(host)
+         elif host:
+-            _host, whatwg_host, not_rfc = _encode_host(host, validate_host=True)
+-            if not_rfc and mode is not _WHATWG:
+-                raise ValueError(_rfc_host_error(host))
++            _host, whatwg_host, idna2003 = _encode_host(host, validate_host=True)
++            if idna2003 and mode is not _WHATWG:
++                raise ValueError(_idna2003_host_error(host))
+             if (
+                 whatwg_host is not _host
+                 and mode is _WHATWG
+@@ -1241,9 +1152,7 @@ class URL:
+                 if not user and mode is _WHATWG:
+                     # An empty user is None, see make_netloc().
+                     user = None
+-                self._netloc = make_netloc(
+-                    user, password, _host, port, True, mode is _WHATWG
+-                )
++                self._netloc = make_netloc(user, password, _host, port, True)
+ 
+         path = PATH_QUOTER(path) if path else path
+         if path and (self._netloc or self._empty):
+@@ -1297,20 +1206,7 @@ class URL:
+             # Rare: empty components, or no authority, which a special
+             # scheme in WHATWG mode still prints as "//".
+             return self._str_with_empty()
+-        if (
+-            not self._path
+-            and (self._query or self._fragment)
+-            and (
+-                self._scheme in SPECIAL_SCHEMES
+-                or not self._scheme
+-                or self._scheme.lower() in SPECIAL_SCHEMES
+-            )
+-        ):
+-            # A special scheme has the path "/" at least, so "http://h?q" is
+-            # "http://h/?q". A non-special URL keeps its empty path, as
+-            # RFC 3986 and WHATWG write it: "sc://h?q". A relative reference
+-            # has no scheme to tell, and keeps the "/". URL.build() keeps
+-            # the scheme as given, hence lower().
++        if not self._path and (self._query or self._fragment):
+             path = "/"
+         else:
+             path = self._path
+@@ -1327,16 +1223,7 @@ class URL:
+ 
+     def _str_with_empty(self) -> str:
+         """Render a URL with empty components or without an authority."""
+-        if (
+-            not self._path
+-            and self._netloc
+-            and (
+-                self._scheme in SPECIAL_SCHEMES
+-                or not self._scheme
+-                or self._scheme.lower() in SPECIAL_SCHEMES
+-            )
+-        ):
+-            # As in __str__(), "sc://h?" keeps its empty path.
++        if not self._path and self._netloc:
+             path = "/"
+         else:
+             path = self._path
+@@ -1543,11 +1430,15 @@ class URL:
+     def _cmp_empty(self) -> int:
+         """The mask of empty components that matters for comparisons.
+ 
+-        It follows what str() writes out: in WHATWG mode a file URL always
+-        prints "//", so "file:/p" and "file:///p" are the same URL there,
+-        while RFC mode prints and compares them differently.
++        It follows what str() writes out: in WHATWG mode a special scheme
++        always prints "//", so "file:/p" and "file:///p" are the same URL
++        there, while RFC mode prints and compares them differently.
+         """
+-        if not self._netloc and self._mode is _WHATWG and self._scheme == "file":
++        if (
++            not self._netloc
++            and self._mode is _WHATWG
++            and self._scheme in SPECIAL_SCHEMES
++        ):
+             return self._empty | EMPTY_AUTHORITY
+         return self._empty
+ 
+@@ -1555,11 +1446,10 @@ class URL:
+     def _str_empty(self) -> int:
+         """The mask of empty components that str() writes out.
+ 
+-        In WHATWG mode a file URL always has an authority, so "//" is
+-        written even when it is missing. Other special schemes need a host;
+-        without one the URL is a reference to a base, such as "http:?q".
++        In WHATWG mode a URL with a special scheme always has an authority,
++        so "//" is written even when it is missing.
+         """
+-        if self._mode is _WHATWG and self._scheme == "file":
++        if self._mode is _WHATWG and self._scheme in SPECIAL_SCHEMES:
+             return self._empty | EMPTY_AUTHORITY
+         return self._empty
+ 
+@@ -1715,18 +1605,9 @@ class URL:
+         identifier is percent-decoded; the encoded form is still
+         available via :attr:`raw_host` and :attr:`host_subcomponent`.
+ 
+-        The opaque host of a non-special URL in WHATWG mode has its
+-        non-ASCII characters percent-decoded, the rest stays as it is.
+-
+         """
+         if (raw := self.raw_host) is None:
+             return None
+-        if (
+-            self._scheme not in SPECIAL_SCHEMES
+-            and self._mode is _WHATWG
+-            and _is_opaque_host(self._scheme, raw)
+-        ):
+-            return _decode_opaque_host(raw)
+         if raw and (raw[-1].isdigit() or raw[-1] == "]") or ":" in raw:
+             # IP addresses are never IDNA encoded. The RFC 6874 zone
+             # separator "%25" of an IPv6 address decodes to "%"; the zone
+@@ -2143,9 +2024,6 @@ class URL:
+             if not isinstance(user, str):
+                 raise TypeError("Invalid user type")
+             user = QUOTER(user)
+-            if (";" in user or "=" in user) and self._mode is _WHATWG:
+-                # Inlined quote_userinfo(), with_user() is a benchmarked path.
+-                user = user.replace(";", "%3B").replace("=", "%3D")
+             password = self.raw_password
+         elif user is None:
+             password = None
+@@ -2187,9 +2065,6 @@ class URL:
+         elif isinstance(password, str):
+             if password:
+                 password = QUOTER(password)
+-                if (";" in password or "=" in password) and self._mode is _WHATWG:
+-                    # Inlined quote_userinfo(), as in with_user().
+-                    password = password.replace(";", "%3B").replace("=", "%3D")
+             elif self._mode is _WHATWG:
+                 # WHATWG has no empty password, see _encode_url().
+                 password = None
+@@ -2228,22 +2103,15 @@ class URL:
+             raise ValueError("host replacement is not allowed for relative URLs")
+         if not host:
+             raise ValueError("host removing is not allowed")
++        encoded_host, whatwg_host, idna2003 = _encode_host(host, validate_host=True)
++        if idna2003 and self._mode is not _WHATWG:
++            raise ValueError(_idna2003_host_error(host))
+         if (
+-            self._scheme not in SPECIAL_SCHEMES
++            whatwg_host is not encoded_host
+             and self._mode is _WHATWG
+-            and _is_opaque_host(self._scheme, host)
++            and (self._scheme in SPECIAL_SCHEMES or encoded_host[0] == "[")
+         ):
+-            encoded_host = _encode_opaque_host(host)
+-        else:
+-            encoded_host, whatwg_host, not_rfc = _encode_host(host, validate_host=True)
+-            if not_rfc and self._mode is not _WHATWG:
+-                raise ValueError(_rfc_host_error(host))
+-            if (
+-                whatwg_host is not encoded_host
+-                and self._mode is _WHATWG
+-                and (self._scheme in SPECIAL_SCHEMES or encoded_host[0] == "[")
+-            ):
+-                encoded_host = _whatwg_special_host(encoded_host, whatwg_host)
++            encoded_host = _whatwg_special_host(encoded_host, whatwg_host)
+         port = self.explicit_port
+         netloc = make_netloc(self.raw_user, self.raw_password, encoded_host, port)
+         if self._scheme == "file" and self._mode is _WHATWG:
+@@ -2667,46 +2535,9 @@ class URL:
+         if scheme != self._scheme or (
+             url._scheme and (scheme not in USES_RELATIVE or self._mode is not _WHATWG)
+         ):
+-            if (
+-                not url._netloc
+-                and self._mode is _WHATWG
+-                and scheme != self._scheme
+-                and scheme in SCHEME_REQUIRES_HOST
+-            ):
+-                # "http:" and "http:?q" are references to an http base only;
+-                # against any other base WHATWG reads them as absolute URLs
+-                # without a host and fails.
+-                raise ValueError(
+-                    f"Invalid URL: host is required for absolute urls"
+-                    f" with the {scheme} scheme"
+-                )
+             # The result follows the base URL's compatibility mode.
+             return url if url._mode is self._mode else URL(url, mode=self._mode)
+ 
+-        if (
+-            not self._netloc
+-            and self._mode is _WHATWG
+-            and not url._scheme
+-            and self._scheme
+-            and self._scheme not in SPECIAL_SCHEMES
+-            and not self._empty & EMPTY_AUTHORITY
+-            and self._path[:1] != "/"
+-            and (
+-                url._netloc
+-                or url._path
+-                or url._query
+-                or url._empty & ~EMPTY_FRAGMENT
+-                or not (url._fragment or url._empty & EMPTY_FRAGMENT)
+-            )
+-        ):
+-            # WHATWG resolves only a fragment against a base with an opaque
+-            # path, such as "sc:sd" or "mailto:a@b"; RFC 3986 section 5.2.2
+-            # merges the paths ("i" against "sc:sd" is "sc:i").
+-            raise ValueError(
+-                f"Invalid URL: cannot resolve {str(url)!r} against"
+-                f" {str(self)!r}, which has an opaque path"
+-            )
+-
+         if "_join_path" in url._cache:
+             join_path = url._cache["_join_path"]
+             if url._netloc and url._scheme:
+@@ -2737,8 +2568,7 @@ class URL:
+                 # WHATWG reads a reference against a file URL in the file
+                 # state, as it reads one with the "file:" scheme; there "C|"
+                 # is the drive letter "C:" and "//C:" is no authority.
+-                # "#" keeps a space before the query, which URL() would strip.
+-                ref = encode_url(f"file:{join_path}#")
++                ref = encode_url(f"file:{join_path}")
+                 url = from_parts(
+                     scheme,
+                     ref._netloc,
+@@ -2753,18 +2583,10 @@ class URL:
+                     f"Invalid URL: {join_path!r} has a drive letter for an"
+                     f" authority, which only a file URL accepts"
+                 )
+-            elif url._empty & EMPTY_AUTHORITY and scheme in SCHEME_REQUIRES_HOST:
+-                # "///h/p" with "%" or "[" in it, see _encode_url().
+-                return self._join_empty_host(url, scheme, join_path)
+             elif scheme in SPECIAL_SCHEMES and self._mode is _WHATWG:
+                 # A relative reference with "\\" (see _backslashes()); the
+                 # query and the fragment may have changed since it was parsed.
+                 ref = encode_url(join_path)
+-                if not ref._netloc and ref._empty & EMPTY_AUTHORITY:
+-                    # "/\\/h/p" is "///h/p", see _join_empty_host().
+-                    return self._join_empty_host(
+-                        url, scheme, ref._cache.get("_join_path", ref._path)
+-                    )
+                 url = from_parts(
+                     ref._scheme,
+                     ref._netloc,
+@@ -2812,14 +2634,7 @@ class URL:
+                     # segment, so percent-encoded delimiters in the base are
+                     # kept as is.
+                     path = orig_path[: orig_path.rfind("/") + 1] + join_path
+-                if "." in path:
+-                    path = (
+-                        normalize_path(path)
+-                        if self._netloc or self._mode is _WHATWG or not scheme
+-                        # RFC 3986 section 5.2.4, also for a path without a
+-                        # leading "/": "sd/../i" is "/i".
+-                        else remove_dot_segments(path)
+-                    )
++                path = normalize_path(path) if "." in path else path
+         else:
+             path = orig_path
+ 
+@@ -2836,12 +2651,11 @@ class URL:
+         """join() for URLs with empty components; the same algorithm as
+         join() takes for other URLs, plus the empty component rules."""
+         join_empty = url._empty
+-        if url._netloc or join_empty & EMPTY_AUTHORITY:
+-            if not url._netloc and scheme in SCHEME_REQUIRES_HOST:
+-                # A path edited after parsing, such as by with_name(), has
+-                # lost the authority as written, see _encode_url(); its "["
+-                # stays "%5B", which the host parser rejects.
+-                return self._join_empty_host(url, scheme, url._path)
++        # An empty authority in the reference wins only where a URL may have
++        # an empty host; for http and friends "///a" keeps the base host.
++        if url._netloc or (
++            join_empty & EMPTY_AUTHORITY and scheme not in SCHEME_REQUIRES_HOST
++        ):
+             join_netloc = url._netloc
+             join_path = url._path
+             if not url._scheme or url._mode is not _WHATWG:
+@@ -2875,14 +2689,7 @@ class URL:
+                     # segment, so percent-encoded delimiters in the base are
+                     # kept as is.
+                     path = orig_path[: orig_path.rfind("/") + 1] + join_path
+-                if "." in path:
+-                    path = (
+-                        normalize_path(path)
+-                        if has_authority or self._mode is _WHATWG or not scheme
+-                        # RFC 3986 section 5.2.4, also for a path without a
+-                        # leading "/": "sd/../i" is "/i".
+-                        else remove_dot_segments(path)
+-                    )
++                path = normalize_path(path) if "." in path else path
+         else:
+             path = orig_path
+ 
+@@ -2904,35 +2711,6 @@ class URL:
+             self._empty & EMPTY_AUTHORITY | query_empty | join_empty & EMPTY_FRAGMENT,
+         )
+ 
+-    def _join_empty_host(self, url: "URL", scheme: str, path: str) -> "URL":
+-        """join() for a reference with an empty authority, such as "///a",
+-        against a base whose scheme needs a host.
+-
+-        RFC 3986 section 5.2.2 takes the empty authority of the reference,
+-        which RFC 9110 section 4.2.1 rejects for http, so RFC 3986 mode
+-        fails as it does on "http:///a". The WHATWG parser reads such a
+-        reference in the special authority ignore slashes state, where the
+-        host follows the slashes: "///a/b" is "http://a/b" and "//" fails.
+-        path is the path of the reference, as written when the path quoter
+-        would have changed its authority part, see _encode_url().
+-        """
+-        if self._mode is not _WHATWG:
+-            raise ValueError(
+-                f"Invalid URL: joining {str(url)!r} gives an empty host,"
+-                f" which the {scheme} scheme does not allow"
+-            )
+-        # "#" keeps a space before the query, which URL() would strip.
+-        joined = URL(f"{scheme}://{path.lstrip('/')}#")
+-        return from_parts(
+-            scheme,
+-            joined._netloc,
+-            joined._path,
+-            url._query,
+-            url._fragment,
+-            self._mode,
+-            url._empty & ~EMPTY_AUTHORITY,
+-        )
+-
+     def joinpath(self, *other: str, encoded: bool = False) -> "URL":
+         """Return a new URL with the elements in other appended to the path."""
+         return self._make_child(other, encoded=encoded)
+@@ -2945,28 +2723,8 @@ class URL:
+             # An IPv6 zone identifier stays percent-encoded, which is the
+             # only form the parser accepts.
+             host = f"[{self.raw_host}]" if "%" in host else f"[{host}]"
+-        elif (
+-            self._scheme not in SPECIAL_SCHEMES
+-            and host
+-            and host is not (raw_host := self.raw_host)
+-        ):
+-            # A decoded opaque host that the parser would reject, such as
+-            # "a\uff0fb", whose NFKC form has a "/", stays percent-encoded.
+-            try:
+-                _check_netloc(host)
+-            except ValueError:
+-                host = raw_host
+         # WHATWG mode reads "\\" in the path as "/", so it stays encoded.
+-        # An empty path stays empty where str() keeps it so, see __str__().
+-        if (
+-            self._path
+-            or self._scheme in SPECIAL_SCHEMES
+-            or not self._scheme
+-            or self._scheme.lower() in SPECIAL_SCHEMES
+-        ):
+-            path = human_quote(self.path, "#?\\")
+-        else:
+-            path = ""
++        path = human_quote(self.path, "#?\\")
+         if TYPE_CHECKING:
+             assert path is not None
+         if not self._scheme and not self._netloc:
+@@ -3039,30 +2797,9 @@ def _idna_decode(raw: str) -> str:
+     try:
+         return idna.decode(raw.encode("ascii"))
+     except UnicodeError:  # e.g. '::1'
+-        if _WHATWG_ONLY_HOST_RE.search(raw):
+-            # IDNA2008 rejects the whole host for one label with "{", see
+-            # _idna_encode_labels().
+-            return ".".join(map(_idna_decode_label, raw.split(".")))
+         return raw.encode("ascii").decode("idna")
+ 
+ 
+-def _idna_decode_label(label: str) -> str:
+-    """Decode a label of a host that has '"', "`", "{" or "}".
+-
+-    A label with them is decoded from Punycode without the IDNA checks, as
+-    _idna_encode_labels() encodes it; IDNA2003 would map "faß{b}" to
+-    "fass{b}" and fail to round-trip.
+-    """
+-    if not _WHATWG_ONLY_HOST_RE.search(label):
+-        return _idna_decode(label)
+-    if label[:4] == "xn--":
+-        try:
+-            return label[4:].encode("ascii").decode("punycode")
+-        except UnicodeError:
+-            pass
+-    return label
+-
+-
+ @lru_cache(_DEFAULT_IDNA_SIZE)
+ def _idna_encode(host: str) -> tuple[str, bool]:
+     """Encode a host with IDNA2008 and UTS #46, or else with IDNA2003.
+@@ -3073,44 +2810,9 @@ def _idna_encode(host: str) -> tuple[str, bool]:
+     try:
+         return idna.encode(host, uts46=True).decode("ascii"), False
+     except UnicodeError:
+-        try:
+-            mapped = idna.uts46_remap(host, std3_rules=False, transitional=False)
+-        except UnicodeError:
+-            mapped = ""
+-        if _WHATWG_ONLY_HOST_RE.search(mapped):
+-            return _idna_encode_labels(mapped), True
+         return host.encode("idna").decode("ascii"), True
+ 
+ 
+-def _idna_encode_labels(mapped: str) -> str:
+-    """Encode a host mapped with UTS #46 that has '"', "`", "{" or "}".
+-
+-    IDNA2008 rejects a label with them, which UTS #46 accepts without
+-    UseSTD3ASCIIRules, as WHATWG uses it. Such a label is encoded with
+-    Punycode, the other labels one by one; IDNA2003, the fallback for the
+-    whole host, would turn "faß" into "fass" where WHATWG has "xn--fa-hia".
+-    """
+-    return ".".join(
+-        label
+-        if label.isascii()
+-        else _idna_encode(label)[0]
+-        if not _WHATWG_ONLY_HOST_RE.search(label)
+-        else _punycode_label(label)
+-        for label in mapped.split(".")
+-    )
+-
+-
+-def _punycode_label(label: str) -> str:
+-    """Encode a label with Punycode after the checks UTS #46 makes.
+-
+-    The label must not start with a combining mark and must follow the
+-    bidi rule of RFC 5893, as WHATWG has CheckBidi set: "x{א}" fails.
+-    """
+-    idna.check_initial_combiner(label)
+-    idna.check_bidi(label)
+-    return "xn--" + label.encode("punycode").decode("ascii")
+-
+-
+ _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+ # A host that ends in a number ends in one of these; most hosts do not.
+ _NUMERIC_HOST_TAIL = frozenset("0123456789abcdefxABCDEFX.")
+@@ -3139,10 +2841,8 @@ def _moved_parts(
+ 
+     with_scheme(), join() and a change of mode can move a host that was
+     parsed under another scheme or mode into a special-scheme WHATWG URL,
+-    where the host is percent-decoded and lowercased and one that ends in a
+-    number is parsed as an IPv4 address. The opaque host of a non-special
+-    WHATWG URL is kept under another non-special scheme, and validated as a
+-    domain under a special one. An RFC 3986 mode URL moved into WHATWG mode
++    where the host is percent-decoded and one that ends in a number is
++    parsed as an IPv4 address. An RFC 3986 mode URL moved into WHATWG mode
+     also loses an empty password and an empty userinfo, see
+     _drop_empty_password(). A file URL also loses "localhost" and must not
+     have userinfo or a port, see _check_whatwg_file_authority(), and reads a
+@@ -3158,39 +2858,18 @@ def _moved_parts(
+         return netloc, url._path, empty
+     host = url.raw_host
+     if (scheme in SPECIAL_SCHEMES or "[" in netloc) and host:
+-        # The WHATWG host is cached with the encoding of the host. An opaque
+-        # host was not checked as a domain, see _encode_opaque_host().
+-        encoded, whatwg_host, _ = _encode_host(
+-            host,
+-            url._mode is _WHATWG
+-            and url._scheme not in SPECIAL_SCHEMES
+-            and _is_opaque_host(url._scheme, host),
+-        )
++        # The WHATWG host is cached with the encoding of the host.
++        encoded, whatwg_host, _ = _encode_host(host, False)
+         if whatwg_host is not encoded:
+             host = _whatwg_special_host(encoded, whatwg_host)
+             netloc = make_netloc(
+                 url.raw_user, url.raw_password, host, url.explicit_port
+             )
+-        elif encoded != host and "[" not in netloc:
+-            # An opaque host is not lowercased, see _encode_opaque_host().
+-            host = encoded
+-            netloc = make_netloc(
+-                url.raw_user, url.raw_password, host, url.explicit_port
+-            )
+-    if url._mode is not _WHATWG and "@" in netloc:
+-        # The userinfo of RFC 3986 mode can have ";" and "=", which WHATWG
+-        # mode encodes, see _whatwg_requote_userinfo().
+-        userinfo, _, hostport = netloc.rpartition("@")
+-        user, colon, password = userinfo.partition(":")
+-        user = _whatwg_requote_userinfo(user)
+-        password = _whatwg_requote_userinfo(password)
+-        netloc = f"{user}{colon}{password}@{hostport}"
+     if ":@" in netloc or netloc[0] == "@":
+         netloc = _drop_empty_password(netloc)
+     if scheme == "file":
+-        # The netloc as written: the host above is lowercased.
+-        if is_drive_letter(url._netloc):
+-            path = _whatwg_file_drive(url._netloc, url._path)
++        if is_drive_letter(netloc):
++            path = _whatwg_file_drive(netloc, url._path)
+             if "." in path:
+                 path = normalize_file_path(path)
+             return "", path, empty | EMPTY_AUTHORITY
+@@ -3236,66 +2915,6 @@ def _whatwg_special_host(host: str, whatwg_host: str | None) -> str:
+     return whatwg_host
+ 
+ 
+-# The forbidden host code points of the WHATWG URL Standard, which the
+-# opaque-host parser rejects.
+-_FORBIDDEN_HOST_RE = re.compile(r"[\x00\t\n\r #/:<>?@\[\\\]^|]")
+-# The C0 control percent-encode set, which the opaque-host parser encodes.
+-_C0_CONTROL_PERCENT_ENCODE_RE = re.compile(r"[^\x20-\x7e]+")
+-# The percent-encoded octets of a non-ASCII host, see _decode_opaque_host().
+-_NON_ASCII_ESCAPES_RE = re.compile(r"(?:%[89A-Fa-f][0-9A-Fa-f])+")
+-
+-
+-def _is_opaque_host(scheme: str, host: str) -> bool:
+-    """Tell if the WHATWG mode host of a URL whose scheme is not special is
+-    an opaque host.
+-
+-    The WHATWG URL Standard parses the host of a non-special URL as an opaque
+-    host, unless it is an IPv6 address in brackets. A relative reference has
+-    no scheme yet, its host is encoded as a domain. The callers check that
+-    the scheme is not special first, which keeps the call off the hot path;
+-    URL.build() keeps the scheme as given, so "HTTP" is checked here.
+-    """
+-    return (
+-        scheme != ""
+-        and ":" not in host
+-        and host[:1] != "["
+-        and scheme.lower() not in SPECIAL_SCHEMES
+-    )
+-
+-
+-def _encode_opaque_host(host: str) -> str:
+-    """Encode a host with the WHATWG opaque-host parser.
+-
+-    The host is neither lowercased nor encoded with IDNA: it is rejected if
+-    it has a forbidden host code point and its C0 controls and non-ASCII
+-    code points are percent-encoded, so "sc://Ñ" is "sc://%C3%91". A "%"
+-    that does not start a percent-encoded octet is kept. RFC 3986 mode and
+-    special schemes encode a domain instead, see _encode_host().
+-    """
+-    if invalid := _FORBIDDEN_HOST_RE.search(host):
+-        raise ValueError(
+-            f"Host {host!r} cannot contain {invalid.group()!r}"
+-            f" (at position {invalid.start()})"
+-        )
+-    if host.isascii() and host.isprintable():
+-        return host
+-    return _C0_CONTROL_PERCENT_ENCODE_RE.sub(
+-        lambda match: quote(match.group(), safe=""), host
+-    )
+-
+-
+-def _decode_opaque_host(raw: str) -> str:
+-    """Decode the non-ASCII code points of an opaque host.
+-
+-    The percent-encoded ASCII characters stay encoded, as does an octet that
+-    is not UTF-8, so that passing the result to with_host() gives the same
+-    host back.
+-    """
+-    if "%" not in raw:
+-        return raw
+-    return _NON_ASCII_ESCAPES_RE.sub(lambda match: UNQUOTER(match.group()), raw)
+-
+-
+ # A number with more significant digits than this in its base is at least
+ # 2**32, out of range for any part of an IPv4 address. Checking the length
+ # first keeps int() away from huge labels, which Python refuses to convert.
+@@ -3361,7 +2980,7 @@ def _whatwg_decoded_host(host: str) -> str | None:
+     "%e2%98%83" is "xn--n3h" and "ho%00st" fails. The result goes on to
+     the IPv4 parser like any other host. None means WHATWG fails, or gives
+     a host that yarl rejects anyway, like one with a default-ignorable code
+-    point.
++    point or a character outside the RFC 3986 reg-name.
+     """
+     decoded = unquote_to_bytes(host).decode("utf-8", "replace")
+     if decoded.isascii():
+@@ -3373,7 +2992,7 @@ def _whatwg_decoded_host(host: str) -> str | None:
+             decoded = _idna_encode(decoded)[0]
+         except UnicodeError:
+             return None
+-    if "%" in decoded or _NOT_WHATWG_DOMAIN_RE.search(decoded):
++    if "%" in decoded or NOT_REG_NAME.search(decoded):
+         return None
+     return _whatwg_numeric_host(decoded)
+ 
+@@ -3386,12 +3005,10 @@ def _encode_host(
+ 
+     Next to the encoded host, return the host WHATWG sees for a special
+     scheme, which is the encoded host itself unless the host is
+-    percent-encoded (see _whatwg_decoded_host), ends in a number (see
+-    _whatwg_numeric_host) or is an IPv6 address not written compressed, and
+-    a flag that tells if RFC 3986 mode rejects the host: IDNA2008 could not
+-    encode it, or it has a character that a WHATWG domain can have and an
+-    RFC 3986 reg-name cannot, like "{". Both are computed here so that the
+-    checks are cached with the encoding.
++    percent-encoded (see _whatwg_decoded_host) or ends in a number (see
++    _whatwg_numeric_host), and a flag that tells if IDNA2008
++    could not encode the host, which RFC 3986 mode rejects. Both are
++    computed here so that the checks are cached with the encoding.
+     """
+     # If the host ends with a digit or contains a colon, its likely
+     # an IP address.
+@@ -3442,12 +3059,7 @@ def _encode_host(
+             # LRU to keep the cache size small
+             host = ip.compressed
+             if ip.version == 6:
+-                # RFC 3986 keeps an IPv6 address as written, lowercased per
+-                # section 6.2.2.1; WHATWG serializes it compressed, which is
+-                # the WHATWG host here, see _whatwg_special_host().
+                 host = f"[{host}{sep}{zone}]" if sep else f"[{host}]"
+-                if (written := raw_ip.lower()) != ip.compressed:
+-                    return f"[{written}{sep}{zone}]", host, False
+             elif sep:
+                 # WHATWG has no zone identifiers: "%" after an IPv4 address
+                 # is percent-encoding in the host.
+@@ -3467,25 +3079,20 @@ def _encode_host(
+             if host[end] != "]" or IP_FUTURE_RE.fullmatch(host, 1, end) is None:
+                 raise ValueError(f"IPvFuture address is invalid: {host!r}")
+             return host, None, False
+-        not_rfc = False
+         if validate_host and (invalid := NOT_REG_NAME.search(host)):
+-            if invalid := _NOT_WHATWG_DOMAIN_RE.search(host, invalid.start()):
+-                value, pos, extra = invalid.group(), invalid.start(), ""
+-                if value == "@" or (value == ":" and "@" in host[pos:]):
+-                    # this looks like an authority string
+-                    extra = (
+-                        ", if the value includes a username or password, "
+-                        "use 'authority' instead of 'host'"
+-                    )
+-                raise ValueError(
+-                    f"Host {host!r} cannot contain {value!r} (at position {pos}){extra}"
+-                ) from None
+-            # The WHATWG URL Standard keeps '"', "`", "{" and "}" in a
+-            # domain, RFC 3986 rejects them, see _rfc_host_error().
+-            not_rfc = True
++            value, pos, extra = invalid.group(), invalid.start(), ""
++            if value == "@" or (value == ":" and "@" in host[pos:]):
++                # this looks like an authority string
++                extra = (
++                    ", if the value includes a username or password, "
++                    "use 'authority' instead of 'host'"
++                )
++            raise ValueError(
++                f"Host {host!r} cannot contain {value!r} (at position {pos}){extra}"
++            ) from None
+         if "%" in host:
+-            return host, _whatwg_decoded_host(host), not_rfc
+-        return host, host and _whatwg_numeric_host(host), not_rfc
++            return host, _whatwg_decoded_host(host), False
++        return host, host and _whatwg_numeric_host(host), False
+ 
+     # IDNA/UTS-46 mapping silently deletes default-ignorable code points, which
+     # would turn e.g. ``e<ZWSP>vil.com`` into ``evil.com``, a different host
+@@ -3498,7 +3105,7 @@ def _encode_host(
+             f"Host {host!r} cannot contain {invalid.group()!r} "
+             f"(at position {invalid.start()})"
+         ) from None
+-    encoded, not_rfc = _idna_encode(host)
++    encoded, idna2003 = _idna_encode(host)
+     # IDNA uses NFKC equivalence, so normalization can expand a non-ascii
+     # character into an ASCII delimiter (e.g. the fullwidth solidus U+FF0F
+     # becomes '/'). split_url's _check_netloc screens '/?#@:%' but not '[',
+@@ -3509,18 +3116,16 @@ def _encode_host(
+     # ignores validate_host) so the parsed host cannot diverge from what the
+     # serialized URL means.
+     if invalid := NOT_REG_NAME.search(encoded):
+-        if invalid := _NOT_WHATWG_DOMAIN_RE.search(encoded, invalid.start()):
+-            raise ValueError(
+-                f"Host {host!r} cannot contain {invalid.group()!r} "
+-                f"after IDNA normalization to {encoded!r}"
+-            ) from None
+-        not_rfc = True
++        raise ValueError(
++            f"Host {host!r} cannot contain {invalid.group()!r} "
++            f"after IDNA normalization to {encoded!r}"
++        ) from None
+     # The host can be percent-encoded next to the non-ASCII code points, or
+     # IDNA can map a code point to "%", like the fullwidth percent sign
+     # U+FF05, which WHATWG then rejects.
+     if "%" in encoded:
+-        return encoded, _whatwg_decoded_host(host), not_rfc
+-    return encoded, _whatwg_numeric_host(encoded), not_rfc
++        return encoded, _whatwg_decoded_host(host), idna2003
++    return encoded, _whatwg_numeric_host(encoded), idna2003
+ 
+ 
+ @rewrite_module

@@ -1,0 +1,743 @@
+diff --git a/yarl/_parse.py b/yarl/_parse.py
+index ed7fae7..bc1c28a 100644
+--- a/yarl/_parse.py
++++ b/yarl/_parse.py
+@@ -4,6 +4,7 @@ import codecs
+ import re
+ import unicodedata
+ from functools import lru_cache
++from string import ascii_letters
+ from urllib.parse import parse_qsl, scheme_chars
+ 
+ from ._quoters import QUOTER, UNQUOTER_PLUS
+@@ -69,7 +70,9 @@ def split_url(url: str) -> tuple[str, str, str, str, str, int]:
+     scheme = netloc = query = fragment = ""
+     empty = 0
+     i = url.find(":")
+-    if i > 0 and url[0] in scheme_chars:
++    # A scheme starts with an ASCII letter, RFC 3986 section 3.1 and the
++    # WHATWG scheme start state agree.
++    if i > 0 and url[0] in ascii_letters:
+         for c in url[1:i]:
+             if c not in scheme_chars:
+                 break
+@@ -102,8 +105,11 @@ def split_url(url: str) -> tuple[str, str, str, str, str, int]:
+                 "Invalid URL: backslash ('\\') is not allowed in the authority "
+                 "component per RFC 3986."
+             )
+-        has_left_bracket = "[" in netloc
+-        has_right_bracket = "]" in netloc
++        # Only the host can be an IP-literal; brackets in the userinfo are
++        # percent-encoded by WHATWG and rejected by RFC 3986 mode.
++        hostinfo = netloc.rpartition("@")[2]
++        has_left_bracket = "[" in hostinfo
++        has_right_bracket = "]" in hostinfo
+         if (has_left_bracket and not has_right_bracket) or (
+             has_right_bracket and not has_left_bracket
+         ):
+@@ -115,7 +121,6 @@ def split_url(url: str) -> tuple[str, str, str, str, str, int]:
+             # count checks reject URLs with more than one bracket pair in the
+             # host subcomponent (e.g. 'http://[:localhost[]].google:80'),
+             # which would otherwise resolve to an unintended host.
+-            hostinfo = netloc.rpartition("@")[2]
+             if hostinfo[0] != "[" or hostinfo.count("[") > 1 or hostinfo.count("]") > 1:
+                 raise ValueError("Invalid IPv6 URL")
+             bracketed_host, _, after_bracket = hostinfo[1:].partition("]")
+@@ -181,7 +186,14 @@ def split_netloc(
+     """Split netloc into username, password, host and port.
+ 
+     An empty username is None, see split_netloc_rfc() for RFC 3986 mode.
++    The port must be at most 65535, as the WHATWG URL Standard has it.
+     """
++    return _split_netloc(netloc, False)
++
++
++def _split_netloc(
++    netloc: str, rfc: bool
++) -> tuple[str | None, str | None, str | None, int | None]:
+     if "@" not in netloc:
+         username: str | None = None
+         password: str | None = None
+@@ -220,7 +232,8 @@ def split_netloc(
+     if not (port_str.isascii() and port_str.isdigit()):
+         raise ValueError("Invalid URL: port can't be converted to integer")
+     port = int(port_str)
+-    if not (0 <= port <= 65535):
++    # RFC 3986 section 3.2.3 has no upper bound: port = *DIGIT.
++    if not rfc and not (0 <= port <= 65535):
+         raise ValueError("Port out of range 0-65535")
+     return username or None, password, hostname or None, port
+ 
+@@ -236,7 +249,7 @@ def split_netloc_rfc(
+     username "". A separate cache keeps the single string key, which a mode
+     argument would turn into a tuple.
+     """
+-    username, password, host, port = split_netloc(netloc)
++    username, password, host, port = _split_netloc(netloc, True)
+     if username is None and "@" in netloc:
+         username = ""
+     return username, password, host, port
+diff --git a/yarl/_quoters.py b/yarl/_quoters.py
+index 40cf678..122877e 100644
+--- a/yarl/_quoters.py
++++ b/yarl/_quoters.py
+@@ -1,18 +1,35 @@
+ """Quoting and unquoting utilities for URL parts."""
+ 
++import re
+ from urllib.parse import quote
+ 
+ from ._quoting import _Quoter, _Unquoter
+ 
+ QUOTER = _Quoter(requote=False)
+ REQUOTER = _Quoter()
++# The userinfo keeps percent-encoded sub-delims, RFC 3986 section 2.2; the
++# RFC 3986 mode one also keeps ":", which the password may have.
++USERINFO_REQUOTER = _Quoter(protected="!$&'()*+,;=")
++USERINFO_REQUOTER_RFC = _Quoter(safe=":", protected="!$&'()*+,;=:")
++# An opaque path, as the path of "mailto:a b", only percent-encodes C0
++# controls and non-ASCII code points for the WHATWG URL Standard; the
++# percent-encoded octets of reserved characters are kept. "\\" is still
++# percent-encoded, as it is in every path.
++_OPAQUE_PATH_SAFE = " !\"$&'()*+,/:;<=>@[]^`{|}"
++OPAQUE_PATH_REQUOTER = _Quoter(safe=_OPAQUE_PATH_SAFE, protected=_OPAQUE_PATH_SAFE)
++OPAQUE_PATH_QUOTER = _Quoter(safe=_OPAQUE_PATH_SAFE, requote=False)
+ PATH_QUOTER = _Quoter(safe="@:", protected="/+", requote=False)
+ PATH_REQUOTER = _Quoter(safe="@:", protected=":/@!$&'()*+,;=")
+ QUERY_QUOTER = _Quoter(safe="?/:@", protected="=+&;", qs=True, requote=False)
+ QUERY_REQUOTER = _Quoter(safe="?/:@", protected="=+&;", qs=True)
++# RFC 3986 section 2.2: RFC 3986 mode keeps every percent-encoded reserved
++# character of the query.
++QUERY_REQUOTER_RFC = _Quoter(safe="?/:@", protected="?/:@!$'()*,=+&;", qs=True)
+ QUERY_PART_QUOTER = _Quoter(safe="?/:@", qs=True, requote=False)
+ FRAGMENT_QUOTER = _Quoter(safe="?/:@", requote=False)
+-FRAGMENT_REQUOTER = _Quoter(safe="?/:@")
++# Percent-encoded reserved characters are kept, RFC 3986 section 2.2; the
++# WHATWG URL Standard keeps every percent-encoded octet of the fragment.
++FRAGMENT_REQUOTER = _Quoter(safe="?/:@", protected=":/?@!$&'()*+,;=")
+ 
+ UNQUOTER = _Unquoter()
+ PATH_SAFE_UNQUOTER = _Unquoter(ignore="/%")
+@@ -32,3 +49,34 @@ def human_quote(s: str | None, unsafe: str) -> str | None:
+     if s.isprintable():
+         return s
+     return "".join(c if c.isprintable() else quote(c) for c in s)
++
++
++# A "%" that does not start a percent-encoded octet.
++_LONE_PERCENT_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
++_PCT_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
++
++
++def requote_keep_percent(quoter: _Quoter, val: str) -> str:
++    """Requote val with quoter, keeping each "%" that starts no escape.
++
++    The WHATWG URL Standard leaves such a "%" as it is, as browsers do:
++    "/foo%2zbar" stays "/foo%2zbar" instead of becoming "/foo%252zbar".
++    An escape right after a kept "%", or one character after it, is kept
++    too, only uppercased, so that decoding it cannot form a new escape
++    with that "%": "%%41b" is not "%Ab" and "%2%41" is not "%2A".
++    """
++    if "%" not in val or _LONE_PERCENT_RE.search(val) is None:
++        return quoter(val)
++    pieces = _LONE_PERCENT_RE.split(val)
++    out = [quoter(pieces[0])]
++    for piece in pieces[1:]:
++        out.append("%")
++        # An escape within the two characters after the kept "%" is kept,
++        # "%2%41" is not "%2A".
++        start = piece.find("%", 0, 2)
++        if start != -1 and (m := _PCT_ESCAPE_RE.match(piece, start)) is not None:
++            out.append(quoter(piece[:start]))
++            out.append(m[0].upper())
++            piece = piece[start + 3 :]
++        out.append(quoter(piece))
++    return "".join(out)
+diff --git a/yarl/_url.py b/yarl/_url.py
+index 33930ae..8739303 100644
+--- a/yarl/_url.py
++++ b/yarl/_url.py
+@@ -1,4 +1,5 @@
+ import re
++import unicodedata
+ import warnings
+ from collections.abc import Mapping, Sequence
+ from enum import Enum, StrEnum
+@@ -69,19 +70,28 @@ from ._query import (
+ from ._quoters import (
+     FRAGMENT_QUOTER,
+     FRAGMENT_REQUOTER,
++    OPAQUE_PATH_QUOTER,
++    OPAQUE_PATH_REQUOTER,
+     PATH_QUOTER,
+     PATH_REQUOTER,
+     PATH_SAFE_UNQUOTER,
+     QS_UNQUOTER,
+     QUERY_QUOTER,
+     QUERY_REQUOTER,
++    QUERY_REQUOTER_RFC,
+     QUOTER,
+-    REQUOTER,
+     UNQUOTER,
++    USERINFO_REQUOTER,
++    USERINFO_REQUOTER_RFC,
+     ZONE_ID_UNQUOTER,
+     human_quote,
++    requote_keep_percent,
+ )
+ 
++# Parsing keeps a "%" that starts no escape, see requote_keep_percent(); RFC
++# 3986 mode rejects one before it gets there.
++_requote = requote_keep_percent
++
+ # Avoid Pydantic import if not used (increases yarl's import time by 3-7x).
+ HAS_PYDANTIC = find_spec("pydantic_core") is not None
+ if TYPE_CHECKING:
+@@ -97,6 +107,8 @@ _SCHEME_CHARS = frozenset(scheme_chars)
+ # Special schemes https://url.spec.whatwg.org/#special-scheme
+ # are not allowed to have an empty host https://url.spec.whatwg.org/#url-representation
+ SCHEME_REQUIRES_HOST = frozenset(("http", "https", "ws", "wss", "ftp"))
++# RFC 9110 section 4.2: the schemes whose URIs must have a host.
++_HTTP_SCHEMES = frozenset(("http", "https"))
+ 
+ 
+ # reg-name: unreserved / pct-encoded / sub-delims
+@@ -270,7 +282,7 @@ def rewrite_module(obj: _T) -> _T:
+ def _encode_relative_scheme_colon(path: str) -> str:
+     """Re-encode a scheme-shaped leading ``:`` in a relative path to ``%3A``."""
+     colon_pos = path.find(":")
+-    if colon_pos <= 0:
++    if colon_pos <= 0 or not path[0].isascii() or not path[0].isalpha():
+         return path
+     for c in path[:colon_pos]:
+         if c not in _SCHEME_CHARS:
+@@ -533,7 +545,7 @@ def _special_authority_url(
+         url = _pre_encoded_url(url_str, _WHATWG)
+     else:
+         url = _encode_url(url_str, _WHATWG)
+-        path = PATH_REQUOTER(path)
++        path = _requote(PATH_REQUOTER, path)
+     if not empty & EMPTY_AUTHORITY:
+         url._cache["_join_path"] = path
+     return url
+@@ -569,7 +581,12 @@ def _backslashes(url_str: str) -> tuple[str, bool]:
+         url = url.replace(b, "")
+     i = url.find(":")
+     relative = True
+-    if i > 0 and all(c in _SCHEME_CHARS for c in url[:i]):
++    if (
++        i > 0
++        and url[0].isascii()
++        and url[0].isalpha()
++        and all(c in _SCHEME_CHARS for c in url[:i])
++    ):
+         if url[:i].lower() not in SPECIAL_SCHEMES:
+             return url_str, False
+         relative = False
+@@ -601,6 +618,15 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+     scheme, netloc, path, query, fragment, empty = split_url(url_str)
+     if not netloc and _is_special_authority_path(scheme, path, mode):
+         return _special_authority_url(scheme, path, query, fragment, empty, False)
++    if (
++        not netloc
++        and empty & EMPTY_AUTHORITY
++        and scheme in _HTTP_SCHEMES
++        and mode is not _WHATWG
++    ):
++        # RFC 9110 section 4.2.1: a recipient must reject an http or https
++        # URI with an empty host, as "http:///p".
++        raise ValueError(f"Invalid URL: the {scheme} scheme requires a host")
+     if scheme == "file":
+         if mode is _WHATWG:
+             if is_drive_letter(netloc):
+@@ -650,18 +676,7 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+         # the host, producing a ``str(url)`` that yarl cannot re-parse
+         # (#1829). Validate like the builder APIs do, but keep accepting an
+         # empty IPv6 zone identifier, which parsing has always allowed (#998).
+-        encoded, whatwg_host, idna2003 = _encode_host(
+-            host, validate_host=True, reject_empty_zone=False
+-        )
+-        if idna2003 and mode is not _WHATWG:
+-            raise ValueError(_idna2003_host_error(host))
+-        host = encoded
+-        if (
+-            whatwg_host is not host
+-            and mode is _WHATWG
+-            and (scheme in SPECIAL_SCHEMES or host[0] == "[")
+-        ):
+-            host = _whatwg_special_host(host, whatwg_host)
++        host = _encode_scheme_host(host, scheme, mode, True, False)
+         if mode is _WHATWG and scheme == "file":
+             _check_whatwg_file_authority(netloc)
+             if host == "localhost":
+@@ -689,14 +704,32 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+                 # "http://h". RFC 3986 keeps the empty userinfo and an
+                 # empty username is "", see split_netloc_rfc().
+                 password = None
+-            raw_user = REQUOTER(username) if username else username
+-            raw_password = REQUOTER(password) if password else password
++            userinfo_requoter = (
++                USERINFO_REQUOTER if mode is _WHATWG else USERINFO_REQUOTER_RFC
++            )
++            raw_user = (
++                _requote(userinfo_requoter, username) if username else username
++            )
++            raw_password = (
++                _requote(userinfo_requoter, password) if password else password
++            )
+             netloc = make_netloc(raw_user, raw_password, host, port)
+             cache["raw_user"] = raw_user
+             cache["raw_password"] = raw_password
+ 
+     if path:
+-        path = PATH_REQUOTER(path)
++        if (
++            path[0] != "/"
++            and mode is _WHATWG
++            and scheme
++            and not netloc
++            and not empty & EMPTY_AUTHORITY
++            and scheme not in SPECIAL_SCHEMES
++        ):
++            # An opaque path, see OPAQUE_PATH_REQUOTER.
++            path = _requote(OPAQUE_PATH_REQUOTER, path)
++        else:
++            path = _requote(PATH_REQUOTER, path)
+         if "." in path and (netloc or (mode is _WHATWG and scheme == "file")):
+             # A file URL always has an authority in WHATWG mode, also an
+             # empty one, and its path is absolute: "file:///a/../b" and
+@@ -715,14 +748,18 @@ def _encode_url(url_str: str, mode: Mode, backslashes: bool = True) -> "URL":
+             # with a scheme, also one without an authority ("file:.." is
+             # "file:").
+             path = remove_dot_segments(path)
++        elif scheme and _whatwg_removes_dots(path):
++            path = normalize_path(path)
+         if not netloc and has_dot_prefix(path) and not empty & EMPTY_AUTHORITY:
+             # Undo the "/." that str() puts in front of a path starting
+             # with "//" when there is no authority.
+             path = path[2:]
+     if query:
+-        query = QUERY_REQUOTER(query)
++        query = _requote(
++            QUERY_REQUOTER if mode is _WHATWG else QUERY_REQUOTER_RFC, query
++        )
+     if fragment:
+-        fragment = FRAGMENT_REQUOTER(fragment)
++        fragment = _requote(FRAGMENT_REQUOTER, fragment)
+ 
+     if not path and scheme == "file" and mode is _WHATWG:
+         # A file URL has a path in WHATWG mode, "/" at least: "file:" and
+@@ -778,6 +815,29 @@ def _pre_encoded_url(url_str: str, mode: Mode) -> "URL":
+     return self
+ 
+ 
++# A path of dot segments only, as "/.." or "/./../".
++_ONLY_DOT_SEGMENTS_RE = re.compile(r"(?:/\.\.?)+/?")
++
++
++def _whatwg_removes_dots(path: str) -> bool:
++    """Tell if WHATWG mode removes the dot segments of an authority-less path.
++
++    A path that starts with "/" is no opaque path for WHATWG, its dot
++    segments are removed also without an authority: "sc:/a/./b/../c" is
++    "sc:/a/c". A path that starts with a dot segment is kept, str() writes
++    "/." in front of a path that starts with "//" and the parser must get
++    that path back, unless it has nothing else: "about:/../" is "about:/".
++    """
++    return (
++        path[:1] == "/"
++        and "." in path
++        and (
++            not path.startswith(("/./", "/../"))
++            or _ONLY_DOT_SEGMENTS_RE.fullmatch(path) is not None
++        )
++    )
++
++
+ # One cache per compatibility mode keeps the single ``str`` argument, which
+ # ``lru_cache`` uses as the key directly instead of building a tuple.
+ @lru_cache
+@@ -1052,6 +1112,10 @@ class URL:
+             )
+         if port is not None and not isinstance(port, int):
+             raise TypeError(f"The port is required to be int, got {type(port)!r}.")
++        if port is not None and (port < 0 or (port > 65535 and mode is _WHATWG)):
++            # As the parser does: a port is *DIGIT, RFC 3986 section 3.2.3,
++            # and at most 65535 for the WHATWG URL Standard.
++            raise ValueError(f"Port out of range: {port}")
+         if port and not host:
+             raise ValueError('Can\'t build URL with "port" but without "host".')
+         if query and query_string:
+@@ -1110,33 +1174,14 @@ class URL:
+             if _host:
+                 if "%" in _host and ":" in _host and _host[0] != "[":
+                     check_zone_id(_host)
+-                encoded_host, whatwg_host, idna2003 = _encode_host(
+-                    _host, validate_host=False
+-                )
+-                if idna2003 and mode is not _WHATWG:
+-                    raise ValueError(_idna2003_host_error(_host))
+-                _host = encoded_host
+-                if (
+-                    whatwg_host is not _host
+-                    and mode is _WHATWG
+-                    and (scheme in SPECIAL_SCHEMES or _host[0] == "[")
+-                ):
+-                    _host = _whatwg_special_host(_host, whatwg_host)
++                _host = _encode_scheme_host(_host, scheme, mode, True, False)
+             else:
+                 _host = ""
+                 if port is None and user is None:
+                     # As the parser does, see _encode_url().
+                     self._empty = EMPTY_AUTHORITY
+         elif host:
+-            _host, whatwg_host, idna2003 = _encode_host(host, validate_host=True)
+-            if idna2003 and mode is not _WHATWG:
+-                raise ValueError(_idna2003_host_error(host))
+-            if (
+-                whatwg_host is not _host
+-                and mode is _WHATWG
+-                and (scheme in SPECIAL_SCHEMES or _host[0] == "[")
+-            ):
+-                _host = _whatwg_special_host(_host, whatwg_host)
++            _host = _encode_scheme_host(host, scheme, mode, True)
+         else:
+             self._netloc = ""
+ 
+@@ -1154,7 +1199,20 @@ class URL:
+                     user = None
+                 self._netloc = make_netloc(user, password, _host, port, True)
+ 
+-        path = PATH_QUOTER(path) if path else path
++        if not path:
++            pass
++        elif (
++            path[0] != "/"
++            and mode is _WHATWG
++            and scheme
++            and not self._netloc
++            and not self._empty
++            and scheme not in SPECIAL_SCHEMES
++        ):
++            # An opaque path, as the parser has it, see OPAQUE_PATH_REQUOTER.
++            path = OPAQUE_PATH_QUOTER(path)
++        else:
++            path = PATH_QUOTER(path)
+         if path and (self._netloc or self._empty):
+             if "." in path:
+                 path = _normalize_path(path, scheme, mode)
+@@ -1167,6 +1225,9 @@ class URL:
+         elif path and scheme and mode is not _WHATWG and "." in path:
+             # Without an authority, as the parser does in RFC 3986 mode.
+             path = remove_dot_segments(path)
++        elif path and scheme and scheme != "file" and _whatwg_removes_dots(path):
++            # Without an authority, as the parser does in WHATWG mode.
++            path = normalize_path(path)
+         elif path and scheme == "file" and "." in path:
+             # A file URL has an authority in WHATWG mode, also an empty one,
+             # and its path is absolute.
+@@ -1206,7 +1267,7 @@ class URL:
+             # Rare: empty components, or no authority, which a special
+             # scheme in WHATWG mode still prints as "//".
+             return self._str_with_empty()
+-        if not self._path and (self._query or self._fragment):
++        if not self._path and (self._query or self._fragment) and self._slash_path:
+             path = "/"
+         else:
+             path = self._path
+@@ -1223,7 +1284,7 @@ class URL:
+ 
+     def _str_with_empty(self) -> str:
+         """Render a URL with empty components or without an authority."""
+-        if not self._path and self._netloc:
++        if not self._path and self._netloc and self._slash_path:
+             path = "/"
+         else:
+             path = self._path
+@@ -1442,6 +1503,16 @@ class URL:
+             return self._empty | EMPTY_AUTHORITY
+         return self._empty
+ 
++    @property
++    def _slash_path(self) -> bool:
++        """Tell if str() writes an empty path behind an authority as "/".
++
++        A URL with a special scheme always has a path, "/" at least, as do
++        relative URLs here; "sc://h?q" keeps its empty path, as the WHATWG
++        URL Standard and RFC 3986 section 6.2.3 have it.
++        """
++        return not self._scheme or self._scheme in SPECIAL_SCHEMES
++
+     @property
+     def _str_empty(self) -> int:
+         """The mask of empty components that str() writes out.
+@@ -2103,15 +2174,7 @@ class URL:
+             raise ValueError("host replacement is not allowed for relative URLs")
+         if not host:
+             raise ValueError("host removing is not allowed")
+-        encoded_host, whatwg_host, idna2003 = _encode_host(host, validate_host=True)
+-        if idna2003 and self._mode is not _WHATWG:
+-            raise ValueError(_idna2003_host_error(host))
+-        if (
+-            whatwg_host is not encoded_host
+-            and self._mode is _WHATWG
+-            and (self._scheme in SPECIAL_SCHEMES or encoded_host[0] == "[")
+-        ):
+-            encoded_host = _whatwg_special_host(encoded_host, whatwg_host)
++        encoded_host = _encode_scheme_host(host, self._scheme, self._mode, True)
+         port = self.explicit_port
+         netloc = make_netloc(self.raw_user, self.raw_password, encoded_host, port)
+         if self._scheme == "file" and self._mode is _WHATWG:
+@@ -2535,9 +2598,45 @@ class URL:
+         if scheme != self._scheme or (
+             url._scheme and (scheme not in USES_RELATIVE or self._mode is not _WHATWG)
+         ):
++            if (
++                self._mode is _WHATWG
++                and scheme != self._scheme
++                and scheme in SCHEME_REQUIRES_HOST
++                and not url._netloc
++            ):
++                # "http:" or "http:/" against a base with another scheme:
++                # the WHATWG parser reads an authority with an empty host,
++                # which fails. Only a base with the same scheme makes it a
++                # relative reference.
++                raise ValueError(
++                    f"Invalid URL: host is required for the {scheme} scheme"
++                )
+             # The result follows the base URL's compatibility mode.
+             return url if url._mode is self._mode else URL(url, mode=self._mode)
+ 
++        if (
++            self._mode is _WHATWG
++            and self._scheme
++            and not self._netloc
++            and not self._empty & EMPTY_AUTHORITY
++            and self._path[:1] != "/"
++            and scheme not in SPECIAL_SCHEMES
++            and (
++                url._netloc
++                or url._path
++                or url._query
++                or url._empty & (EMPTY_AUTHORITY | EMPTY_QUERY)
++                or not (url._fragment or url._empty & EMPTY_FRAGMENT)
++            )
++        ):
++            # A base with an opaque path, like "mailto:a" or "sc:", takes
++            # only a reference that is a fragment; the WHATWG parser fails
++            # for any other, also for "".
++            raise ValueError(
++                f"Invalid URL: {str(self)!r} cannot be a base URL for"
++                f" {str(url)!r}"
++            )
++
+         if "_join_path" in url._cache:
+             join_path = url._cache["_join_path"]
+             if url._netloc and url._scheme:
+@@ -2634,7 +2733,14 @@ class URL:
+                     # segment, so percent-encoded delimiters in the base are
+                     # kept as is.
+                     path = orig_path[: orig_path.rfind("/") + 1] + join_path
+-                path = normalize_path(path) if "." in path else path
++                if "." in path:
++                    # RFC 3986 section 5.2.4 also for a rootless path: "a/../g"
++                    # is "/g" there.
++                    path = (
++                        normalize_path(path)
++                        if self._mode is _WHATWG
++                        else remove_dot_segments(path)
++                    )
+         else:
+             path = orig_path
+ 
+@@ -2651,8 +2757,27 @@ class URL:
+         """join() for URLs with empty components; the same algorithm as
+         join() takes for other URLs, plus the empty component rules."""
+         join_empty = url._empty
++        if not url._netloc and join_empty & EMPTY_AUTHORITY:
++            if self._mode is not _WHATWG:
++                if scheme in _HTTP_SCHEMES:
++                    # RFC 3986 section 5.2.2 takes the empty authority of
++                    # the reference, and RFC 9110 rejects an http URI
++                    # without a host.
++                    raise ValueError(
++                        f"Invalid URL: the {scheme} scheme requires a host"
++                    )
++            elif scheme in SCHEME_REQUIRES_HOST:
++                # The WHATWG parser skips all the slashes of "///a" against
++                # a special base and reads "a" as the authority; "//" alone
++                # has an empty host, which fails.
++                joined = encode_url(f"{scheme}:{url}")
++                if not joined._netloc:
++                    raise ValueError(
++                        f"Invalid URL: host is required for the {scheme} scheme"
++                    )
++                return joined
+         # An empty authority in the reference wins only where a URL may have
+-        # an empty host; for http and friends "///a" keeps the base host.
++        # an empty host.
+         if url._netloc or (
+             join_empty & EMPTY_AUTHORITY and scheme not in SCHEME_REQUIRES_HOST
+         ):
+@@ -2662,6 +2787,10 @@ class URL:
+                 join_netloc, join_path, join_empty = _moved_parts(
+                     url, scheme, self._mode, join_empty
+                 )
++            if not join_netloc and "." in join_path:
++                # RFC 3986 section 5.2.2 removes the dot segments of a
++                # reference with an authority, also an empty one.
++                join_path = _normalize_path(join_path, scheme, self._mode)
+             return from_parts(
+                 scheme,
+                 join_netloc,
+@@ -2689,7 +2818,14 @@ class URL:
+                     # segment, so percent-encoded delimiters in the base are
+                     # kept as is.
+                     path = orig_path[: orig_path.rfind("/") + 1] + join_path
+-                path = normalize_path(path) if "." in path else path
++                if "." in path:
++                    # RFC 3986 section 5.2.4 also for a rootless path: "a/../g"
++                    # is "/g" there.
++                    path = (
++                        normalize_path(path)
++                        if self._mode is _WHATWG
++                        else remove_dot_segments(path)
++                    )
+         else:
+             path = orig_path
+ 
+@@ -2894,6 +3030,87 @@ def _drop_empty_password(netloc: str) -> str:
+     return f"{user}@{hostinfo}" if user else hostinfo
+ 
+ 
++def _encode_scheme_host(
++    host: str,
++    scheme: str,
++    mode: Mode,
++    validate_host: bool,
++    reject_empty_zone: bool = True,
++) -> str:
++    """Encode the host of a URL with scheme in mode.
++
++    A special scheme in WHATWG mode gets the host the WHATWG host parser
++    gives, see _whatwg_special_host(), another scheme an opaque host, see
++    _whatwg_opaque_host(). RFC 3986 mode rejects a host that IDNA2008
++    cannot encode.
++    """
++    if (
++        mode is _WHATWG
++        and scheme
++        and scheme not in SPECIAL_SCHEMES
++        and host[:1] != "["
++        and ":" not in host  # an IPv6 address, without its brackets
++    ):
++        return _whatwg_opaque_host(host)
++    if (
++        mode is _WHATWG
++        and scheme in SPECIAL_SCHEMES
++        and _WHATWG_ONLY_HOST_RE.search(host) is not None
++        and host.isascii()
++        and "%" not in host
++    ):
++        # '"', "`", "{" and "}" are no forbidden domain code points, the
++        # WHATWG host parser keeps them, while a reg-name has none.
++        lowered = host.lower()
++        if (invalid := _FORBIDDEN_DOMAIN_RE.search(lowered)) is not None:
++            raise ValueError(
++                f"Host {host!r} cannot contain {invalid.group()!r}"
++                f" (at position {invalid.start()})"
++            )
++        return _whatwg_special_host(lowered, _whatwg_numeric_host(lowered))
++    encoded, whatwg_host, idna2003 = _encode_host(
++        host, validate_host, reject_empty_zone=reject_empty_zone
++    )
++    if idna2003 and mode is not _WHATWG:
++        raise ValueError(_idna2003_host_error(host))
++    if (
++        whatwg_host is not encoded
++        and mode is _WHATWG
++        and (scheme in SPECIAL_SCHEMES or encoded[0] == "[")
++    ):
++        return _whatwg_special_host(encoded, whatwg_host)
++    return encoded
++
++
++# Characters a WHATWG domain may have but a reg-name may not.
++_WHATWG_ONLY_HOST_RE = re.compile('["`{}]')
++# The forbidden domain code points of the WHATWG URL Standard.
++_FORBIDDEN_DOMAIN_RE = re.compile(r"[\x00-\x20#%/:<>?@\[\\\]^|\x7f]")
++# The forbidden host code points of the WHATWG URL Standard, less "%".
++_OPAQUE_HOST_FORBIDDEN_RE = re.compile(r"[\x00\t\n\r #/:<>?@\[\\\]^|]")
++# What an opaque host percent-encodes: the C0 control percent-encode set.
++_OPAQUE_HOST_ENCODE_RE = re.compile(r"[^\x20-\x7e]+")
++
++
++def _whatwg_opaque_host(host: str) -> str:
++    """Return the host of a URL with a non-special scheme in WHATWG mode.
++
++    The WHATWG URL Standard parses it as an opaque host: no IDNA, no
++    lowercasing and no IPv4 parsing, only the forbidden host code points
++    fail and the C0 controls and non-ASCII code points are UTF-8
++    percent-encoded, so "sc://\u00f1" is "sc://%C3%B1" and "sc://H%4fSt"
++    keeps its case.
++    """
++    if (invalid := _OPAQUE_HOST_FORBIDDEN_RE.search(host)) is not None:
++        raise ValueError(
++            f"Host {host!r} cannot contain {invalid.group()!r}"
++            f" (at position {invalid.start()})"
++        )
++    if host.isascii() and host.isprintable():
++        return host
++    return _OPAQUE_HOST_ENCODE_RE.sub(_quote_match, host)
++
++
+ def _whatwg_special_host(host: str, whatwg_host: str | None) -> str:
+     """Return the host WHATWG parses a special-scheme host as.
+ 
+@@ -2997,6 +3214,37 @@ def _whatwg_decoded_host(host: str) -> str | None:
+     return _whatwg_numeric_host(decoded)
+ 
+ 
++def _check_a_labels(host: str) -> None:
++    """Reject a lowercased ASCII host with an A-label of an invalid U-label.
++
++    A label starting with "xn--" is the Punycode of a U-label (RFC 5891
++    section 5.4), and UTS #46, which the WHATWG URL Standard runs on every
++    special host, fails when that U-label is empty, ASCII only or not
++    valid: "xn--", "xn--a" and "xn--pokxncvks" are not hosts. A label that
++    is no Punycode at all, like "xn--d", is kept as an opaque name, as yarl
++    always did.
++    """
++    for label in host.split("."):
++        if label[:4] != "xn--":
++            continue
++        try:
++            decoded = label[4:].encode("ascii").decode("punycode")
++        except (UnicodeError, ValueError, IndexError):
++            continue
++        try:
++            valid = (
++                decoded != ""
++                and not decoded.isascii()
++                and unicodedata.normalize("NFC", decoded) == decoded
++                and idna.uts46_remap(decoded, std3_rules=False, transitional=False)
++                == decoded
++            )
++        except (UnicodeError, ValueError, IndexError):
++            valid = False
++        if not valid:
++            raise ValueError(f"Host {host!r} has an invalid A-label {label!r}")
++
++
+ @lru_cache(_DEFAULT_ENCODE_SIZE)
+ def _encode_host(
+     host: str, validate_host: bool, *, reject_empty_zone: bool = True
+@@ -3079,6 +3327,8 @@ def _encode_host(
+             if host[end] != "]" or IP_FUTURE_RE.fullmatch(host, 1, end) is None:
+                 raise ValueError(f"IPvFuture address is invalid: {host!r}")
+             return host, None, False
++        if "xn--" in host:
++            _check_a_labels(host)
+         if validate_host and (invalid := NOT_REG_NAME.search(host)):
+             value, pos, extra = invalid.group(), invalid.start(), ""
+             if value == "@" or (value == ":" and "@" in host[pos:]):
