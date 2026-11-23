@@ -1,0 +1,330 @@
+diff --git a/src/core/experimental/handlers-controller.test.ts b/src/core/experimental/handlers-controller.test.ts
+index ddc96da..f7adbf2 100644
+--- a/src/core/experimental/handlers-controller.test.ts
++++ b/src/core/experimental/handlers-controller.test.ts
+@@ -308,67 +308,6 @@ describe(InMemoryHandlersController.prototype.reset, () => {
+     expect(controller.getHandlersByKind('websocket')).toEqual([wsOne, wsTwo])
+     expect(controller.getHandlersByKind('request')).toEqual([upgradeHandler])
+   })
+-
+-  test('resets the kept handlers and disposes of the removed ones', () => {
+-    const initialHandler = http.get('/initial', () => {})
+-    initialHandler.reset = vi.fn()
+-    initialHandler.dispose = vi.fn()
+-    const runtimeHandler = http.get('/runtime', () => {})
+-    runtimeHandler.reset = vi.fn()
+-    runtimeHandler.dispose = vi.fn()
+-
+-    const controller = new InMemoryHandlersController([initialHandler])
+-    controller.use([runtimeHandler])
+-    controller.reset([])
+-
+-    expect.soft(initialHandler.reset).toHaveBeenCalledOnce()
+-    expect.soft(initialHandler.dispose).not.toHaveBeenCalled()
+-    expect.soft(runtimeHandler.reset).not.toHaveBeenCalled()
+-    expect(runtimeHandler.dispose).toHaveBeenCalledOnce()
+-  })
+-
+-  test('reports a rejected disposal of a removed handler', async () => {
+-    vi.spyOn(console, 'error').mockImplementation(() => {})
+-    onTestFinished(() => vi.restoreAllMocks())
+-
+-    const runtimeHandler = http.get('/runtime', () => {})
+-    runtimeHandler.dispose = () =>
+-      Promise.reject(new Error('Handler disposal error'))
+-
+-    const controller = new InMemoryHandlersController([])
+-    controller.use([runtimeHandler])
+-    controller.reset([])
+-
+-    await expect
+-      .poll(() => console.error)
+-      .toHaveBeenCalledWith(
+-        `[MSW] Failed to dispose of "request" handler removed during reset. Please see the original error below.\nError: Handler disposal error`,
+-      )
+-  })
+-
+-  test('removes the remaining handlers when a disposal throws', () => {
+-    vi.spyOn(console, 'error').mockImplementation(() => {})
+-    onTestFinished(() => vi.restoreAllMocks())
+-
+-    const throwingHandler = http.get('/throwing', () => {})
+-    throwingHandler.dispose = () => {
+-      throw new Error('Handler disposal error')
+-    }
+-    const runtimeHandler = http.get('/runtime', () => {})
+-    runtimeHandler.dispose = vi.fn()
+-
+-    const controller = new InMemoryHandlersController([])
+-    controller.use([throwingHandler, runtimeHandler])
+-    controller.reset([])
+-
+-    expect
+-      .soft(console.error)
+-      .toHaveBeenCalledWith(
+-        `[MSW] Failed to dispose of "request" handler removed during reset. Please see the original error below.\nError: Handler disposal error`,
+-      )
+-    expect.soft(runtimeHandler.dispose).toHaveBeenCalledOnce()
+-    expect(controller.currentHandlers()).toEqual([])
+-  })
+ })
+ 
+ describe(InMemoryHandlersController.prototype.listHandlers, () => {
+diff --git a/src/core/experimental/handlers-controller.ts b/src/core/experimental/handlers-controller.ts
+index 4baffbc..25fc729 100644
+--- a/src/core/experimental/handlers-controller.ts
++++ b/src/core/experimental/handlers-controller.ts
+@@ -168,38 +168,11 @@ export abstract class HandlersController {
+       ),
+     )
+ 
+-    const { initialHandlers } = this.getState()
+-    const nextInitialHandlers =
+-      nextHandlers.length > 0
+-        ? groupHandlersByKind(nextHandlers)
+-        : initialHandlers
+-    const currentHandlers = new Set(this.currentHandlers())
+-    const nextHandlersSet = new Set(
+-      Object.values(nextInitialHandlers).flat().filter(Boolean),
+-    )
+-
+-    for (const handler of currentHandlers.intersection(nextHandlersSet)) {
++    for (const handler of this.currentHandlers()) {
+       handler.reset()
+     }
+ 
+-    // The handlers that leave the network with this reset release
+-    // whatever they hold (e.g. live connection bindings).
+-    // Resetting is synchronous, so their disposal is not awaited.
+-    for (const handler of currentHandlers.difference(nextHandlersSet)) {
+-      try {
+-        const disposal = handler.dispose()
+-
+-        if (disposal instanceof Promise) {
+-          disposal.catch((error) => {
+-            this.#printDisposalError(handler, error)
+-          })
+-        }
+-      } catch (error) {
+-        // A failing disposal must not prevent the remaining handlers
+-        // from being disposed of, nor the removed handlers from being cleared.
+-        this.#printDisposalError(handler, error)
+-      }
+-    }
++    const { initialHandlers } = this.getState()
+ 
+     if (nextHandlers.length === 0) {
+       this.setState({
+@@ -209,9 +182,11 @@ export abstract class HandlersController {
+       return
+     }
+ 
++    const normalizedNextHandlers = groupHandlersByKind(nextHandlers)
++
+     this.setState({
+-      initialHandlers: nextInitialHandlers,
+-      handlers: { ...nextInitialHandlers },
++      initialHandlers: normalizedNextHandlers,
++      handlers: { ...normalizedNextHandlers },
+     })
+   }
+ 
+@@ -242,14 +217,6 @@ export abstract class HandlersController {
+   #validateHandlers(handlers: Array<AnyHandler>): boolean {
+     return handlers.every((handler) => !Array.isArray(handler))
+   }
+-
+-  #printDisposalError(handler: AnyHandler, error: unknown): void {
+-    devUtils.error(
+-      'Failed to dispose of "%s" handler removed during reset. Please see the original error below.\n%s',
+-      handler.kind,
+-      error,
+-    )
+-  }
+ }
+ 
+ export class InMemoryHandlersController extends HandlersController {
+diff --git a/src/core/handlers/handler.ts b/src/core/handlers/handler.ts
+index 1d75d7d..aea7dd8 100644
+--- a/src/core/handlers/handler.ts
++++ b/src/core/handlers/handler.ts
+@@ -32,9 +32,8 @@ export abstract class Handler {
+   /**
+    * Release the resources held by this handler.
+    *
+-   * @note This method is invoked automatically when the handler leaves
+-   * the network: when the network is disabled (e.g. `server.close()`)
+-   * or when a reset removes it (e.g. `server.resetHandlers()`). Override it in the handlers that
++   * @note This method is invoked automatically when the network is
++   * disabled (e.g. `server.close()`). Override it in the handlers that
+    * hold onto anything beyond a single frame, like timers, connections,
+    * or event listeners. Returning a promise makes the network await
+    * this handler's disposal before it tears itself down.
+diff --git a/src/graphql/graphql-subscription.ts b/src/graphql/graphql-subscription.ts
+index b40269e..0a210a1 100644
+--- a/src/graphql/graphql-subscription.ts
++++ b/src/graphql/graphql-subscription.ts
+@@ -585,32 +585,24 @@ export class GraphQLSubscriptionTransportHandler extends GraphQLWebSocketHandler
+   }
+ 
+   /**
+-   * Remove the given handler from the subscribers of every session
+-   * this transport participates in. The handler no longer matches
+-   * subscriptions on the connections opened while it was registered.
+-   */
+-  public unsubscribe(handler: WebSocketHandler): void {
+-    for (const connection of connections.values()) {
+-      connection.subscribers.delete(handler)
+-    }
+-  }
+-
+-  /**
+-   * End the active subscriptions of the sessions this transport
+-   * participates in. The sessions and their subscribers are left intact:
+-   * the handlers that survive the reset keep serving the connections
+-   * opened before it, while the removed handlers unsubscribe themselves
+-   * on disposal. The sessions own the protocol listeners for as long as
+-   * the client stays connected.
++   * Drop this transport's subscribers and active subscriptions from the
++   * sessions it participates in. The sessions themselves are left intact:
++   * they are shared with the other transports of the same connection and
++   * own the protocol listeners for as long as the client stays connected.
+    *
+    * @note This method is invoked automatically when the handlers
+    * controller resets the handlers (e.g. `server.resetHandlers()`).
+    */
+   public reset(): void {
+     for (const connection of connections.values()) {
+-      const ownsConnection = Array.from(connection.subscribers.values()).some(
+-        (entry) => entry.transport === this,
+-      )
++      let ownsConnection = false
++
++      for (const [handler, entry] of connection.subscribers) {
++        if (entry.transport === this) {
++          connection.subscribers.delete(handler)
++          ownsConnection = true
++        }
++      }
+ 
+       // Resetting the handlers detaches the resolvers from their
+       // subscriptions, so run their cleanups instead of dropping them.
+@@ -943,16 +935,6 @@ export class GraphQLSubscriptionHandler<
+     this.isUsed = false
+   }
+ 
+-  /**
+-   * Stop serving the connections this handler was bound to.
+-   * @note This method is invoked automatically when the handler
+-   * is removed from the network, either by resetting the handlers
+-   * (e.g. `server.resetHandlers()`) or by disabling the network.
+-   */
+-  public dispose(): void {
+-    this.#transport.unsubscribe(this)
+-  }
+-
+   /**
+    * @note Individual subscription handlers stay silent. The subscription
+    * transport owns the GraphQL-aware logging for the entire connection
+diff --git a/test/msw-api/setup-server/reset-handlers.node.test.ts b/test/msw-api/setup-server/reset-handlers.node.test.ts
+index e10e819..71d515b 100644
+--- a/test/msw-api/setup-server/reset-handlers.node.test.ts
++++ b/test/msw-api/setup-server/reset-handlers.node.test.ts
+@@ -1,11 +1,6 @@
+ // @vitest-environment node
+ import { HttpResponse, http } from 'msw'
+-import { graphql } from 'msw/graphql'
+ import { setupServer } from 'msw/node'
+-import { createClient } from '../../support/graphql-client'
+-import { gql } from '../../support/graphql'
+-
+-const api = graphql.link('http://localhost/graphql')
+ 
+ const server = setupServer(
+   http.get('http://localhost/books', () => {
+@@ -106,85 +101,3 @@ test('replaces all handlers with the explicit next runtime handlers upon reset',
+     await expect.soft(response.json()).resolves.toEqual([1, 2, 3])
+   }
+ })
+-
+-test('keeps initial GraphQL subscription handlers for connections opened before reset', async () => {
+-  // The previous test replaced the initial handlers,
+-  // so establish the subscription handler as the initial one here.
+-  server.resetHandlers(
+-    api.subscription('OnTick', ({ subscription }) => {
+-      subscription.publish({ data: { tick: 1 } })
+-    }),
+-  )
+-
+-  await using client = createClient({
+-    url: 'ws://localhost/graphql',
+-    lazy: false,
+-  })
+-  const connected = Promise.withResolvers<void>()
+-  client.on('connected', () => connected.resolve())
+-  await connected.promise
+-
+-  server.resetHandlers()
+-
+-  const subscription = client.iterate({
+-    query: gql`
+-      subscription OnTick {
+-        tick
+-      }
+-    `,
+-  })
+-  const pendingNext = subscription.next()
+-
+-  // An unhandled subscription sends nothing to the client,
+-  // so wait for it to be either handled or reported as unhandled.
+-  let settled = false
+-  pendingNext.then(() => (settled = true))
+-  await expect
+-    .poll(() => settled || vi.mocked(console.warn).mock.calls.length > 0)
+-    .toBe(true)
+-
+-  expect(console.warn).not.toHaveBeenCalled()
+-  await expect(pendingNext).resolves.toEqual({
+-    done: false,
+-    value: { data: { tick: 1 } },
+-  })
+-})
+-
+-test('removes runtime GraphQL subscription handlers from connections opened before reset', async () => {
+-  server.resetHandlers(
+-    api.subscription('OnTick', ({ subscription }) => {
+-      subscription.publish({ data: { tick: 'initial' } })
+-    }),
+-  )
+-  server.use(
+-    api.subscription('OnTick', ({ subscription }) => {
+-      subscription.publish({ data: { tick: 'runtime' } })
+-    }),
+-  )
+-
+-  await using client = createClient({
+-    url: 'ws://localhost/graphql',
+-    lazy: false,
+-  })
+-  const connected = Promise.withResolvers<void>()
+-  client.on('connected', () => connected.resolve())
+-  await connected.promise
+-
+-  const query = gql`
+-    subscription OnTick {
+-      tick
+-    }
+-  `
+-
+-  await expect(client.iterate({ query }).next()).resolves.toEqual({
+-    done: false,
+-    value: { data: { tick: 'runtime' } },
+-  })
+-
+-  server.resetHandlers()
+-
+-  await expect(client.iterate({ query }).next()).resolves.toEqual({
+-    done: false,
+-    value: { data: { tick: 'initial' } },
+-  })
+-})

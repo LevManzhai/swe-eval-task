@@ -1,0 +1,22 @@
+diff --git a/src/graphql/graphql-subscription.ts b/src/graphql/graphql-subscription.ts
+index 0a210a1..ec9071c 100644
+--- a/src/graphql/graphql-subscription.ts
++++ b/src/graphql/graphql-subscription.ts
+@@ -595,14 +595,9 @@ export class GraphQLSubscriptionTransportHandler extends GraphQLWebSocketHandler
+    */
+   public reset(): void {
+     for (const connection of connections.values()) {
+-      let ownsConnection = false
+-
+-      for (const [handler, entry] of connection.subscribers) {
+-        if (entry.transport === this) {
+-          connection.subscribers.delete(handler)
+-          ownsConnection = true
+-        }
+-      }
++      const ownsConnection = Array.from(connection.subscribers.values()).some(
++        (entry) => entry.transport === this,
++      )
+ 
+       // Resetting the handlers detaches the resolvers from their
+       // subscriptions, so run their cleanups instead of dropping them.
