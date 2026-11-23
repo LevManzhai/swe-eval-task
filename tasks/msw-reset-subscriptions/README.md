@@ -1,7 +1,8 @@
 # msw: GraphQL subscriptions after `resetHandlers()`
 
-> **Status: built, difficulty check not run yet.** `run.sh` passes all of
-> its checks. See [`NOTES.md`](NOTES.md).
+> **Status: difficulty check in progress, 1 of 1 attempts passed** (12 / 12,
+> in about 5 minutes). `run.sh` passes all of its checks. See
+> [`NOTES.md`](NOTES.md).
 
 [msw](https://github.com/mswjs/msw) (Mock Service Worker) is the API mocking
 library used in many JavaScript test suites. This task is a different kind
@@ -31,6 +32,7 @@ The upstream fix is msw commit `3818a81` (October 2026).
 | `verifier/task.node.test.ts` | 12 hidden tests through the public API |
 | `verifier/alt_fixes/` | a correct solution written differently; must pass |
 | `verifier/wrong_fixes/` | four plausible wrong solutions; must fail |
+| `difficulty/` | the patches the one-shot attempts produced |
 | `run.sh` | builds the image and checks all of the above |
 
 ## Running it

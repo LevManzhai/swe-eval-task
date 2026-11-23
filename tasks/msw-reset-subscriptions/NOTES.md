@@ -133,4 +133,37 @@ reusing handler objects, which is how a lot of test suites are written.
 
 ## Difficulty check
 
-<!-- Left empty on purpose: attempts are run in separate fresh sessions. -->
+A strong coding agent gets `PROBLEM.md` and the repository, one try, in a
+fresh session that doesn't have this repository. Three attempts are run. The
+task is accepted if at most one of the three passes.
+
+| Attempt | Time | Result | Approach |
+|---|---|---|---|
+| 1 | about 5 min, 24 commands | **passed**, 12 / 12 | handlers are looked up live when each `subscribe` arrives |
+
+**Attempt 1** (`difficulty/attempt-1.patch`, 6 files, +319 / −5, including
+its own 8-test regression file). I checked its commands: it ran the setup,
+then searched the code. It never fetched msw from GitHub or npm.
+
+It found the cause quickly: it searched for the warning text, then for
+`resetHandlers`. Then it fixed the problem a different way from upstream.
+Instead of keeping and disposing subscribers on reset, each open connection
+keeps a live accessor to the network's current handlers (passed down through
+the network and WebSocket frames). Each `subscribe` message is matched
+against whatever is registered at that moment. That design never had the
+second half of the bug: a handler the reset removed simply isn't in the list
+any more. So none of the traps I built applied to it. It also kept the
+"every reset ends the active subscriptions" behaviour, which the more
+obvious live-lookup version loses after the first reset.
+
+### What I make of it so far
+
+- The verifier did its job. It accepted a correct solution that is
+  structurally different from the reference and from my alternative.
+- As a difficulty test, it's a bad sign. Locating the cause took minutes,
+  because the warning text leads to the subscriber list and from there the
+  chain is short. The trap I counted on (fixing it where the symptom is, then
+  leaking removed handlers) only catches an agent that keeps the snapshot
+  design. This agent replaced the design.
+- With 1 of 1 passed, both remaining attempts would have to fail for the task
+  to be accepted.
