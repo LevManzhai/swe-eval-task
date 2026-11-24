@@ -1,0 +1,1593 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c411d12..47d6f77 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,18 +2,11 @@
+ 
+ ## 4.3.0 - 2026-11-10
+ 
+-This release fixes two quadratic-time parsing paths that let crafted input stall rendering for minutes (security),
+-aligns several parsing rules with CommonMark 0.31.2 and markdown-it 15.0.x,
+-turns parser rules that never advance into a `RuntimeError` instead of an infinite loop,
+-makes rendering linear on PyPy and free-threaded CPython, and adds support for Python 3.14.
++This release turns parser rules that never advance into a `RuntimeError` instead of an infinite loop,
++and adds support for Python 3.14.
+ Python 3.10 is still supported.
+ If you write plugins or render rules, or edit `SyntaxTreeNode` trees, please read the upgrade notes at the end.
+ 
+-### 🔒 Security
+-
+-* 👌 Fix quadratic-time inline parsing of long runs of characters that start an inline rule without completing one (such as `&`, `<`, `~` or incomplete entities), which let a few hundred kilobytes of input stall rendering for seconds to minutes, in [#423](https://github.com/executablebooks/markdown-it-py/pull/423), thanks to [@hdimer](https://github.com/hdimer) ([#411](https://github.com/executablebooks/markdown-it-py/pull/411))
+-* 👌 Reject unterminated inline HTML (`<!--`, `<?`, `<![CDATA[`, `<!X`) in constant time when `html` is enabled (as in the default `commonmark` preset), instead of rescanning to the end of the input for every opener, in [#428](https://github.com/executablebooks/markdown-it-py/pull/428)
+-
+ ### ✨ New
+ 
+ * ✨ Add `--enable-tables` to the CLI for file, standard input and interactive parsing in [#425](https://github.com/executablebooks/markdown-it-py/pull/425), thanks to [@user01010111](https://github.com/user01010111) ([#422](https://github.com/executablebooks/markdown-it-py/pull/422)); requested by [@hartwork](https://github.com/hartwork) in [#352](https://github.com/executablebooks/markdown-it-py/issues/352)
+@@ -22,26 +15,17 @@ If you write plugins or render rules, or edit `SyntaxTreeNode` trees, please rea
+ ### 👌 Improved
+ 
+ * 👌 Raise `RuntimeError` instead of looping forever when a block or inline rule reports a match without advancing (or moves backwards), or when no block rule matches a line, as markdown-it does, in [#444](https://github.com/executablebooks/markdown-it-py/pull/444), thanks to [@rupayon123](https://github.com/rupayon123), [@hukkin](https://github.com/hukkin) ([#336](https://github.com/executablebooks/markdown-it-py/pull/336)) and [@inchang-ing](https://github.com/inchang-ing) ([#443](https://github.com/executablebooks/markdown-it-py/pull/443)); requested by [@acaprino](https://github.com/acaprino) in [#441](https://github.com/executablebooks/markdown-it-py/issues/441)
+-* 👌 Fix quadratic-time HTML rendering on PyPy, GraalPy and free-threaded CPython by joining the rendered fragments once, in [#458](https://github.com/executablebooks/markdown-it-py/pull/458), thanks to [@DicksonWu654](https://github.com/DicksonWu654)
+ * 👌 Make `StateBase.src` a plain attribute, for about 4–11% faster parsing on CPython, in [#450](https://github.com/executablebooks/markdown-it-py/pull/450), thanks to [@deadstrobe5](https://github.com/deadstrobe5)
+ * 👌 Build block line markers with one scan per line instead of one step per character in [#449](https://github.com/executablebooks/markdown-it-py/pull/449), thanks to [@John-Cusack](https://github.com/John-Cusack)
+ * 👌 Name the Windows end-of-input keys (Ctrl-Z then Enter) in the CLI's interactive prompt and `-h` text in [#463](https://github.com/executablebooks/markdown-it-py/pull/463)
+ 
+ ### 🐛 Fixed
+ 
+-* 🐛 Fix HTML blocks of types 1–5 (comments, processing instructions, declarations, CDATA, `script`/`pre`/`style`/`textarea`) ending at a blank line inside a list item or blockquote, porting markdown-it 14.2.0, in [#406](https://github.com/executablebooks/markdown-it-py/pull/406), thanks to [@binggao1230](https://github.com/binggao1230); reported by [@Jayman2000](https://github.com/Jayman2000) in [#377](https://github.com/executablebooks/markdown-it-py/issues/377)
+-* 🐛 Fix HTML block starts per CommonMark 0.31.2: lowercase declarations such as `<!doctype html>` start a block and interrupt a paragraph, and tag names match case-insensitively in ASCII only, in [#440](https://github.com/executablebooks/markdown-it-py/pull/440), thanks to [@rupayon123](https://github.com/rupayon123); reported by [@p5ych0](https://github.com/p5ych0) in [#437](https://github.com/executablebooks/markdown-it-py/issues/437)
+-* 🐛 Fix code spans rendered as literal backticks after an unclosed link or image label, and count only U+0020 spaces (not tabs or no-break spaces) when deciding whether to strip a code span's padding, porting markdown-it 15.0.1, in [#439](https://github.com/executablebooks/markdown-it-py/pull/439), thanks to [@SparkUiX](https://github.com/SparkUiX); reported by [@felzab](https://github.com/felzab) in [#438](https://github.com/executablebooks/markdown-it-py/issues/438)
+ * 🐛 Trim and split with the CommonMark whitespace set instead of Python's, so U+001C–U+001F and U+0085 are no longer dropped from paragraphs, headings, table cells and fence info strings, and distinct reference labels no longer match each other, in [#433](https://github.com/executablebooks/markdown-it-py/pull/433), thanks to [@Nexory](https://github.com/Nexory) ([#418](https://github.com/executablebooks/markdown-it-py/pull/418))
+-* 🐛 Preserve IPv6 host brackets (e.g. `http://[::1]:8000/`) in normalized link and image URLs, porting markdown-it 15.0.1, in [#459](https://github.com/executablebooks/markdown-it-py/pull/459), thanks to [@Jinyong-Li](https://github.com/Jinyong-Li)
+-* 🐛 Fix task-list detection consuming a literal `[ ]`/`[x]` at the start of an indented code block in a list item in [#451](https://github.com/executablebooks/markdown-it-py/pull/451), thanks to [@AryanRG](https://github.com/AryanRG)
+-* 🐛 Fix an `IndexError` in the `html_block` and `heading` rules at the end of the input (a table in a blockquote that ends on `>`) in [#416](https://github.com/executablebooks/markdown-it-py/pull/416), thanks to [@saket3395](https://github.com/saket3395); reported by [@WilcoPancras](https://github.com/WilcoPancras) in [#415](https://github.com/executablebooks/markdown-it-py/issues/415)
+ * 🐛 Keep backslash escapes and entities in image alt text (`![a \* b](/u)` gives `alt="a * b"`), porting markdown-it 15.0.0, in [#446](https://github.com/executablebooks/markdown-it-py/pull/446), thanks to [@gyanu2507](https://github.com/gyanu2507); reported by [@kdeldycke](https://github.com/kdeldycke) in [#445](https://github.com/executablebooks/markdown-it-py/issues/445)
+ * 🐛 Keep code span text in image alt text, porting markdown-it 15.0.0, in [#460](https://github.com/executablebooks/markdown-it-py/pull/460), thanks to [@jayhemnani9910](https://github.com/jayhemnani9910)
+-* 🐛 Keep hard breaks and inline HTML in image alt text in [#409](https://github.com/executablebooks/markdown-it-py/pull/409), thanks to [@chuenchen309](https://github.com/chuenchen309)
+ * 🐛 Keep edits to the children of inline and image nodes in `SyntaxTreeNode.to_tokens()` in [#453](https://github.com/executablebooks/markdown-it-py/pull/453), thanks to [@KennyMcSimpson](https://github.com/KennyMcSimpson); edited tokens are copied, so the token stream the tree was built from is left unchanged ([#464](https://github.com/executablebooks/markdown-it-py/pull/464))
+ * 🐛 Fix rule chains staying stale after `Ruler.enable`, `disable` or `enableOnly` raised on an unknown rule name in [#457](https://github.com/executablebooks/markdown-it-py/pull/457), thanks to [@IlyaKhalafi](https://github.com/IlyaKhalafi); reported in [#456](https://github.com/executablebooks/markdown-it-py/issues/456)
+-* 🐛 Fix `MarkdownIt.enable()` and `disable()` applying a generator of rule names only to the core chain in [#447](https://github.com/executablebooks/markdown-it-py/pull/447), thanks to [@muneikh](https://github.com/muneikh)
+ * 🐛 Fix the CLI's interactive mode joining input lines with an extra newline, which split every line into its own paragraph and broke hard line breaks, in [#425](https://github.com/executablebooks/markdown-it-py/pull/425); reported by [@jamesquilty](https://github.com/jamesquilty) in [#172](https://github.com/executablebooks/markdown-it-py/issues/172)
+ * 🐛 CLI helpers create a default parser only when none is given in [#455](https://github.com/executablebooks/markdown-it-py/pull/455), thanks to [@Quinnod345](https://github.com/Quinnod345)
+ 
+@@ -68,14 +52,9 @@ If you write plugins or render rules, or edit `SyntaxTreeNode` trees, please rea
+   So does a line that no block rule accepts, which is only possible with the `paragraph` rule disabled (`none of the block rules matched`).
+ * **Image `children` hold joined `text` tokens.**
+   As in markdown-it 15, `text_join` now also joins the `text_special` tokens among an image token's `children`, so code that reads alt text from them gets escaped characters and entities as plain `text` tokens (a nested image's own `children` are still not joined, as upstream).
+-* **Render rules must return `str`.**
+-  The rendered fragments are now joined with `str.join`, so a rule that returns a `str` subclass (such as `markupsafe.Markup`) gives a plain `str` from `render()`, and any non-`str` result (even one that defines `__radd__`, which 4.2.0 let through) raises `TypeError` when the fragments are joined.
+ * **`SyntaxTreeNode.to_tokens()` follows the tree.**
+   The tree's `children` are the source of truth: a change made directly to a token's `children` list no longer appears in the output, and `to_tokens()` does not modify the token stream the tree was built from.
+-* **Rule names given as a generator** to `MarkdownIt.enable()` or `disable()` are validated like a list, so an unknown name now raises `ValueError`.
+ * **Internals plugins may touch.**
+-  `StateInline.pending` is now a property backed by a buffer: `state.pending += text` still works, and the new `state.append_pending(text)` appends in constant time.
+-  `HTML_TAG_RE` (`markdown_it.common.html_re`) and `DIGITAL_RE` and `NAMED_RE` (`markdown_it.rules_inline.entity`) no longer start with `^`, because they are applied with `.match(src, pos)`; code that calls `.search()` on them now matches anywhere in the string.
+   The private `StateBase._src` and `_srcCharCode` attributes are gone (`srcCharCode` itself is still there, and still deprecated).
+ * **Packaging.**
+   The `testing` extra no longer installs `coverage` and `pytest-cov`: install `.[testing,coverage]` to run the tests with `--cov`.
+diff --git a/markdown_it/common/html_re.py b/markdown_it/common/html_re.py
+index 88cddc4..ab822c5 100644
+--- a/markdown_it/common/html_re.py
++++ b/markdown_it/common/html_re.py
+@@ -21,9 +21,7 @@ declaration = "<![A-Za-z][^>]*>"
+ cdata = "<!\\[CDATA\\[[\\s\\S]*?\\]\\]>"
+ 
+ HTML_TAG_RE = re.compile(
+-    # No leading `^`: applied via `.match(src, pos)`, which anchors at `pos`
+-    # without slicing `src[pos:]` (an O(len) copy per call, quadratic over a run).
+-    "(?:"
++    "^(?:"
+     + open_tag
+     + "|"
+     + close_tag
+diff --git a/markdown_it/common/normalize_url.py b/markdown_it/common/normalize_url.py
+index c5f25c9..92720b3 100644
+--- a/markdown_it/common/normalize_url.py
++++ b/markdown_it/common/normalize_url.py
+@@ -34,20 +34,7 @@ def normalizeLink(url: str) -> str:
+         with suppress(Exception):
+             parsed = parsed._replace(hostname=_punycode.to_ascii(parsed.hostname))
+ 
+-    if not parsed.hostname or ":" not in parsed.hostname:
+-        return mdurl.encode(mdurl.format(parsed))
+-
+-    # Encode components before format() adds the IPv6 host brackets.
+-    return mdurl.format(
+-        parsed._replace(
+-            protocol=parsed.protocol and mdurl.encode(parsed.protocol),
+-            auth=parsed.auth and mdurl.encode(parsed.auth),
+-            hostname=mdurl.encode(parsed.hostname),
+-            pathname=parsed.pathname and mdurl.encode(parsed.pathname),
+-            search=parsed.search and mdurl.encode(parsed.search),
+-            hash=parsed.hash and mdurl.encode(parsed.hash),
+-        )
+-    )
++    return mdurl.encode(mdurl.format(parsed))
+ 
+ 
+ def normalizeLinkText(url: str) -> str:
+diff --git a/markdown_it/main.py b/markdown_it/main.py
+index 33088ef..050a3b8 100644
+--- a/markdown_it/main.py
++++ b/markdown_it/main.py
+@@ -160,9 +160,9 @@ class MarkdownIt:
+     def enable(
+         self, names: str | Iterable[str], ignoreInvalid: bool = False
+     ) -> MarkdownIt:
+-        """Enable list of rules. (chainable)
++        """Enable list or rules. (chainable)
+ 
+-        :param names: rule name or iterable of rule names to enable.
++        :param names: rule name or list of rule names to enable.
+         :param ignoreInvalid: set `true` to ignore errors when rule not found.
+ 
+         It will automatically find appropriate components,
+@@ -176,7 +176,8 @@ class MarkdownIt:
+         """
+         result = []
+ 
+-        names = [names] if isinstance(names, str) else list(names)
++        if isinstance(names, str):
++            names = [names]
+ 
+         for chain in ["core", "block", "inline"]:
+             result.extend(self[chain].ruler.enable(names, True))
+@@ -193,13 +194,14 @@ class MarkdownIt:
+     ) -> MarkdownIt:
+         """The same as [[MarkdownIt.enable]], but turn specified rules off. (chainable)
+ 
+-        :param names: rule name or iterable of rule names to disable.
++        :param names: rule name or list of rule names to disable.
+         :param ignoreInvalid: set `true` to ignore errors when rule not found.
+ 
+         """
+         result = []
+ 
+-        names = [names] if isinstance(names, str) else list(names)
++        if isinstance(names, str):
++            names = [names]
+ 
+         for chain in ["core", "block", "inline"]:
+             result.extend(self[chain].ruler.disable(names, True))
+diff --git a/markdown_it/parser_inline.py b/markdown_it/parser_inline.py
+index b03a184..530e936 100644
+--- a/markdown_it/parser_inline.py
++++ b/markdown_it/parser_inline.py
+@@ -202,7 +202,7 @@ class ParserInline:
+                     break
+                 continue
+ 
+-            state.append_pending(state.src[state.pos])
++            state.pending += state.src[state.pos]
+             state.pos += 1
+ 
+         if state.pending:
+diff --git a/markdown_it/renderer.py b/markdown_it/renderer.py
+index 6ccdee9..d4b6c4d 100644
+--- a/markdown_it/renderer.py
++++ b/markdown_it/renderer.py
+@@ -85,22 +85,18 @@ class RendererHTML(RendererProtocol):
+         :param env: additional data from parsed input
+ 
+         """
+-        # Collect the fragments and join them once: repeated ``str +=`` is only
+-        # linear on interpreters that can extend a string in place (the default
+-        # CPython build), and quadratic in the output size elsewhere (e.g. PyPy,
+-        # GraalPy and free-threaded CPython 3.13).
+-        out: list[str] = []
++        result = ""
+ 
+         for i, token in enumerate(tokens):
+             if token.type == "inline":
+                 if token.children:
+-                    out.append(self.renderInline(token.children, options, env))
++                    result += self.renderInline(token.children, options, env)
+             elif token.type in self.rules:
+-                out.append(self.rules[token.type](tokens, i, options, env))
++                result += self.rules[token.type](tokens, i, options, env)
+             else:
+-                out.append(self.renderToken(tokens, i, options, env))
++                result += self.renderToken(tokens, i, options, env)
+ 
+-        return "".join(out)
++        return result
+ 
+     def renderInline(
+         self, tokens: Sequence[Token], options: OptionsDict, env: EnvType
+@@ -111,15 +107,15 @@ class RendererHTML(RendererProtocol):
+         :param options: params of parser instance
+         :param env: additional data from parsed input (references, for example)
+         """
+-        out: list[str] = []
++        result = ""
+ 
+         for i, token in enumerate(tokens):
+             if token.type in self.rules:
+-                out.append(self.rules[token.type](tokens, i, options, env))
++                result += self.rules[token.type](tokens, i, options, env)
+             else:
+-                out.append(self.renderToken(tokens, i, options, env))
++                result += self.renderToken(tokens, i, options, env)
+ 
+-        return "".join(out)
++        return result
+ 
+     def renderToken(
+         self,
+@@ -209,20 +205,18 @@ class RendererHTML(RendererProtocol):
+         :param options: params of parser instance
+         :param env: additional data from parsed input
+         """
+-        out: list[str] = []
++        result = ""
+ 
+         for token in tokens or []:
+             if token.type in ("text", "code_inline"):
+-                out.append(token.content)
++                result += token.content
+             elif token.type == "image":
+                 if token.children:
+-                    out.append(self.renderInlineAsText(token.children, options, env))
+-            elif token.type in ("html_inline", "html_block"):
+-                out.append(token.content)
+-            elif token.type in ("softbreak", "hardbreak"):
+-                out.append("\n")
++                    result += self.renderInlineAsText(token.children, options, env)
++            elif token.type == "softbreak":
++                result += "\n"
+ 
+-        return "".join(out)
++        return result
+ 
+     ###################################################
+ 
+diff --git a/markdown_it/rules_block/heading.py b/markdown_it/rules_block/heading.py
+index 201f32d..e768151 100644
+--- a/markdown_it/rules_block/heading.py
++++ b/markdown_it/rules_block/heading.py
+@@ -19,10 +19,7 @@ def heading(state: StateBlock, startLine: int, endLine: int, silent: bool) -> bo
+     if state.is_code_block(startLine):
+         return False
+ 
+-    try:
+-        ch: str | None = state.src[pos]
+-    except IndexError:
+-        return False
++    ch: str | None = state.src[pos]
+ 
+     if ch != "#" or pos >= maximum:
+         return False
+diff --git a/markdown_it/rules_block/html_block.py b/markdown_it/rules_block/html_block.py
+index 1ff23d7..3d43f6e 100644
+--- a/markdown_it/rules_block/html_block.py
++++ b/markdown_it/rules_block/html_block.py
+@@ -14,18 +14,16 @@ LOGGER = logging.getLogger(__name__)
+ # last argument defines whether it can terminate a paragraph or not
+ HTML_SEQUENCES: list[tuple[re.Pattern[str], re.Pattern[str], bool]] = [
+     (
+-        re.compile(r"^<(?a:(script|pre|style|textarea))(?=(\s|>|$))", re.IGNORECASE),
+-        re.compile(r"<\/(?a:(script|pre|style|textarea))>", re.IGNORECASE),
++        re.compile(r"^<(script|pre|style|textarea)(?=(\s|>|$))", re.IGNORECASE),
++        re.compile(r"<\/(script|pre|style|textarea)>", re.IGNORECASE),
+         True,
+     ),
+     (re.compile(r"^<!--"), re.compile(r"-->"), True),
+     (re.compile(r"^<\?"), re.compile(r"\?>"), True),
+-    (re.compile(r"^<![A-Za-z]"), re.compile(r">"), True),
++    (re.compile(r"^<![A-Z]"), re.compile(r">"), True),
+     (re.compile(r"^<!\[CDATA\["), re.compile(r"\]\]>"), True),
+     (
+-        re.compile(
+-            "^</?(?a:(" + "|".join(block_names) + "))(?=(\\s|/?>|$))", re.IGNORECASE
+-        ),
++        re.compile("^</?(" + "|".join(block_names) + ")(?=(\\s|/?>|$))", re.IGNORECASE),
+         re.compile(r"^$"),
+         True,
+     ),
+@@ -46,10 +44,7 @@ def html_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+     if not state.md.options.get("html", None):
+         return False
+ 
+-    try:
+-        if state.src[pos] != "<":
+-            return False
+-    except IndexError:
++    if state.src[pos] != "<":
+         return False
+ 
+     lineText = state.src[pos:maximum]
+@@ -69,22 +64,11 @@ def html_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+ 
+     nextLine = startLine + 1
+ 
+-    # Block types 6 and 7 (the only ones whose end condition is a blank line)
+-    # have `^$` as their closing regexp. For all other types (1-5, e.g.
+-    # `<!--` comments), a blank line is regular content and must not terminate
+-    # the block - it ends only when its closing sequence is found.
+-    endsOnBlankLine = bool(html_seq[1].search(""))
+-
+     # If we are here - we detected HTML block.
+     # Let's roll down till block end.
+     if not html_seq[1].search(lineText):
+         while nextLine < endLine:
+-            # An outdented blank line shouldn't end a block that doesn't end on a
+-            # blank line (e.g. a `<!--` comment inside a list item). Such blocks
+-            # must continue until their closing sequence regardless of indent.
+-            if state.sCount[nextLine] < state.blkIndent and (
+-                endsOnBlankLine or not state.isEmpty(nextLine)
+-            ):
++            if state.sCount[nextLine] < state.blkIndent:
+                 break
+ 
+             pos = state.bMarks[nextLine] + state.tShift[nextLine]
+diff --git a/markdown_it/rules_block/list.py b/markdown_it/rules_block/list.py
+index 27c1687..c8fe7af 100644
+--- a/markdown_it/rules_block/list.py
++++ b/markdown_it/rules_block/list.py
+@@ -235,6 +235,17 @@ def list_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+         if isOrdered:
+             token.info = state.src[start : posAfterMarker - 1]
+ 
++        # Detect GFM task checkbox: `[ ] ` or `[x] `/`[X] ` at content start
++        checkboxLen = 0
++        if state.md.options.get("tasklists", False) and contentStart < maximum:
++            checked = _detect_task_checkbox(state.src, contentStart, maximum)
++            if checked is not None:
++                token.meta = {"checked": checked}
++                # Advance content past the checkbox: `[x]` (3 chars) + whitespace.
++                # `_detect_task_checkbox` already guarantees a whitespace char at
++                # pos+3, so we always consume 4 characters.
++                checkboxLen = 4
++
+         # change current state, then restore it after parser subcall
+         oldTight = state.tight
+         oldBMark = state.bMarks[startLine]
+@@ -253,22 +264,6 @@ def list_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+         state.tShift[startLine] = contentStart - state.bMarks[startLine]
+         state.sCount[startLine] = offset
+ 
+-        # Detect GFM task checkboxes only after setting the item's indentation,
+-        # so literal markers in indented code blocks are left untouched.
+-        checkboxLen = 0
+-        if (
+-            state.md.options.get("tasklists", False)
+-            and contentStart < maximum
+-            and not state.is_code_block(startLine)
+-        ):
+-            checked = _detect_task_checkbox(state.src, contentStart, maximum)
+-            if checked is not None:
+-                token.meta = {"checked": checked}
+-                # Advance content past the checkbox: `[x]` (3 chars) + whitespace.
+-                # `_detect_task_checkbox` already guarantees a whitespace char at
+-                # pos+3, so we always consume 4 characters.
+-                checkboxLen = 4
+-
+         # If we detected a checkbox, advance bMarks past it so that
+         # getLines() doesn't include the checkbox text in the content.
+         if checkboxLen:
+diff --git a/markdown_it/rules_inline/backticks.py b/markdown_it/rules_inline/backticks.py
+index 30af016..fc60d6b 100644
+--- a/markdown_it/rules_inline/backticks.py
++++ b/markdown_it/rules_inline/backticks.py
+@@ -1,74 +1,72 @@
+ # Parse backticks
+-from .state_inline import StateInline
+-
+-
+-def _build_last_runs(src: str) -> dict[int, int]:
+-    """Map each backtick run length to its last position in the source."""
+-    last_runs: dict[int, int] = {}
+-    pos = 0
++import re
+ 
+-    while (start := src.find("`", pos)) != -1:
+-        pos = start + 1
+-        while pos < len(src) and src[pos] == "`":
+-            pos += 1
+-        last_runs[pos - start] = start
++from .state_inline import StateInline
+ 
+-    return last_runs
++regex = re.compile("^ (.+) $")
+ 
+ 
+ def backtick(state: StateInline, silent: bool) -> bool:
+-    """Parse an inline code span or consume an unmatched backtick run."""
+-    start = state.pos
++    pos = state.pos
+ 
+-    if state.src[start] != "`":
++    if state.src[pos] != "`":
+         return False
+ 
++    start = pos
++    pos += 1
+     maximum = state.posMax
+-    pos = start + 1
+ 
+-    # Scan marker length.
+-    while pos < maximum and state.src[pos] == "`":
++    # scan marker length
++    while pos < maximum and (state.src[pos] == "`"):
+         pos += 1
+ 
+     marker = state.src[start:pos]
+-    opener_length = len(marker)
+-
+-    if not state.backticksScanned:
+-        # Lookaheads may visit runs out of order, so build this cache from the
+-        # whole source independently of the parser's current position.
+-        state.backticks = _build_last_runs(state.src)
+-        state.backticksScanned = True
+-
+-    if state.backticks.get(opener_length, -1) >= pos:
+-        match_end = pos
+-
+-        while (
+-            match_start := state.src.find("`", match_end)
+-        ) != -1 and match_start < maximum:
+-            match_end = match_start + 1
+-            # A run crossing posMax cannot be a closer in this parse range.
+-            while match_end < len(state.src) and state.src[match_end] == "`":
+-                match_end += 1
+-            if match_end > maximum:
+-                break
+-
+-            if match_end - match_start == opener_length:
+-                if not silent:
+-                    token = state.push("code_inline", "code", 0)
+-                    token.markup = marker
+-                    content = state.src[pos:match_start].replace("\n", " ")
+-                    # Strip one space from each side, unless the content is all spaces
+-                    if (
+-                        content.startswith(" ")
+-                        and content.endswith(" ")
+-                        and any(c != " " for c in content)
+-                    ):
+-                        content = content[1:-1]
+-                    token.content = content
+-                state.pos = match_end
+-                return True
++    openerLength = len(marker)
++
++    if state.backticksScanned and state.backticks.get(openerLength, 0) <= start:
++        if not silent:
++            state.pending += marker
++        state.pos += openerLength
++        return True
++
++    matchStart = matchEnd = pos
++
++    # Nothing found in the cache, scan until the end of the line (or until marker is found)
++    while True:
++        try:
++            matchStart = state.src.index("`", matchEnd)
++        except ValueError:
++            break
++        matchEnd = matchStart + 1
++
++        # scan marker length
++        while matchEnd < maximum and (state.src[matchEnd] == "`"):
++            matchEnd += 1
++
++        closerLength = matchEnd - matchStart
++
++        if closerLength == openerLength:
++            # Found matching closer length.
++            if not silent:
++                token = state.push("code_inline", "code", 0)
++                token.markup = marker
++                token.content = state.src[pos:matchStart].replace("\n", " ")
++                if (
++                    token.content.startswith(" ")
++                    and token.content.endswith(" ")
++                    and len(token.content.strip()) > 0
++                ):
++                    token.content = token.content[1:-1]
++            state.pos = matchEnd
++            return True
++
++        # Some different length found, put it in cache as upper limit of where closer can be found
++        state.backticks[closerLength] = matchStart
++
++    # Scanned through the end, didn't find anything
++    state.backticksScanned = True
+ 
+     if not silent:
+-        state.append_pending(marker)
+-    state.pos = pos
++        state.pending += marker
++    state.pos += openerLength
+     return True
+diff --git a/markdown_it/rules_inline/entity.py b/markdown_it/rules_inline/entity.py
+index 313b22b..ec9d396 100644
+--- a/markdown_it/rules_inline/entity.py
++++ b/markdown_it/rules_inline/entity.py
+@@ -5,11 +5,8 @@ from ..common.entities import entities
+ from ..common.utils import fromCodePoint, isValidEntityCode
+ from .state_inline import StateInline
+ 
+-# NB: no leading `^` -- these are applied via `.match(src, pos)`, which already
+-# anchors at `pos`.  Anchoring this way avoids building `src[pos:]` on every
+-# `&`, which is an O(len) copy per call and makes long runs quadratic.
+-DIGITAL_RE = re.compile(r"&#((?:x[a-f0-9]{1,6}|[0-9]{1,7}));", re.IGNORECASE)
+-NAMED_RE = re.compile(r"&([a-z][a-z0-9]{1,31});", re.IGNORECASE)
++DIGITAL_RE = re.compile(r"^&#((?:x[a-f0-9]{1,6}|[0-9]{1,7}));", re.IGNORECASE)
++NAMED_RE = re.compile(r"^&([a-z][a-z0-9]{1,31});", re.IGNORECASE)
+ 
+ 
+ def entity(state: StateInline, silent: bool) -> bool:
+@@ -23,7 +20,7 @@ def entity(state: StateInline, silent: bool) -> bool:
+         return False
+ 
+     if state.src[pos + 1] == "#":
+-        if match := DIGITAL_RE.match(state.src, pos):
++        if match := DIGITAL_RE.search(state.src[pos:]):
+             if not silent:
+                 match1 = match.group(1)
+                 code = (
+@@ -43,7 +40,7 @@ def entity(state: StateInline, silent: bool) -> bool:
+             return True
+ 
+     else:
+-        if (match := NAMED_RE.match(state.src, pos)) and match.group(1) in entities:
++        if (match := NAMED_RE.search(state.src[pos:])) and match.group(1) in entities:
+             if not silent:
+                 token = state.push("text_special", "", 0)
+                 token.content = entities[match.group(1)]
+diff --git a/markdown_it/rules_inline/html_inline.py b/markdown_it/rules_inline/html_inline.py
+index 2b7c064..9065e1d 100644
+--- a/markdown_it/rules_inline/html_inline.py
++++ b/markdown_it/rules_inline/html_inline.py
+@@ -17,50 +17,22 @@ def html_inline(state: StateInline, silent: bool) -> bool:
+         return False
+ 
+     # Check start
+-    src = state.src
+     maximum = state.posMax
+-    if src[pos] != "<" or pos + 2 >= maximum:
++    if state.src[pos] != "<" or pos + 2 >= maximum:
+         return False
+ 
+     # Quick fail on second char
+-    ch = src[pos + 1]
++    ch = state.src[pos + 1]
+     if ch not in ("!", "?", "/") and not isLetter(ord(ch)):  # /* / */
+         return False
+ 
+-    # Every alternative of the tag regex ends with a specific terminator, at a
+-    # known minimum offset from `pos`.  If that terminator does not occur
+-    # anywhere at or after this offset, no match is possible; bail out before
+-    # running the regex, whose lazy sub-patterns would scan to the end of the
+-    # input.  Without this, a run of unterminated openers is quadratic.
+-    if src.startswith("<!--", pos):
+-        # `<!-->` / `<!--->`, else `<!--` ... `-->` (`<!---->` is the shortest)
+-        if state.html_terminator_last(">") < pos + 4:
+-            return False
+-        if (
+-            not src.startswith("<!-->", pos)
+-            and not src.startswith("<!--->", pos)
+-            and state.html_terminator_last("-->") < pos + 4
+-        ):
+-            return False
+-    elif src.startswith("<![CDATA[", pos):
+-        if state.html_terminator_last("]]>") < pos + 9:  # `<![CDATA[]]>`
+-            return False
+-    elif ch == "?":
+-        if state.html_terminator_last("?>") < pos + 2:  # `<??>`
+-            return False
+-    elif ch == "!":
+-        if state.html_terminator_last(">") < pos + 3:  # `<!a>`
+-            return False
+-    elif state.html_terminator_last(">") < pos + 2:  # `<a>`, `</a>`
+-        return False
+-
+-    match = HTML_TAG_RE.match(src, pos)
++    match = HTML_TAG_RE.search(state.src[pos:])
+     if not match:
+         return False
+ 
+     if not silent:
+         token = state.push("html_inline", "", 0)
+-        token.content = src[pos : pos + len(match.group(0))]
++        token.content = state.src[pos : pos + len(match.group(0))]
+ 
+         if isLinkOpen(token.content):
+             state.linkLevel += 1
+diff --git a/markdown_it/rules_inline/state_inline.py b/markdown_it/rules_inline/state_inline.py
+index 85e6af0..de35287 100644
+--- a/markdown_it/rules_inline/state_inline.py
++++ b/markdown_it/rules_inline/state_inline.py
+@@ -54,16 +54,7 @@ class StateInline(StateBase):
+         self.pos = 0
+         self.posMax = len(self.src)
+         self.level = 0
+-        # `pending` holds literal text not yet flushed to a token.  It is
+-        # exposed as a plain `str` (see the property below), but is accumulated
+-        # through a list buffer so that appending one character at a time -- the
+-        # inline tokenizer's fallback path -- stays amortised O(1).  Appending
+-        # to a `str` *attribute* cannot use CPython's in-place concatenation
+-        # optimisation (the attribute holds a second reference), so each `+=`
+-        # copies the whole string, making long runs of non-markup characters
+-        # quadratic.
+-        self._pending = ""
+-        self._pending_buffer: list[str] = []
++        self.pending = ""
+         self.pendingLevel = 0
+ 
+         # Stores { start: end } pairs. Useful for backtrack
+@@ -76,7 +67,7 @@ class StateInline(StateBase):
+         # Stack of delimiter lists for upper level tags
+         self._prev_delimiters: list[list[Delimiter]] = []
+ 
+-        # Backtick run length => last position, built lazily on first use
++        # backticklength => last seen position
+         self.backticks: dict[int, int] = {}
+         self.backticksScanned = False
+ 
+@@ -84,76 +75,12 @@ class StateInline(StateBase):
+         # inside <a> and markdown links
+         self.linkLevel = 0
+ 
+-        # Lazy cache of `terminator -> last index in src`, see
+-        # `html_terminator_last`.
+-        self._html_terminators: dict[str, int] | None = None
+-
+-    def html_terminator_last(self, term: str) -> int:
+-        """Index of the last occurrence of `term` in `self.src`, or -1.
+-
+-        The result is cached per terminator, for the life of the state.
+-        It is used by the `html_inline` rule to reject, in constant time, a
+-        position at which the terminator required to close an HTML construct
+-        cannot possibly occur -- without running the tag regex, whose lazy
+-        sub-patterns would otherwise rescan to the end of the input on every
+-        such (failing) attempt.
+-        """
+-        if self._html_terminators is None:
+-            self._html_terminators = {}
+-        elif (last := self._html_terminators.get(term)) is not None:
+-            return last
+-        last = self._html_terminators[term] = self.src.rfind(term)
+-        return last
+-
+     def __repr__(self) -> str:
+         return (
+             f"{self.__class__.__name__}"
+             f"(pos=[{self.pos} of {self.posMax}], token={len(self.tokens)})"
+         )
+ 
+-    @property
+-    def pending(self) -> str:
+-        """Literal text accumulated so far, but not yet flushed to a token."""
+-        buffer = self._pending_buffer
+-        if buffer:
+-            # Move the string into a local and drop the instance's reference
+-            # before concatenating.  With a single reference left, CPython
+-            # resizes the string in place (amortised O(new chars)) rather
+-            # than copying it, so a rule that reads `pending` on every
+-            # character (e.g. an attribute-syntax plugin) stays linear.
+-            text = self._pending
+-            self._pending = ""
+-            text += "".join(buffer)
+-            buffer.clear()
+-            self._pending = text
+-        return self._pending
+-
+-    @pending.setter
+-    def pending(self, value: str) -> None:
+-        self._pending = value
+-        # Assign rather than `.clear()` so the setter also works on an
+-        # instance whose `__init__` has not run yet (subclasses that set
+-        # `pending` before calling `super().__init__()`), and so a copied
+-        # state never shares a buffer with its original.
+-        self._pending_buffer = []
+-
+-    def __copy__(self) -> StateInline:
+-        """Shallow copy that does not share the pending text buffer."""
+-        text = self.pending  # materialise (and clear) our own buffer first
+-        new = self.__class__.__new__(self.__class__)
+-        new.__dict__.update(self.__dict__)
+-        new._pending = text
+-        new._pending_buffer = []
+-        return new
+-
+-    def append_pending(self, text: str) -> None:
+-        """Append literal text to `pending`, in amortised O(1) time.
+-
+-        Prefer this to ``state.pending += text`` on hot paths: it buffers the
+-        fragment rather than rebuilding the whole ``pending`` string per call.
+-        """
+-        self._pending_buffer.append(text)
+-
+     def pushPending(self) -> Token:
+         token = Token("text", "", 0)
+         token.content = self.pending
+diff --git a/markdown_it/rules_inline/text.py b/markdown_it/rules_inline/text.py
+index 45b4143..ef0cc9c 100644
+--- a/markdown_it/rules_inline/text.py
++++ b/markdown_it/rules_inline/text.py
+@@ -16,7 +16,7 @@ def text(state: StateInline, silent: bool) -> bool:
+         return False
+ 
+     if not silent:
+-        state.append_pending(state.src[state.pos : pos])
++        state.pending += state.src[state.pos : pos]
+ 
+     state.pos = pos
+ 
+diff --git a/tests/test_api/test_main.py b/tests/test_api/test_main.py
+index 74c7b0f..85c245d 100644
+--- a/tests/test_api/test_main.py
++++ b/tests/test_api/test_main.py
+@@ -474,104 +474,6 @@ class _SliceCountingStr(str):
+         return str.__getitem__(self, key)
+ 
+ 
+-@pytest.mark.parametrize(
+-    "preset,options,src",
+-    [
+-        ("commonmark", {}, "&" * 5_000),  # entity rule
+-        ("commonmark", {}, "&#" * 5_000),  # entity rule, numeric branch
+-        ("commonmark", {"html": True}, "<a" * 5_000),  # html_inline rule
+-    ],
+-    ids=["entity-named", "entity-numeric", "html_inline"],
+-)
+-def test_inline_rules_do_not_slice_remaining_source(preset, options, src):
+-    """Inline rules must not copy the rest of the source on every attempt.
+-
+-    `entity` and `html_inline` used to match ``^``-anchored regexes against
+-    ``state.src[pos:]``, an O(len) copy per ``&`` / ``<`` and therefore O(n^2)
+-    over a run.  They now anchor with ``.match(src, pos)``.  A run of 5 000
+-    openers previously produced ~5 000 slices of up to 10 000 characters; the
+-    only slices left are the ``text`` rule's single-character chunks.
+-    """
+-    md = MarkdownIt(preset, options)
+-    counting = _SliceCountingStr(src)
+-    md.inline.parse(counting, md, {}, [])
+-    assert max(counting.slice_lengths, default=0) <= 1
+-
+-
+-def test_pending_appends_do_not_materialise():
+-    """`append_pending` must be amortised O(1): it buffers fragments and only
+-    builds the string when `pending` is read.
+-
+-    The old ``state.pending += ch`` copied the whole accumulated string on
+-    every character (``str += x`` on an attribute cannot resize in place).
+-    """
+-    from markdown_it.rules_inline.state_inline import StateInline
+-
+-    state = StateInline("", MarkdownIt(), {}, [])
+-    for _ in range(10_000):
+-        state.append_pending("x")
+-    assert len(state._pending_buffer) == 10_000
+-    assert state._pending == ""
+-
+-    assert state.pending == "x" * 10_000
+-    assert state._pending_buffer == []
+-
+-    state.pending = ""
+-    assert state.pending == ""
+-
+-
+-def test_state_inline_pending_buffer_semantics():
+-    """`StateInline.pending` is buffered internally but must behave exactly
+-    like the plain ``str`` attribute it replaced."""
+-    import copy
+-
+-    from markdown_it.rules_inline.state_inline import StateInline
+-
+-    md = MarkdownIt()
+-    state = StateInline("", md, {}, [])
+-
+-    # append / read / append preserve order and the read materialises lazily
+-    state.append_pending("a")
+-    assert state.pending == "a"
+-    state.append_pending("b")
+-    state.append_pending("c")
+-    assert state.pending == "abc"
+-
+-    # assignment replaces everything buffered so far
+-    state.pending = "xy"
+-    state.append_pending("z")
+-    assert state.pending == "xyz"
+-    state.pending = state.pending[:-1]
+-    assert state.pending == "xy"
+-
+-    # flushing to a token empties both the string and the buffer
+-    token = state.pushPending()
+-    assert token.content == "xy"
+-    assert state.pending == ""
+-    assert not state._pending_buffer
+-
+-    # a str handed out earlier is never mutated by later appends
+-    state.append_pending("hello")
+-    held = state.pending
+-    state.append_pending(" world")
+-    assert state.pending == "hello world"
+-    assert held == "hello"
+-
+-    # a shallow copy must not share the pending buffer with its original
+-    state.pending = ""
+-    state.append_pending("q")
+-    clone = copy.copy(state)
+-    clone.append_pending("r")
+-    state.append_pending("s")
+-    assert (state.pending, clone.pending) == ("qs", "qr")
+-
+-    # the setter works before __init__ has run (subclasses that set
+-    # `pending` before calling super().__init__(), or __new__ + assignment)
+-    bare = StateInline.__new__(StateInline)
+-    bare.pending = "pre"
+-    assert bare.pending == "pre"
+-
+-
+ def test_rule_reading_pending_each_char_renders_correctly():
+     """A rule that reads ``state.pending`` on every character (as some
+     attribute-syntax plugins do) interleaves reads with appends; the output
+@@ -591,38 +493,6 @@ def test_rule_reading_pending_each_char_renders_correctly():
+     assert max(seen) == 9_999
+ 
+ 
+-@pytest.mark.parametrize("method", ["enable", "disable"])
+-def test_rule_names_generator_applies_to_all_chains(method):
+-    """An iterator must be reused across each rule chain."""
+-    md = MarkdownIt("zero" if method == "enable" else "commonmark")
+-    core_rule = "smartquotes" if method == "enable" else "normalize"
+-    names = (name for name in [core_rule, "heading", "emphasis"])
+-    assert getattr(md, method)(names) is md
+-    active = md.get_active_rules()
+-    for chain, name in [
+-        ("core", core_rule),
+-        ("block", "heading"),
+-        ("inline", "emphasis"),
+-        ("inline2", "emphasis"),
+-    ]:
+-        assert (name in active[chain]) is (method == "enable")
+-
+-
+-@pytest.mark.parametrize("method", ["enable", "disable"])
+-def test_rule_names_generator_reports_unknown_rules(method):
+-    """Unknown names are checked after all chains have inspected an iterator."""
+-    with pytest.raises(ValueError, match="unknown rule"):
+-        getattr(MarkdownIt(), method)(name for name in ["missing-rule"])
+-
+-
+-@pytest.mark.parametrize("method", ["enable", "disable"])
+-def test_rule_names_generator_ignores_unknown_rules(method):
+-    """Ignoring an unknown name must still apply the known iterator names."""
+-    md = MarkdownIt("zero" if method == "enable" else "commonmark")
+-    getattr(md, method)((name for name in ["missing-rule", "heading"]), True)
+-    assert ("heading" in md.get_active_rules()["block"]) is (method == "enable")
+-
+-
+ def test_src_char_code_follows_src():
+     """The deprecated ``srcCharCode`` is rebuilt when ``src`` is reassigned."""
+     from markdown_it.rules_block.state_block import StateBlock
+diff --git a/tests/test_api/test_renderer_results.py b/tests/test_api/test_renderer_results.py
+deleted file mode 100644
+index d19d627..0000000
+--- a/tests/test_api/test_renderer_results.py
++++ /dev/null
+@@ -1,58 +0,0 @@
+-"""How the renderer combines the strings returned by its rules."""
+-
+-from types import MethodType
+-
+-import pytest
+-
+-from markdown_it import MarkdownIt
+-from markdown_it.renderer import RendererHTML
+-from markdown_it.token import Token
+-
+-
+-def _renderer_with(values):
+-    """A renderer whose ``custom`` rule returns ``values[idx]`` for token ``idx``."""
+-    renderer = RendererHTML()
+-    renderer.rules["custom"] = MethodType(
+-        lambda self, tokens, idx, opts, env: values[idx], renderer
+-    )
+-    return renderer, [Token("custom", "", 0) for _ in values]
+-
+-
+-class Wrapped(str):
+-    """A ``str`` subclass whose overloaded addition must not be used."""
+-
+-    def __radd__(self, other):
+-        raise AssertionError("not called")
+-
+-    __add__ = __radd__
+-
+-
+-@pytest.mark.parametrize("method", ["render", "renderInline"])
+-def test_render_rule_results_are_joined_into_a_plain_str(method):
+-    # The fragments are joined in order, and the result is a plain ``str``
+-    # even when a rule returns a ``str`` subclass (overloaded addition is not used).
+-    renderer, tokens = _renderer_with(["a", Wrapped("b"), "c"])
+-    result = getattr(renderer, method)(tokens, MarkdownIt().options, {})
+-    assert type(result) is str
+-    assert result == "abc"
+-
+-
+-@pytest.mark.parametrize("method", ["render", "renderInline"])
+-def test_render_rule_invalid_result_raises(method):
+-    renderer, tokens = _renderer_with(["first", None, "third"])
+-    with pytest.raises(TypeError):
+-        getattr(renderer, method)(tokens, MarkdownIt().options, {})
+-
+-
+-def test_render_inline_as_text_is_joined_into_a_plain_str():
+-    # Image ``alt`` text is collected the same way: joined in order into a plain
+-    # ``str``, without using a ``str`` subclass's overloaded addition.
+-    def text(content):
+-        token = Token("text", "", 0)
+-        token.content = content
+-        return token
+-
+-    tokens = [text("y"), Token("softbreak", "br", 0), text(Wrapped("x"))]
+-    result = RendererHTML().renderInlineAsText(tokens, MarkdownIt().options, {})
+-    assert type(result) is str
+-    assert result == "y\nx"
+diff --git a/tests/test_fuzzer.py b/tests/test_fuzzer.py
+index 42c6600..7286f8e 100644
+--- a/tests/test_fuzzer.py
++++ b/tests/test_fuzzer.py
+@@ -23,23 +23,3 @@ def test_fuzzing(raw_input, expected):
+     md = MarkdownIt()
+     md.parse(raw_input)
+     assert md.render(raw_input) == expected
+-
+-
+-# Input that ends on a blockquote marker while a table is open inside the quote
+-# used to raise ``IndexError: string index out of range`` from the terminator
+-# rules ``html_block`` and ``heading`` (gh-issue 415). ``table`` must be enabled
+-# for the terminator rules to run on that line.
+-GH_415_INPUT = "> | a | b |\n> |---|---|\n>"
+-
+-
+-def test_gh_415_table_in_blockquote_at_eof_html_block() -> None:
+-    # html_block runs first, so with html enabled it is the rule that used to raise
+-    md = MarkdownIt().enable("table")
+-    md.render(GH_415_INPUT)  # must not raise IndexError
+-
+-
+-def test_gh_415_table_in_blockquote_at_eof_heading() -> None:
+-    # with html disabled, html_block bails at its options check and heading is
+-    # the terminator rule that used to raise
+-    md = MarkdownIt("commonmark", {"html": False}).enable("table")
+-    md.render(GH_415_INPUT)  # must not raise IndexError
+diff --git a/tests/test_html_inline.py b/tests/test_html_inline.py
+deleted file mode 100644
+index 4f11879..0000000
+--- a/tests/test_html_inline.py
++++ /dev/null
+@@ -1,74 +0,0 @@
+-"""Tests for the `html_inline` rule."""
+-
+-import importlib
+-
+-import pytest
+-
+-from markdown_it import MarkdownIt
+-
+-
+-@pytest.mark.parametrize(
+-    "src",
+-    [
+-        "<a>",  # open tag
+-        "<a/>",  # self-closing open tag
+-        "</a>",  # close tag
+-        "<!-->",  # short comment
+-        "<!--->",  # short comment
+-        "<!---->",  # shortest full comment
+-        "<??>",  # empty processing instruction
+-        "<!a>",  # declaration
+-        "<![CDATA[]]>",  # empty CDATA section
+-    ],
+-)
+-def test_shortest_constructs(src):
+-    """The shortest legal form of each construct is passed through as raw html."""
+-    assert MarkdownIt("commonmark").renderInline(src) == src
+-
+-
+-@pytest.mark.parametrize("opener", ["<![CDATA[", "<!--", "<?", "<!a", "<a", "</a"])
+-def test_unterminated_openers_skip_the_regex(opener, monkeypatch):
+-    """A run of openers that are never terminated must not run the tag regex.
+-
+-    Every alternative of ``HTML_TAG_RE`` ends in a specific terminator, and its
+-    lazy sub-patterns rescan to the end of the input on each failed attempt,
+-    which made such runs quadratic.  ``html_inline`` now rejects an opener in
+-    constant time when the terminator it needs cannot occur, so the regex is
+-    never invoked here; before the fix it ran once per opener.
+-    """
+-    module = importlib.import_module("markdown_it.rules_inline.html_inline")
+-
+-    real = module.HTML_TAG_RE
+-    calls = []
+-
+-    class Counting:
+-        def match(self, *args, **kwargs):
+-            calls.append(args[1] if len(args) > 1 else None)
+-            return real.match(*args, **kwargs)
+-
+-    monkeypatch.setattr(module, "HTML_TAG_RE", Counting())
+-    src = "x" + opener * 1_000  # leading "x" keeps it out of `html_block`
+-    html = MarkdownIt("commonmark").render(src)
+-    assert calls == []
+-    # the openers all render as escaped text
+-    assert html == "<p>x" + (opener.replace("<", "&lt;")) * 1_000 + "</p>\n"
+-
+-
+-def test_terminated_constructs_still_reach_the_regex(monkeypatch):
+-    """The quick-reject must be exactly that: a terminated construct is still
+-    handed to the regex and parsed as before."""
+-    module = importlib.import_module("markdown_it.rules_inline.html_inline")
+-
+-    real = module.HTML_TAG_RE
+-    calls = []
+-
+-    class Counting:
+-        def match(self, *args, **kwargs):
+-            calls.append(1)
+-            return real.match(*args, **kwargs)
+-
+-    monkeypatch.setattr(module, "HTML_TAG_RE", Counting())
+-    src = "x <!-- c --> <?pi?> <![CDATA[d]]> <!D> <a>b</a>"
+-    html = MarkdownIt("commonmark").render(src)
+-    assert calls, "expected the regex to run for terminated constructs"
+-    assert html == "<p>" + src + "</p>\n"
+diff --git a/tests/test_port/fixtures/commonmark_extras.md b/tests/test_port/fixtures/commonmark_extras.md
+index 98ce1ad..8d9572d 100644
+--- a/tests/test_port/fixtures/commonmark_extras.md
++++ b/tests/test_port/fixtures/commonmark_extras.md
+@@ -750,133 +750,9 @@ Issue #204. Combination of blockquotes, list and newlines causes an IndexError
+ </ul>
+ .
+ 
+-Hardbreak in image description
+-.
+-![foo\
+-bar](/url)
+-.
+-<p><img src="/url" alt="foo
+-bar" /></p>
+-.
+-
+-Inline HTML in image description
+-.
+-![a<b>c](/url)
+-.
+-<p><img src="/url" alt="a&lt;b&gt;c" /></p>
+-.
+-
+ Code in image description (markdown-it#1142)
+ .
+ ![foo *bar* `baz` bla](image.png)
+ .
+ <p><img src="image.png" alt="foo bar baz bla" /></p>
+ .
+-
+-Unclosed link labels must not suppress a later code span (#438).
+-.
+-[foo `bar` baz`
+-.
+-<p>[foo <code>bar</code> baz`</p>
+-.
+-
+-Unclosed image labels must not suppress a later code span (#438).
+-.
+-![alt `code` x`
+-.
+-<p>![alt <code>code</code> x`</p>
+-.
+-
+-A longer backtick run outside a link label must not close a shorter opener.
+-.
+-[`](``)
+-.
+-<p><a href="%60%60">`</a></p>
+-.
+-
+-A code span opener inside a valid link label must not pair with a longer run outside the link.
+-.
+-[`a](/x)``b
+-.
+-<p><a href="/x">`a</a>``b</p>
+-.
+-
+-Code spans still take precedence over links when the closer follows the label.
+-.
+-[foo `bar](/url)` baz
+-.
+-<p>[foo <code>bar](/url)</code> baz</p>
+-.
+-
+-No stripping when a code span is all spaces (CommonMark 0.31.2 6.1).
+-.
+-`   `
+-.
+-<p><code>   </code></p>
+-.
+-
+-A code span holding a tab between single spaces is not all spaces, so one space is stripped from each side.
+-.
+-` 	 `
+-.
+-<p><code>	</code></p>
+-.
+-
+-A no-break space is not a space, so a code span holding one between single spaces is not all spaces and one space is stripped from each side.
+-.
+-`   `
+-.
+-<p><code> </code></p>
+-.
+-
+-Issue #1144. Comment HTML block (type 2) must not end on a blank line inside a list
+-.
+-1. item
+-
+-    <!--
+-    a
+-
+-    b
+-    -->
+-    c
+-.
+-<ol>
+-<li>
+-<p>item</p>
+- <!--
+- a
+-
+- b
+- -->
+-<p>c</p>
+-</li>
+-</ol>
+-.
+-
+-Issue #1144. Comment HTML block spanning a blank line inside a blockquote
+-.
+-> <!--
+-> a
+->
+-> b
+-> -->
+-> c
+-.
+-<blockquote>
+-<!--
+-a
+-
+-b
+--->
+-<p>c</p>
+-</blockquote>
+-.
+-
+-HTML block type 4 (declaration) starts with `<!` plus any ASCII letter, not only uppercase (CommonMark 4.6, start condition 4). A lowercase declaration must interrupt a paragraph.
+-.
+-foo
+-<!bar baz>
+-.
+-<p>foo</p>
+-<!bar baz>
+-.
+diff --git a/tests/test_port/fixtures/issue-fixes.md b/tests/test_port/fixtures/issue-fixes.md
+index fefef09..e53b295 100644
+--- a/tests/test_port/fixtures/issue-fixes.md
++++ b/tests/test_port/fixtures/issue-fixes.md
+@@ -108,139 +108,3 @@ Image alt keeps escapes, entities and code span text together
+ .
+ <p><img src="/u" alt="a * c&lt;d &amp; e" /></p>
+ .
+-
+-#377 comment HTML block in a list item still ends at the next item after a blank line
+-.
+-- <!--
+-
+-- b
+-.
+-<ul>
+-<li>
+-<!--
+-
+-</li>
+-<li>
+-<p>b</p>
+-</li>
+-</ul>
+-.
+-
+-#377 comment HTML block in a list item still ends at an outdented non-blank line
+-.
+-- <!--
+-foo
+--->
+-.
+-<ul>
+-<li>
+-<!--
+-</li>
+-</ul>
+-<p>foo
+---&gt;</p>
+-.
+-
+-#437 a lowercase declaration interrupts a paragraph, as an uppercase one does
+-.
+-para
+-<!doctype html>
+-
+-para
+-<!DOCTYPE html>
+-.
+-<p>para</p>
+-<!doctype html>
+-<p>para</p>
+-<!DOCTYPE html>
+-.
+-
+-#437 Unicode lookalikes that case-fold to ASCII (U+017F, U+0130, U+0131) do not start an HTML block
+-.
+-para
+-<ſcript>
+-text
+-
+-para
+-<ſtyle>
+-text
+-
+-para
+-<dİv>
+-text
+-
+-para
+-<dıv>
+-text
+-.
+-<p>para
+-&lt;ſcript&gt;
+-text</p>
+-<p>para
+-&lt;ſtyle&gt;
+-text</p>
+-<p>para
+-&lt;dİv&gt;
+-text</p>
+-<p>para
+-&lt;dıv&gt;
+-text</p>
+-.
+-
+-#437 a Unicode lookalike does not close a type 1 HTML block
+-.
+-<script>
+-x
+-</ſcript>
+-after
+-
+-more
+-.
+-<script>
+-x
+-</ſcript>
+-after
+-
+-more
+-.
+-
+-#437 an ASCII mixed-case tag name still starts and closes an HTML block
+-.
+-para
+-<ScRiPt>
+-text
+-</sCrIpT>
+-after
+-.
+-<p>para</p>
+-<ScRiPt>
+-text
+-</sCrIpT>
+-<p>after</p>
+-.
+-
+-#437 a no-break space (U+00A0) after a type 6 tag name still starts an HTML block
+-.
+-para
+-<div class="x">
+-text
+-.
+-<p>para</p>
+-<div class="x">
+-text
+-.
+-
+-#437 a no-break space (U+00A0) after a type 1 tag name still starts an HTML block
+-.
+-para
+-<pre >
+-
+-*a*
+-</pre>
+-.
+-<p>para</p>
+-<pre >
+-
+-*a*
+-</pre>
+-.
+diff --git a/tests/test_port/fixtures/normalize.md b/tests/test_port/fixtures/normalize.md
+index 555bf86..4a00508 100644
+--- a/tests/test_port/fixtures/normalize.md
++++ b/tests/test_port/fixtures/normalize.md
+@@ -37,44 +37,3 @@ Square brackets are allowed
+ .
+ <p><a href="https://bar%5Dbaz.org">foo</a></p>
+ .
+-
+-
+-Preserve IPv6 host brackets while encoding brackets in the path, query and fragment
+-.
+-[foo](https://user:pass@[2001:db8::1]:8443/a[b]?q=[c]#[d])
+-.
+-<p><a href="https://user:pass@[2001:db8::1]:8443/a%5Bb%5D?q=%5Bc%5D#%5Bd%5D">foo</a></p>
+-.
+-
+-.
+-[foo](//[::ffff:192.0.2.1]/)
+-.
+-<p><a href="//[::ffff:192.0.2.1]/">foo</a></p>
+-.
+-
+-.
+-<http://[::1]:8000/>
+-.
+-<p><a href="http://[::1]:8000/">http://[::1]:8000/</a></p>
+-.
+-
+-.
+-![foo](https://[::1]/a.png)
+-.
+-<p><img src="https://[::1]/a.png" alt="foo" /></p>
+-.
+-
+-
+-IPv6 address literals should preserve brackets while encoding other components:
+-
+-.
+-[foo](http://[2001:db8::1]:1896/a[b]?x=[y])
+-.
+-<p><a href="http://[2001:db8::1]:1896/a%5Bb%5D?x=%5By%5D">foo</a></p>
+-.
+-
+-.
+-[foo](http://user:password@[2001:db8:0:0:0:0:0:1]:1926/)
+-.
+-<p><a href="http://user:password@[2001:db8:0:0:0:0:0:1]:1926/">foo</a></p>
+-.
+diff --git a/tests/test_port/fixtures/tasklists.md b/tests/test_port/fixtures/tasklists.md
+index 7348d32..994135d 100644
+--- a/tests/test_port/fixtures/tasklists.md
++++ b/tests/test_port/fixtures/tasklists.md
+@@ -131,116 +131,3 @@ Ordered list starting from non-1
+ <li class="task-list-item"><input class="task-list-item-checkbox" disabled="" type="checkbox"> task four</li>
+ </ol>
+ .
+-
+-Checkbox-like text in an indented code block is literal
+-.
+--     [x] literal
+-.
+-<ul>
+-<li>
+-<pre><code>[x] literal
+-</code></pre>
+-</li>
+-</ul>
+-.
+-
+-Checkbox-like text in an indented code block keeps its extra indentation
+-.
+--      [ ] literal
+-.
+-<ul>
+-<li>
+-<pre><code> [ ] literal
+-</code></pre>
+-</li>
+-</ul>
+-.
+-
+-Checkbox-like text in an indented code block in an ordered list
+-.
+-1.     [X] literal
+-.
+-<ol>
+-<li>
+-<pre><code>[X] literal
+-</code></pre>
+-</li>
+-</ol>
+-.
+-
+-Checkbox-like text in an indented code block after tabs
+-.
+--		[x] literal
+-.
+-<ul>
+-<li>
+-<pre><code>  [x] literal
+-</code></pre>
+-</li>
+-</ul>
+-.
+-
+-Checkbox-like text in an indented code block in a blockquote
+-.
+-> -     [X] literal
+-.
+-<blockquote>
+-<ul>
+-<li>
+-<pre><code>[X] literal
+-</code></pre>
+-</li>
+-</ul>
+-</blockquote>
+-.
+-
+-Checkbox-like text in an indented code block in a nested list
+-.
+-- outer
+-  -     [ ] literal
+-.
+-<ul>
+-<li>outer
+-<ul>
+-<li>
+-<pre><code>[ ] literal
+-</code></pre>
+-</li>
+-</ul>
+-</li>
+-</ul>
+-.
+-
+-Indented code item between task items
+-.
+-- a
+--     [x] literal
+-- [ ] b
+-.
+-<ul class="contains-task-list">
+-<li>a</li>
+-<li>
+-<pre><code>[x] literal
+-</code></pre>
+-</li>
+-<li class="task-list-item"><input class="task-list-item-checkbox" disabled="" type="checkbox"> b</li>
+-</ul>
+-.
+-
+-Four spaces after the marker is still a task
+-.
+--    [x] task
+-.
+-<ul class="contains-task-list">
+-<li class="task-list-item"><input class="task-list-item-checkbox" disabled="" type="checkbox" checked=""> task</li>
+-</ul>
+-.
+-
+-A tab after the marker is still a task
+-.
+--	[x] task
+-.
+-<ul class="contains-task-list">
+-<li class="task-list-item"><input class="task-list-item-checkbox" disabled="" type="checkbox" checked=""> task</li>
+-</ul>
+-.
+diff --git a/tests/test_port/test_misc.py b/tests/test_port/test_misc.py
+index b38a896..62b5bf8 100644
+--- a/tests/test_port/test_misc.py
++++ b/tests/test_port/test_misc.py
+@@ -1,13 +1,4 @@
+-from importlib.util import find_spec
+-
+-import pytest
+-
+ from markdown_it import MarkdownIt, presets
+-from markdown_it.rules_inline.backticks import backtick
+-from markdown_it.rules_inline.state_inline import StateInline
+-from markdown_it.token import Token
+-
+-NO_LINKIFY: dict[str, bool] = {} if find_spec("linkify_it") else {"linkify": False}
+ 
+ 
+ def test_highlight_arguments():
+@@ -51,85 +42,3 @@ def test_ordered_list_info():
+     assert tokens[2].markup == "."
+     assert tokens[3].info == "199"
+     assert tokens[3].markup == "."
+-
+-
+-@pytest.mark.parametrize("editable", [False, True])
+-@pytest.mark.parametrize(
+-    "source,code",
+-    [
+-        ("-     [x] literal\n", "[x] literal\n"),
+-        ("-      [ ] literal\n", " [ ] literal\n"),
+-        ("1.     [X] literal\n", "[X] literal\n"),
+-        ("-\t\t[x] literal\n", "  [x] literal\n"),
+-        ("> -     [X] literal\n", "[X] literal\n"),
+-        ("- outer\n  -     [ ] literal\n", "[ ] literal\n"),
+-    ],
+-)
+-def test_task_marker_in_indented_code(source, code, editable):
+-    """Task detection must preserve literal markers and indentation in code."""
+-    md = MarkdownIt("gfm-like2", {**NO_LINKIFY, "tasklists_editable": editable})
+-    tokens = md.parse(source)
+-    assert [token.content for token in tokens if token.type == "code_block"] == [code]
+-    assert all("checked" not in token.meta for token in tokens)
+-    assert md.render(source) == MarkdownIt(
+-        "gfm-like2", {**NO_LINKIFY, "tasklists": False}
+-    ).render(source)
+-
+-
+-@pytest.mark.parametrize("spacing", [" ", "    ", "\t"])
+-@pytest.mark.parametrize("code_enabled", [False, True])
+-def test_task_marker_in_paragraph(spacing, code_enabled):
+-    """Keep recognizing tasks up to the paragraph indentation boundary."""
+-    md = MarkdownIt("gfm-like2", NO_LINKIFY)
+-    if not code_enabled:
+-        md.disable("code")
+-    tokens = md.parse(f"-{spacing}[x] task\n")
+-    item = next(token for token in tokens if token.type == "list_item_open")
+-    assert item.meta["checked"] is True
+-    assert not any(token.type == "code_block" for token in tokens)
+-
+-
+-def test_indented_task_marker_with_code_disabled():
+-    """Without the code rule, the indented text is still eligible for a task."""
+-    md = MarkdownIt("gfm-like2", NO_LINKIFY).disable("code")
+-    tokens = md.parse("-     [x] task\n")
+-    item = next(token for token in tokens if token.type == "list_item_open")
+-    assert item.meta["checked"] is True
+-
+-
+-@pytest.mark.parametrize(
+-    ("src", "pos_max"),
+-    [
+-        # the closer run starts inside the parse range but ends beyond posMax
+-        pytest.param("``a``", 4, id="closer-straddles-posMax"),
+-        # a run straddling posMax is measured in full, not up to posMax,
+-        # so its in-range part cannot pass for a closer of the opener's length
+-        # (the trailing run keeps a same-length closer in the backticks cache)
+-        pytest.param("``a``` ``", 5, id="closer-measured-in-full"),
+-    ],
+-)
+-def test_backtick_closer_must_end_within_pos_max(src, pos_max):
+-    """A code span closer must lie entirely within the current parse range
+-    (as in markdown-it 15.0.3), so a nested parse or lookahead bounded by
+-    posMax cannot take a closer from beyond it.
+-    Core rules never set posMax inside a backtick run, so this drives the rule
+-    directly."""
+-    tokens: list[Token] = []
+-    state = StateInline(src, MarkdownIt("commonmark"), {}, tokens)
+-    state.posMax = pos_max
+-    assert backtick(state, False)
+-    assert tokens == []
+-    assert state.pending == "``"
+-    assert state.pos == 2
+-
+-
+-def test_backtick_closer_ending_at_pos_max():
+-    """Counterpart: a closer that ends exactly at posMax still closes the span."""
+-    tokens: list[Token] = []
+-    state = StateInline("``a`` b", MarkdownIt("commonmark"), {}, tokens)
+-    state.posMax = 5
+-    assert backtick(state, False)
+-    assert [(t.type, t.content, t.markup) for t in tokens] == [
+-        ("code_inline", "a", "``")
+-    ]
+-    assert state.pos == 5

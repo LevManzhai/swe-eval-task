@@ -26,6 +26,7 @@ because that's how I got to the ones that work.
 
 | Task | Repo | Type | Result |
 |---|---|---|---|
+| [`tasks/markdown-it-commonmark`](tasks/markdown-it-commonmark) | [markdown-it-py](https://github.com/executablebooks/markdown-it-py) | Bug hunt: ten CommonMark 0.31.2, URL, API and quadratic-time (DoS) bugs, no oracle | **Accepted**: 0 of 3 attempts passed (60, 58, 56 / 67) |
 | [`tasks/yarl-url-standards`](tasks/yarl-url-standards) | [yarl](https://github.com/aio-libs/yarl) | Bug hunt: ten WHATWG URL Standard and RFC 3986 conformance bugs, graded on the standard's own test data | **Accepted**: 0 of 3 attempts passed (353, 351, 357 / 375) |
 | [`tasks/dateutil-tz-edge-cases`](tasks/dateutil-tz-edge-cases) | [dateutil](https://github.com/dateutil/dateutil) | Bug hunt: twelve time zone, TZ string, parser and recurrence bugs, no oracle | **Accepted**: 0 of 3 attempts passed (108, 109, 109 / 115) |
 | [`tasks/more-itertools-edge-cases`](tasks/more-itertools-edge-cases) | [more-itertools](https://github.com/more-itertools/more-itertools) | Bug hunt: sixteen size, argument, error, `numeric_range` and laziness bugs, no oracle | **Accepted**: 0 of 3 attempts passed (549, 549, 554 / 558) |

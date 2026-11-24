@@ -1,0 +1,1385 @@
+diff --git a/markdown_it/common/html_re.py b/markdown_it/common/html_re.py
+index ab822c5..8003a23 100644
+--- a/markdown_it/common/html_re.py
++++ b/markdown_it/common/html_re.py
+@@ -1,21 +1,33 @@
+-"""Regexps to match html elements"""
++"""Regexps to match html elements
++
++See https://spec.commonmark.org/0.31.2/#raw-html
++"""
+ 
+ import re
+ 
++# "Whitespace" inside a tag: spaces, tabs, and up to one line ending.
++# Note: ``\s`` is not used, since in Python it also matches many other
++# characters (``\v``, ``\f``, ``\x1c``-``\x1f``, ``\x85``, ``\xa0``, ...)
++# that are not whitespace in the CommonMark sense.
++_ws_opt = "(?:[ \\t]*(?:\\n[ \\t]*)?)"
++_ws_req = "(?:[ \\t]+(?:\\n[ \\t]*)?|\\n[ \\t]*)"
++
+ attr_name = "[a-zA-Z_:][a-zA-Z0-9:._-]*"
+ 
+-unquoted = "[^\"'=<>`\\x00-\\x20]+"
++unquoted = "[^\"'=<>`\\x20\\t\\n\\r]+"
+ single_quoted = "'[^']*'"
+ double_quoted = '"[^"]*"'
+ 
+ attr_value = "(?:" + unquoted + "|" + single_quoted + "|" + double_quoted + ")"
+ 
+-attribute = "(?:\\s+" + attr_name + "(?:\\s*=\\s*" + attr_value + ")?)"
++attribute = (
++    "(?:" + _ws_req + attr_name + "(?:" + _ws_opt + "=" + _ws_opt + attr_value + ")?)"
++)
+ 
+-open_tag = "<[A-Za-z][A-Za-z0-9\\-]*" + attribute + "*\\s*\\/?>"
++open_tag = "<[A-Za-z][A-Za-z0-9\\-]*" + attribute + "*" + _ws_opt + "\\/?>"
+ 
+-close_tag = "<\\/[A-Za-z][A-Za-z0-9\\-]*\\s*>"
+-comment = "<!---?>|<!--(?:[^-]|-[^-]|--[^>])*-->"
++close_tag = "<\\/[A-Za-z][A-Za-z0-9\\-]*" + _ws_opt + ">"
++comment = "<!-->|<!--->|<!--[\\s\\S]*?-->"
+ processing = "<[?][\\s\\S]*?[?]>"
+ declaration = "<![A-Za-z][^>]*>"
+ cdata = "<!\\[CDATA\\[[\\s\\S]*?\\]\\]>"
+diff --git a/markdown_it/common/utils.py b/markdown_it/common/utils.py
+index 5f1bd24..77e55c7 100644
+--- a/markdown_it/common/utils.py
++++ b/markdown_it/common/utils.py
+@@ -275,55 +275,89 @@ def isMdAsciiPunct(ch: int) -> bool:
+     return ch in MD_ASCII_PUNCT
+ 
+ 
++#: The characters that are whitespace in link labels: spaces, tabs and
++#: line endings, see https://spec.commonmark.org/0.31.2/#matches
++_LABEL_WHITESPACE = " \t\r\n"
++_LABEL_WHITESPACE_RE = re.compile("[" + _LABEL_WHITESPACE + "]+")
++
++#: The maximum number of characters between the brackets of a link label,
++#: see https://spec.commonmark.org/0.31.2/#link-label
++MAX_LINK_LABEL_LENGTH = 999
++
++
+ def normalizeReference(string: str) -> str:
+-    """Helper to unify [reference labels]."""
++    """Helper to unify [reference labels].
++
++    As per https://spec.commonmark.org/0.31.2/#matches, the label is
++    Unicode case folded, leading and trailing spaces, tabs and line endings
++    are stripped, and consecutive internal ones collapsed to a single space
++    (other Unicode whitespace is kept as is).
++    """
+     # Trim and collapse whitespace
+     #
+-    string = MD_TRIM_RE.sub(" ", mdTrim(string))
++    string = _LABEL_WHITESPACE_RE.sub(" ", string.strip(_LABEL_WHITESPACE))
+ 
+-    # In node v10 'ẞ'.toLowerCase() === 'Ṿ', which is presumed to be a bug
+-    # fixed in v12 (couldn't find any details).
++    # Unicode case fold.
+     #
+-    # So treat this one as a special case
+-    # (remove this when node v10 is no longer supported).
++    # Note, ``.lower().upper()`` (as used upstream) is not equivalent to it:
++    # e.g. it maps both `i` and the dotless `ı` to `I`.
+     #
+-    # if ('ẞ'.toLowerCase() === 'Ṿ') {
+-    #   str = str.replace(/ẞ/g, 'ß')
+-    # }
++    # The result is uppercased if this keeps it a unique representative of
++    # the case folded string (as it is for any ASCII label), for compatibility
++    # with existing keys of ``env["references"]``.
++    folded = string.casefold()
++    upper = folded.upper()
++    return upper if upper.casefold() == folded else folded
++
++
++def isValidLinkLabel(label: str) -> bool:
++    """Whether the text between the brackets of a link label can be one,
++    as far as its length and contents are concerned (unescaped brackets are
++    checked by the parser): at most 999 characters, at least one of which
++    is not a space, tab or line ending.
++    """
++    return len(label) <= MAX_LINK_LABEL_LENGTH and bool(
++        label.strip(_LABEL_WHITESPACE)
++    )
+ 
+-    # .toLowerCase().toUpperCase() should get rid of all differences
+-    # between letter variants.
+-    #
+-    # Simple .toLowerCase() doesn't normalize 125 code points correctly,
+-    # and .toUpperCase doesn't normalize 6 of them (list of exceptions:
+-    # İ, ϴ, ẞ, Ω, K, Å - those are already uppercased, but have differently
+-    # uppercased versions).
+-    #
+-    # Here's an example showing how it happens. Lets take greek letter omega:
+-    # uppercase U+0398 (Θ), U+03f4 (ϴ) and lowercase U+03b8 (θ), U+03d1 (ϑ)
+-    #
+-    # Unicode entries:
+-    # 0398;GREEK CAPITAL LETTER THETA;Lu;0;L;;;;;N;;;;03B8
+-    # 03B8;GREEK SMALL LETTER THETA;Ll;0;L;;;;;N;;;0398;;0398
+-    # 03D1;GREEK THETA SYMBOL;Ll;0;L;<compat> 03B8;;;;N;GREEK SMALL LETTER SCRIPT THETA;;0398;;0398
+-    # 03F4;GREEK CAPITAL THETA SYMBOL;Lu;0;L;<compat> 0398;;;;N;;;;03B8
+-    #
+-    # Case-insensitive comparison should treat all of them as equivalent.
+-    #
+-    # But .toLowerCase() doesn't change ϑ (it's already lowercase),
+-    # and .toUpperCase() doesn't change ϴ (already uppercase).
+-    #
+-    # Applying first lower then upper case normalizes any character:
+-    # '\u0398\u03f4\u03b8\u03d1'.toLowerCase().toUpperCase() === '\u0398\u0398\u0398\u0398'
+-    #
+-    # Note: this is equivalent to unicode case folding; unicode normalization
+-    # is a different step that is not required here.
+-    #
+-    # Final result should be uppercased, because it's later stored in an object
+-    # (this avoid a conflict with Object.prototype members,
+-    # most notably, `__proto__`)
+-    #
+-    return string.lower().upper()
++
++def parseLinkReferenceLabel(string: str, start: int, maximum: int) -> int:
++    """Parse a link label (as in the second part of a full reference link,
++    ``[text][label]``), as per https://spec.commonmark.org/0.31.2/#link-label
++
++    ``string[start]`` is assumed to be ``[``. Unescaped brackets are not
++    allowed inside, and there can be at most 999 characters between the
++    brackets. Returns the position of the closing ``]``, or -1.
++    """
++    pos = start + 1
++    while pos < maximum:
++        ch = string[pos]
++        if ch == "\\":
++            pos += 2
++            continue
++        if ch == "[":
++            return -1
++        if ch == "]":
++            return pos if pos - start - 1 <= 999 else -1
++        if pos - start - 1 >= 999:
++            return -1
++        pos += 1
++    return -1
++
++
++def hasUnescapedBrackets(string: str) -> bool:
++    """Whether the text contains an unescaped ``[`` or ``]``."""
++    pos = 0
++    maximum = len(string)
++    while pos < maximum:
++        ch = string[pos]
++        if ch == "\\":
++            pos += 2
++            continue
++        if ch in "[]":
++            return True
++        pos += 1
++    return False
+ 
+ 
+ LINK_OPEN_RE = re.compile(r"^<a[>\s]", flags=re.IGNORECASE)
+diff --git a/markdown_it/main.py b/markdown_it/main.py
+index 050a3b8..a31a39a 100644
+--- a/markdown_it/main.py
++++ b/markdown_it/main.py
+@@ -176,8 +176,8 @@ class MarkdownIt:
+         """
+         result = []
+ 
+-        if isinstance(names, str):
+-            names = [names]
++        # accept any iterable (e.g. a generator, which can only be consumed once)
++        names = [names] if isinstance(names, str) else list(names)
+ 
+         for chain in ["core", "block", "inline"]:
+             result.extend(self[chain].ruler.enable(names, True))
+@@ -200,8 +200,8 @@ class MarkdownIt:
+         """
+         result = []
+ 
+-        if isinstance(names, str):
+-            names = [names]
++        # accept any iterable (e.g. a generator, which can only be consumed once)
++        names = [names] if isinstance(names, str) else list(names)
+ 
+         for chain in ["core", "block", "inline"]:
+             result.extend(self[chain].ruler.disable(names, True))
+diff --git a/markdown_it/parser_inline.py b/markdown_it/parser_inline.py
+index 530e936..8134d59 100644
+--- a/markdown_it/parser_inline.py
++++ b/markdown_it/parser_inline.py
+@@ -202,10 +202,10 @@ class ParserInline:
+                     break
+                 continue
+ 
+-            state.pending += state.src[state.pos]
++            state.appendPending(state.src[state.pos])
+             state.pos += 1
+ 
+-        if state.pending:
++        if state._pending:
+             state.pushPending()
+ 
+     def parse(
+diff --git a/markdown_it/renderer.py b/markdown_it/renderer.py
+index d4b6c4d..35308de 100644
+--- a/markdown_it/renderer.py
++++ b/markdown_it/renderer.py
+@@ -8,7 +8,7 @@ rules if you create plugin and adds new token types.
+ 
+ from __future__ import annotations
+ 
+-from collections.abc import Sequence
++from collections.abc import Iterator, Sequence
+ import inspect
+ from typing import Any, ClassVar, Protocol
+ 
+@@ -205,18 +205,34 @@ class RendererHTML(RendererProtocol):
+         :param options: params of parser instance
+         :param env: additional data from parsed input
+         """
+-        result = ""
+-
+-        for token in tokens or []:
+-            if token.type in ("text", "code_inline"):
+-                result += token.content
++        parts: list[str] = []
++        self._collect_inline_text(tokens, parts)
++        return "".join(parts)
++
++    @classmethod
++    def _collect_inline_text(
++        cls, tokens: Sequence[Token] | None, parts: list[str]
++    ) -> None:
++        """Collect the plain string content of inline tokens into ``parts``
++        (iteratively, so deeply nested images cannot exhaust the stack)."""
++        stack: list[Iterator[Token]] = [iter(tokens or [])]
++        while stack:
++            token = next(stack[-1], None)
++            if token is None:
++                stack.pop()
++                continue
++            if token.type in (
++                "text",
++                "code_inline",
++                "html_inline",
++                "html_block",
++            ):
++                parts.append(token.content)
+             elif token.type == "image":
+                 if token.children:
+-                    result += self.renderInlineAsText(token.children, options, env)
+-            elif token.type == "softbreak":
+-                result += "\n"
+-
+-        return result
++                    stack.append(iter(token.children))
++            elif token.type in ("softbreak", "hardbreak"):
++                parts.append("\n")
+ 
+     ###################################################
+ 
+diff --git a/markdown_it/rules_block/heading.py b/markdown_it/rules_block/heading.py
+index e768151..e59228c 100644
+--- a/markdown_it/rules_block/heading.py
++++ b/markdown_it/rules_block/heading.py
+@@ -19,9 +19,12 @@ def heading(state: StateBlock, startLine: int, endLine: int, silent: bool) -> bo
+     if state.is_code_block(startLine):
+         return False
+ 
++    if pos >= maximum:
++        return False
++
+     ch: str | None = state.src[pos]
+ 
+-    if ch != "#" or pos >= maximum:
++    if ch != "#":
+         return False
+ 
+     # count heading level
+diff --git a/markdown_it/rules_block/html_block.py b/markdown_it/rules_block/html_block.py
+index 3d43f6e..40a64e6 100644
+--- a/markdown_it/rules_block/html_block.py
++++ b/markdown_it/rules_block/html_block.py
+@@ -11,23 +11,44 @@ from .state_block import StateBlock
+ LOGGER = logging.getLogger(__name__)
+ 
+ # An array of opening and corresponding closing sequences for html tags,
+-# last argument defines whether it can terminate a paragraph or not
++# last argument defines whether it can terminate a paragraph or not.
++#
++# See https://spec.commonmark.org/0.31.2/#html-blocks
++# Note, the case-insensitivity of the spec is ASCII case-insensitivity,
++# and its "whitespace" here is only spaces and tabs (Python's ``\s`` and
++# ``re.IGNORECASE`` alone are both wider than that).
++_ASCII_I = re.IGNORECASE | re.ASCII
++_RAW_TAGS = "pre|script|style|textarea"
++
+ HTML_SEQUENCES: list[tuple[re.Pattern[str], re.Pattern[str], bool]] = [
+     (
+-        re.compile(r"^<(script|pre|style|textarea)(?=(\s|>|$))", re.IGNORECASE),
+-        re.compile(r"<\/(script|pre|style|textarea)>", re.IGNORECASE),
++        re.compile(r"^<(?:" + _RAW_TAGS + r")(?=[ \t>]|$)", _ASCII_I),
++        re.compile(r"</(?:" + _RAW_TAGS + r")>", _ASCII_I),
+         True,
+     ),
+     (re.compile(r"^<!--"), re.compile(r"-->"), True),
+     (re.compile(r"^<\?"), re.compile(r"\?>"), True),
+-    (re.compile(r"^<![A-Z]"), re.compile(r">"), True),
++    (re.compile(r"^<![A-Za-z]"), re.compile(r">"), True),
+     (re.compile(r"^<!\[CDATA\["), re.compile(r"\]\]>"), True),
+     (
+-        re.compile("^</?(" + "|".join(block_names) + ")(?=(\\s|/?>|$))", re.IGNORECASE),
++        re.compile(
++            "^</?(?:" + "|".join(block_names) + ")(?=[ \\t]|/?>|$)",
++            _ASCII_I,
++        ),
+         re.compile(r"^$"),
+         True,
+     ),
+-    (re.compile(HTML_OPEN_CLOSE_TAG_STR + "\\s*$"), re.compile(r"^$"), False),
++    (
++        re.compile(
++            # open tags with these names are excluded (closing tags are not)
++            "^(?!<(?:" + _RAW_TAGS + ")(?![A-Za-z0-9-]))"
++            + HTML_OPEN_CLOSE_TAG_STR[1:]
++            + "[ \\t]*$",
++            _ASCII_I,
++        ),
++        re.compile(r"^$"),
++        False,
++    ),
+ ]
+ 
+ 
+@@ -44,7 +65,7 @@ def html_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+     if not state.md.options.get("html", None):
+         return False
+ 
+-    if state.src[pos] != "<":
++    if pos >= maximum or state.src[pos] != "<":
+         return False
+ 
+     lineText = state.src[pos:maximum]
+@@ -67,8 +88,14 @@ def html_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+     # If we are here - we detected HTML block.
+     # Let's roll down till block end.
+     if not html_seq[1].search(lineText):
++        found_end = False
+         while nextLine < endLine:
+-            if state.sCount[nextLine] < state.blkIndent:
++            # Blank lines do not end the block by themselves (apart from the
++            # sequences whose end condition is a blank line, checked below),
++            # even inside a container (e.g. list item) with an indent.
++            if state.sCount[nextLine] < state.blkIndent and not state.isEmpty(
++                nextLine
++            ):
+                 break
+ 
+             pos = state.bMarks[nextLine] + state.tShift[nextLine]
+@@ -76,11 +103,23 @@ def html_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+             lineText = state.src[pos:maximum]
+ 
+             if html_seq[1].search(lineText):
++                found_end = True
+                 if len(lineText) != 0:
+                     nextLine += 1
+                 break
+             nextLine += 1
+ 
++        if not found_end:
++            # The block was closed by the end of its container (or document):
++            # trailing blank lines that are less indented than the container
++            # content (e.g. after the last line of a list item) are not part of it.
++            while (
++                nextLine - 1 > startLine
++                and state.isEmpty(nextLine - 1)
++                and state.sCount[nextLine - 1] < state.blkIndent
++            ):
++                nextLine -= 1
++
+     state.line = nextLine
+ 
+     token = state.push("html_block", "", 0)
+diff --git a/markdown_it/rules_block/list.py b/markdown_it/rules_block/list.py
+index c8fe7af..0bdc30e 100644
+--- a/markdown_it/rules_block/list.py
++++ b/markdown_it/rules_block/list.py
+@@ -1,7 +1,7 @@
+ # Lists
+ import logging
+ 
+-from ..common.utils import isStrSpace
++from ..common.utils import MD_TRIM_CHARS, isStrSpace
+ from .state_block import StateBlock
+ 
+ LOGGER = logging.getLogger(__name__)
+@@ -229,26 +229,21 @@ def list_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+         indent = initial + indentAfterMarker
+ 
+         # Run subparser & write tokens
++        itemTokIdx = len(state.tokens)
+         token = state.push("list_item_open", "li", 1)
+         token.markup = markerChar
+         token.map = itemLines = [startLine, 0]
+         if isOrdered:
+             token.info = state.src[start : posAfterMarker - 1]
+ 
+-        # Detect GFM task checkbox: `[ ] ` or `[x] `/`[X] ` at content start
+-        checkboxLen = 0
++        # A possible GFM task checkbox: `[ ] ` or `[x] `/`[X] ` at content start
++        # (it is one only if it starts a paragraph, checked after tokenizing)
++        checked = None
+         if state.md.options.get("tasklists", False) and contentStart < maximum:
+             checked = _detect_task_checkbox(state.src, contentStart, maximum)
+-            if checked is not None:
+-                token.meta = {"checked": checked}
+-                # Advance content past the checkbox: `[x]` (3 chars) + whitespace.
+-                # `_detect_task_checkbox` already guarantees a whitespace char at
+-                # pos+3, so we always consume 4 characters.
+-                checkboxLen = 4
+ 
+         # change current state, then restore it after parser subcall
+         oldTight = state.tight
+-        oldBMark = state.bMarks[startLine]
+         oldTShift = state.tShift[startLine]
+         oldSCount = state.sCount[startLine]
+ 
+@@ -264,12 +259,6 @@ def list_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+         state.tShift[startLine] = contentStart - state.bMarks[startLine]
+         state.sCount[startLine] = offset
+ 
+-        # If we detected a checkbox, advance bMarks past it so that
+-        # getLines() doesn't include the checkbox text in the content.
+-        if checkboxLen:
+-            state.bMarks[startLine] = contentStart + checkboxLen
+-            state.tShift[startLine] = 0
+-
+         if contentStart >= maximum and state.isEmpty(startLine + 1):
+             # workaround for this case
+             # (list item is empty, list terminates before "foo"):
+@@ -285,6 +274,11 @@ def list_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+             # but  tokeniz does not take the final parameter
+             state.md.block.tokenize(state, startLine, endLine)
+ 
++        # Detect GFM task checkbox: `[ ] ` or `[x] `/`[X] ` at the start
++        # of the paragraph that starts the list item (on its first line)
++        if checked is not None:
++            _apply_task_checkbox(state, itemTokIdx, startLine, checked)
++
+         # If any of list item is tight, mark list as tight
+         if (not state.tight) or prevEmptyEnd:
+             tight = False
+@@ -295,8 +289,6 @@ def list_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+ 
+         state.blkIndent = state.listIndent
+         state.listIndent = oldListIndent
+-        if checkboxLen:
+-            state.bMarks[startLine] = oldBMark
+         state.tShift[startLine] = oldTShift
+         state.sCount[startLine] = oldSCount
+         state.tight = oldTight
+@@ -383,6 +375,29 @@ def list_block(state: StateBlock, startLine: int, endLine: int, silent: bool) ->
+     return True
+ 
+ 
++def _apply_task_checkbox(
++    state: StateBlock, itemTokIdx: int, line: int, checked: bool
++) -> None:
++    """Mark the list item as a task, and remove the checkbox from its content,
++    if the item starts with a paragraph (on the item's first line), which
++    starts with the checkbox.
++    """
++    tokens = state.tokens
++    if itemTokIdx + 2 >= len(tokens):
++        return
++    paragraph, inline = tokens[itemTokIdx + 1], tokens[itemTokIdx + 2]
++    if paragraph.type != "paragraph_open" or inline.type != "inline":
++        return
++    if not paragraph.map or paragraph.map[0] != line:
++        return
++    content = inline.content
++    if _detect_task_checkbox(content, 0, len(content)) != checked:
++        return
++    tokens[itemTokIdx].meta = {**(tokens[itemTokIdx].meta or {}), "checked": checked}
++    # Remove the checkbox `[x]` (3 chars) and the whitespace after it.
++    inline.content = content[4:].lstrip(MD_TRIM_CHARS)
++
++
+ def _detect_task_checkbox(src: str, pos: int, maximum: int) -> bool | None:
+     """Detect ``[ ]``, ``[x]``, or ``[X]`` at *pos*, followed by whitespace.
+ 
+diff --git a/markdown_it/rules_block/reference.py b/markdown_it/rules_block/reference.py
+index 175308f..2696618 100644
+--- a/markdown_it/rules_block/reference.py
++++ b/markdown_it/rules_block/reference.py
+@@ -1,6 +1,12 @@
+ import logging
+ 
+-from ..common.utils import charCodeAt, isSpace, normalizeReference
++from ..common.utils import (
++    MAX_LINK_LABEL_LENGTH,
++    charCodeAt,
++    isSpace,
++    isValidLinkLabel,
++    normalizeReference,
++)
+ from .state_block import StateBlock
+ 
+ LOGGER = logging.getLogger(__name__)
+@@ -18,7 +24,7 @@ def reference(state: StateBlock, startLine: int, _endLine: int, silent: bool) ->
+     if state.is_code_block(startLine):
+         return False
+ 
+-    if state.src[pos] != "[":
++    if pos >= maximum or state.src[pos] != "[":
+         return False
+ 
+     string = state.src[pos : maximum + 1]
+@@ -29,6 +35,9 @@ def reference(state: StateBlock, startLine: int, _endLine: int, silent: bool) ->
+     labelEnd = None
+     pos = 1
+     while pos < maximum:
++        if pos > MAX_LINK_LABEL_LENGTH + 1:
++            # a link label has at most 999 characters between the brackets
++            return False
+         ch = charCodeAt(string, pos)
+         if ch == 0x5B:  # /* [ */
+             return False
+@@ -148,9 +157,11 @@ def reference(state: StateBlock, startLine: int, _endLine: int, silent: bool) ->
+         # garbage at the end of the line
+         return False
+ 
++    if not isValidLinkLabel(string[1:labelEnd]):
++        # CommonMark 0.20 disallows empty labels
++        return False
+     label = normalizeReference(string[1:labelEnd])
+     if not label:
+-        # CommonMark 0.20 disallows empty labels
+         return False
+ 
+     # Reference can not terminate anything. This check is for safety only.
+diff --git a/markdown_it/rules_core/linkify.py b/markdown_it/rules_core/linkify.py
+index efbc9d4..3e36624 100644
+--- a/markdown_it/rules_core/linkify.py
++++ b/markdown_it/rules_core/linkify.py
+@@ -3,7 +3,7 @@ from __future__ import annotations
+ import re
+ from typing import Protocol
+ 
+-from ..common.utils import arrayReplaceAt, isLinkClose, isLinkOpen
++from ..common.utils import isLinkClose, isLinkOpen
+ from ..token import Token
+ from .state_core import StateCore
+ 
+@@ -30,6 +30,11 @@ def linkify(state: StateCore) -> None:
+ 
+         htmlLinkLevel = 0
+ 
++        # Replacements are collected (by index in the original list) and
++        # applied once at the end: rebuilding the list for each replaced
++        # token would be quadratic in the number of tokens.
++        replacements: dict[int, list[Token]] = {}
++
+         # We scan from the end, to keep position when new tags added.
+         # Use reversed logic in links start/end match
+         assert tokens is not None
+@@ -138,7 +143,16 @@ def linkify(state: StateCore) -> None:
+                     token.level = level
+                     nodes.append(token)
+ 
+-                inline_token.children = tokens = arrayReplaceAt(tokens, i, nodes)
++                replacements[i] = nodes
++
++        if replacements:
++            new_children: list[Token] = []
++            for idx, child in enumerate(tokens):
++                if idx in replacements:
++                    new_children.extend(replacements[idx])
++                else:
++                    new_children.append(child)
++            inline_token.children = new_children
+ 
+ 
+ class _LinkType(Protocol):
+diff --git a/markdown_it/rules_core/smartquotes.py b/markdown_it/rules_core/smartquotes.py
+index 3392dcb..31dcdba 100644
+--- a/markdown_it/rules_core/smartquotes.py
++++ b/markdown_it/rules_core/smartquotes.py
+@@ -22,55 +22,89 @@ def replaceAt(string: str, index: int, ch: str) -> str:
+ 
+ 
+ def process_inlines(tokens: list[Token], state: StateCore) -> None:
++    # Note: to keep this linear in the size of the input,
++    #
++    # - token contents being modified are held as lists of pieces
++    #   (one per original character), so that replacing a quote is O(1)
++    #   and positions do not shift, and are joined back at the end;
++    # - the stack of openers is truncated in place, and the topmost opener
++    #   of each kind is found via per-kind index lists, instead of scanning.
++    #
++    # The result is the same as rewriting the strings one quote at a time.
+     stack: list[dict[str, Any]] = []
++    # stack indices of the single / double quote openers (increasing)
++    kind_idx: dict[bool, list[int]] = {True: [], False: []}
++    pieces: dict[int, list[str]] = {}
++
++    def truncate(length: int) -> None:
++        del stack[length:]
++        for lst in kind_idx.values():
++            while lst and lst[-1] >= length:
++                lst.pop()
++
++    def get_pieces(idx: int) -> list[str]:
++        if idx not in pieces:
++            pieces[idx] = list(tokens[idx].content)
++        return pieces[idx]
++
++    def last_char_of(idx: int) -> int | None:
++        """Last character of the (current) content of tokens[idx], if any."""
++        if idx in pieces:
++            for piece in reversed(pieces[idx]):
++                if piece:
++                    return ord(piece[-1])
++            return None
++        content = tokens[idx].content
++        return ord(content[-1]) if content else None
+ 
+     for i, token in enumerate(tokens):
+         thisLevel = token.level
+ 
+-        j = 0
+-        for j in range(len(stack))[::-1]:
+-            if stack[j]["level"] <= thisLevel:
+-                break
+-        else:
+-            # When the loop is terminated without a "break".
+-            # Subtract 1 to get the same index as the js version.
++        j = len(stack) - 1
++        while j >= 0 and stack[j]["level"] > thisLevel:
+             j -= 1
+-
+-        stack = stack[: j + 1]
++        truncate(j + 1)
+ 
+         if token.type != "text":
+             continue
+ 
+         text = token.content
+-        pos = 0
+         maximum = len(text)
+ 
+-        while pos < maximum:
+-            goto_outer = False
+-            lastIndex = pos
+-            t = QUOTE_RE.search(text[lastIndex:])
+-            if not t:
+-                break
+-
++        for t in QUOTE_RE.finditer(text):
++            index = t.start(0)
+             canOpen = canClose = True
+-            pos = t.start(0) + lastIndex + 1
++            pos = index + 1
+             isSingle = t.group(0) == "'"
+ 
+             # Find previous character,
+             # default to space if it's the beginning of the line
+             lastChar: int | None = 0x20
+ 
+-            if t.start(0) + lastIndex - 1 >= 0:
+-                lastChar = charCodeAt(text, t.start(0) + lastIndex - 1)
+-            else:
++            found_last = False
++            if index > 0:
++                if i in pieces:
++                    own = pieces[i]
++                    k = index - 1
++                    while k >= 0:
++                        if own[k]:
++                            lastChar = ord(own[k][-1])
++                            found_last = True
++                            break
++                        k -= 1
++                else:
++                    lastChar = ord(text[index - 1])
++                    found_last = True
++            if not found_last:
+                 for j in range(i)[::-1]:
+                     if tokens[j].type == "softbreak" or tokens[j].type == "hardbreak":
+                         break
+                     # should skip all tokens except 'text', 'html_inline' or 'code_inline'
+-                    if not tokens[j].content:
++                    prevChar = last_char_of(j)
++                    if prevChar is None:
+                         continue
+ 
+-                    lastChar = charCodeAt(tokens[j].content, len(tokens[j].content) - 1)
++                    lastChar = prevChar
+                     break
+ 
+             # Find next character,
+@@ -78,7 +112,7 @@ def process_inlines(tokens: list[Token], state: StateCore) -> None:
+             nextChar: int | None = 0x20
+ 
+             if pos < maximum:
+-                nextChar = charCodeAt(text, pos)
++                nextChar = ord(text[pos])
+             else:
+                 for j in range(i + 1, len(tokens)):
+                     # nextChar defaults to 0x20
+@@ -131,64 +165,46 @@ def process_inlines(tokens: list[Token], state: StateCore) -> None:
+             if not canOpen and not canClose:
+                 # middle of word
+                 if isSingle:
+-                    token.content = replaceAt(
+-                        token.content, t.start(0) + lastIndex, APOSTROPHE
+-                    )
++                    get_pieces(i)[index] = APOSTROPHE
+                 continue
+ 
+             if canClose:
+                 # this could be a closing quote, rewind the stack to get a match
+-                for j in range(len(stack))[::-1]:
++                # (the stack levels are non-decreasing and at most thisLevel,
++                # so a match is the topmost opener of this kind, if at thisLevel)
++                same_kind = kind_idx[isSingle]
++                if same_kind and stack[same_kind[-1]]["level"] == thisLevel:
++                    j = same_kind[-1]
+                     item = stack[j]
+-                    if stack[j]["level"] < thisLevel:
+-                        break
+-                    if item["single"] == isSingle and stack[j]["level"] == thisLevel:
+-                        item = stack[j]
+-
+-                        if isSingle:
+-                            openQuote = state.md.options.quotes[2]
+-                            closeQuote = state.md.options.quotes[3]
+-                        else:
+-                            openQuote = state.md.options.quotes[0]
+-                            closeQuote = state.md.options.quotes[1]
+-
+-                        # replace token.content *before* tokens[item.token].content,
+-                        # because, if they are pointing at the same token, replaceAt
+-                        # could mess up indices when quote length != 1
+-                        token.content = replaceAt(
+-                            token.content, t.start(0) + lastIndex, closeQuote
+-                        )
+-                        tokens[item["token"]].content = replaceAt(
+-                            tokens[item["token"]].content, item["pos"], openQuote
+-                        )
+-
+-                        pos += len(closeQuote) - 1
+-                        if item["token"] == i:
+-                            pos += len(openQuote) - 1
+-
+-                        text = token.content
+-                        maximum = len(text)
+-
+-                        stack = stack[:j]
+-                        goto_outer = True
+-                        break
+-                if goto_outer:
+-                    goto_outer = False
++
++                    if isSingle:
++                        openQuote = state.md.options.quotes[2]
++                        closeQuote = state.md.options.quotes[3]
++                    else:
++                        openQuote = state.md.options.quotes[0]
++                        closeQuote = state.md.options.quotes[1]
++
++                    get_pieces(i)[index] = closeQuote
++                    get_pieces(item["token"])[item["pos"]] = openQuote
++
++                    truncate(j)
+                     continue
+ 
+             if canOpen:
++                kind_idx[isSingle].append(len(stack))
+                 stack.append(
+                     {
+                         "token": i,
+-                        "pos": t.start(0) + lastIndex,
++                        "pos": index,
+                         "single": isSingle,
+                         "level": thisLevel,
+                     }
+                 )
+             elif canClose and isSingle:
+-                token.content = replaceAt(
+-                    token.content, t.start(0) + lastIndex, APOSTROPHE
+-                )
++                get_pieces(i)[index] = APOSTROPHE
++
++    for idx, token_pieces in pieces.items():
++        tokens[idx].content = "".join(token_pieces)
+ 
+ 
+ def smartquotes(state: StateCore) -> None:
+diff --git a/markdown_it/rules_inline/autolink.py b/markdown_it/rules_inline/autolink.py
+index 6546e25..08de2f4 100644
+--- a/markdown_it/rules_inline/autolink.py
++++ b/markdown_it/rules_inline/autolink.py
+@@ -4,9 +4,12 @@ import re
+ from .state_inline import StateInline
+ 
+ EMAIL_RE = re.compile(
+-    r"^([a-zA-Z0-9.!#$%&\'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)$"
++    r"^([a-zA-Z0-9.!#$%&\'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)\Z"
+ )
+-AUTOLINK_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]{1,31}):([^<>\x00-\x20]*)$")
++# Note: `\Z` rather than `$` (which also matches before a trailing newline),
++# and no ASCII control characters (which include U+007F) in the URI,
++# see https://spec.commonmark.org/0.31.2/#absolute-uri
++AUTOLINK_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]{1,31}):([^<>\x00-\x20\x7f]*)\Z")
+ 
+ 
+ def autolink(state: StateInline, silent: bool) -> bool:
+diff --git a/markdown_it/rules_inline/backticks.py b/markdown_it/rules_inline/backticks.py
+index fc60d6b..50aa029 100644
+--- a/markdown_it/rules_inline/backticks.py
++++ b/markdown_it/rules_inline/backticks.py
+@@ -25,7 +25,7 @@ def backtick(state: StateInline, silent: bool) -> bool:
+ 
+     if state.backticksScanned and state.backticks.get(openerLength, 0) <= start:
+         if not silent:
+-            state.pending += marker
++            state.appendPending(marker)
+         state.pos += openerLength
+         return True
+ 
+@@ -51,10 +51,12 @@ def backtick(state: StateInline, silent: bool) -> bool:
+                 token = state.push("code_inline", "code", 0)
+                 token.markup = marker
+                 token.content = state.src[pos:matchStart].replace("\n", " ")
++                # Only U+0020 counts as a space here (not other whitespace),
++                # see https://spec.commonmark.org/0.31.2/#code-spans
+                 if (
+                     token.content.startswith(" ")
+                     and token.content.endswith(" ")
+-                    and len(token.content.strip()) > 0
++                    and len(token.content.strip(" ")) > 0
+                 ):
+                     token.content = token.content[1:-1]
+             state.pos = matchEnd
+@@ -67,6 +69,6 @@ def backtick(state: StateInline, silent: bool) -> bool:
+     state.backticksScanned = True
+ 
+     if not silent:
+-        state.pending += marker
++        state.appendPending(marker)
+     state.pos += openerLength
+     return True
+diff --git a/markdown_it/rules_inline/entity.py b/markdown_it/rules_inline/entity.py
+index ec9d396..3193177 100644
+--- a/markdown_it/rules_inline/entity.py
++++ b/markdown_it/rules_inline/entity.py
+@@ -8,6 +8,11 @@ from .state_inline import StateInline
+ DIGITAL_RE = re.compile(r"^&#((?:x[a-f0-9]{1,6}|[0-9]{1,7}));", re.IGNORECASE)
+ NAMED_RE = re.compile(r"^&([a-z][a-z0-9]{1,31});", re.IGNORECASE)
+ 
++# The same patterns, unanchored, to be matched at a position
++# (slicing the source at every `&` would make parsing quadratic).
++_DIGITAL_AT_RE = re.compile(DIGITAL_RE.pattern[1:], re.IGNORECASE)
++_NAMED_AT_RE = re.compile(NAMED_RE.pattern[1:], re.IGNORECASE)
++
+ 
+ def entity(state: StateInline, silent: bool) -> bool:
+     pos = state.pos
+@@ -20,7 +25,7 @@ def entity(state: StateInline, silent: bool) -> bool:
+         return False
+ 
+     if state.src[pos + 1] == "#":
+-        if match := DIGITAL_RE.search(state.src[pos:]):
++        if match := _DIGITAL_AT_RE.match(state.src, pos):
+             if not silent:
+                 match1 = match.group(1)
+                 code = (
+@@ -40,7 +45,7 @@ def entity(state: StateInline, silent: bool) -> bool:
+             return True
+ 
+     else:
+-        if (match := NAMED_RE.search(state.src[pos:])) and match.group(1) in entities:
++        if (match := _NAMED_AT_RE.match(state.src, pos)) and match.group(1) in entities:
+             if not silent:
+                 token = state.push("text_special", "", 0)
+                 token.content = entities[match.group(1)]
+diff --git a/markdown_it/rules_inline/html_inline.py b/markdown_it/rules_inline/html_inline.py
+index 9065e1d..f7292d1 100644
+--- a/markdown_it/rules_inline/html_inline.py
++++ b/markdown_it/rules_inline/html_inline.py
+@@ -1,8 +1,14 @@
+ # Process html tags
+-from ..common.html_re import HTML_TAG_RE
++from __future__ import annotations
++
++import re
++
++from ..common.html_re import close_tag, open_tag
+ from ..common.utils import isLinkClose, isLinkOpen
+ from .state_inline import StateInline
+ 
++_OPEN_CLOSE_TAG_RE = re.compile("(?:" + open_tag + "|" + close_tag + ")")
++
+ 
+ def isLetter(ch: int) -> bool:
+     lc = ch | 0x20  # to lower case
+@@ -10,6 +16,61 @@ def isLetter(ch: int) -> bool:
+     return (lc >= 0x61) and (lc <= 0x7A)
+ 
+ 
++def _find(state: StateInline, needle: str, start: int) -> int:
++    """``state.src.find(needle, start)``, remembering the last answer.
++
++    The last answer for each needle is cached on the state, so that repeated
++    searches from increasing positions (e.g. many unterminated ``<!--``)
++    do not rescan the rest of the source each time (which would be quadratic).
++    """
++    try:
++        cache: dict[str, tuple[int, int]] = state._html_find_cache  # type: ignore[attr-defined]
++    except AttributeError:
++        cache = {}
++        state._html_find_cache = cache  # type: ignore[attr-defined]
++
++    cached = cache.get(needle)
++    if cached is not None:
++        c_start, c_found = cached
++        if start >= c_start and (c_found == -1 or start <= c_found):
++            return c_found
++
++    found = state.src.find(needle, start)
++    cache[needle] = (start, found)
++    return found
++
++
++def _match_html(state: StateInline, pos: int) -> int:
++    """Return the end position of the raw HTML starting at ``pos``, or -1."""
++    src = state.src
++    if src.startswith("<!--", pos):
++        # comment: `<!-->`, `<!--->`, or `<!--` + text not containing `-->` + `-->`
++        if src.startswith(">", pos + 4):
++            return pos + 5
++        if src.startswith("->", pos + 4):
++            return pos + 6
++        end = _find(state, "-->", pos + 4)
++        return -1 if end < 0 else end + 3
++    if src.startswith("<![CDATA[", pos):
++        end = _find(state, "]]>", pos + 9)
++        return -1 if end < 0 else end + 3
++    if src.startswith("<!", pos):
++        # declaration: `<!` + ASCII letter + text not containing `>` + `>`
++        if pos + 2 < len(src) and src[pos + 2].isascii() and src[pos + 2].isalpha():
++            end = _find(state, ">", pos + 3)
++            return -1 if end < 0 else end + 1
++        return -1
++    if src.startswith("<?", pos):
++        # processing instruction: `<?` + text not containing `?>` + `?>`
++        end = _find(state, "?>", pos + 2)
++        return -1 if end < 0 else end + 2
++
++    match = _OPEN_CLOSE_TAG_RE.match(src, pos)
++    if not match:
++        return -1
++    return match.end()
++
++
+ def html_inline(state: StateInline, silent: bool) -> bool:
+     pos = state.pos
+ 
+@@ -26,18 +87,18 @@ def html_inline(state: StateInline, silent: bool) -> bool:
+     if ch not in ("!", "?", "/") and not isLetter(ord(ch)):  # /* / */
+         return False
+ 
+-    match = HTML_TAG_RE.search(state.src[pos:])
+-    if not match:
++    end = _match_html(state, pos)
++    if end < 0:
+         return False
+ 
+     if not silent:
+         token = state.push("html_inline", "", 0)
+-        token.content = state.src[pos : pos + len(match.group(0))]
++        token.content = state.src[pos:end]
+ 
+         if isLinkOpen(token.content):
+             state.linkLevel += 1
+         if isLinkClose(token.content):
+             state.linkLevel -= 1
+ 
+-    state.pos += len(match.group(0))
++    state.pos = end
+     return True
+diff --git a/markdown_it/rules_inline/image.py b/markdown_it/rules_inline/image.py
+index 005105b..2483a71 100644
+--- a/markdown_it/rules_inline/image.py
++++ b/markdown_it/rules_inline/image.py
+@@ -1,7 +1,13 @@
+ # Process ![image](<src> "title")
+ from __future__ import annotations
+ 
+-from ..common.utils import isStrSpace, normalizeReference
++from ..common.utils import (
++    hasUnescapedBrackets,
++    isStrSpace,
++    isValidLinkLabel,
++    normalizeReference,
++    parseLinkReferenceLabel,
++)
+ from ..token import Token
+ from .state_inline import StateInline
+ 
+@@ -95,9 +101,12 @@ def image(state: StateInline, silent: bool) -> bool:
+             return False
+ 
+         # /* [ */
++        # A link label cannot contain unescaped brackets, and has at most
++        # 999 characters (otherwise this is not a full reference link,
++        # but possibly a shortcut one, followed by some text).
+         if pos < max and state.src[pos] == "[":
+             start = pos + 1
+-            pos = state.md.helpers.parseLinkLabel(state, pos)
++            pos = parseLinkReferenceLabel(state.src, pos, max)
+             if pos >= 0:
+                 label = state.src[start:pos]
+                 pos += 1
+@@ -111,6 +120,10 @@ def image(state: StateInline, silent: bool) -> bool:
+         if not label:
+             label = state.src[labelStart:labelEnd]
+ 
++        if not isValidLinkLabel(label) or hasUnescapedBrackets(label):
++            state.pos = oldPos
++            return False
++
+         label = normalizeReference(label)
+ 
+         ref = state.env["references"].get(label, None)
+diff --git a/markdown_it/rules_inline/link.py b/markdown_it/rules_inline/link.py
+index 2e92c7d..8a7a045 100644
+--- a/markdown_it/rules_inline/link.py
++++ b/markdown_it/rules_inline/link.py
+@@ -1,6 +1,12 @@
+ # Process [link](<to> "stuff")
+ 
+-from ..common.utils import isStrSpace, normalizeReference
++from ..common.utils import (
++    hasUnescapedBrackets,
++    isStrSpace,
++    isValidLinkLabel,
++    normalizeReference,
++    parseLinkReferenceLabel,
++)
+ from .state_inline import StateInline
+ 
+ 
+@@ -93,15 +99,17 @@ def link(state: StateInline, silent: bool) -> bool:
+         if "references" not in state.env:
+             return False
+ 
++        # A link label cannot contain unescaped brackets, and has at most
++        # 999 characters (otherwise this is not a full reference link,
++        # but possibly a shortcut one, followed by some text).
+         if pos < maximum and state.src[pos] == "[":
+             start = pos + 1
+-            pos = state.md.helpers.parseLinkLabel(state, pos)
++            pos = parseLinkReferenceLabel(state.src, pos, maximum)
+             if pos >= 0:
+                 label = state.src[start:pos]
+                 pos += 1
+             else:
+                 pos = labelEnd + 1
+-
+         else:
+             pos = labelEnd + 1
+ 
+@@ -110,6 +118,10 @@ def link(state: StateInline, silent: bool) -> bool:
+         if not label:
+             label = state.src[labelStart:labelEnd]
+ 
++        if not isValidLinkLabel(label) or hasUnescapedBrackets(label):
++            state.pos = oldPos
++            return False
++
+         label = normalizeReference(label)
+ 
+         ref = state.env["references"].get(label, None)
+diff --git a/markdown_it/rules_inline/linkify.py b/markdown_it/rules_inline/linkify.py
+index 3669396..4153611 100644
+--- a/markdown_it/rules_inline/linkify.py
++++ b/markdown_it/rules_inline/linkify.py
+@@ -1,11 +1,14 @@
+ """Process links like https://example.org/"""
+ 
+ import re
++from typing import Any
+ 
+ from .state_inline import StateInline
+ 
+ # RFC3986: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+ SCHEME_RE = re.compile(r"(?:^|[^a-z0-9.+-])([a-z][a-z0-9.+-]*)$", re.IGNORECASE)
++_SCHEME_CHAR_RE = re.compile(r"[a-z0-9.+-]", re.IGNORECASE)
++_LINK_END_RE = re.compile(r"\s")
+ 
+ 
+ def linkify(state: StateInline, silent: bool) -> bool:
+@@ -28,23 +31,34 @@ def linkify(state: StateInline, silent: bool) -> bool:
+     ):
+         return False
+ 
+-    if not (match := SCHEME_RE.search(state.pending)):
++    # Equivalent to ``SCHEME_RE.search(state.pending)``, but only looks at
++    # the end of the pending text: joining the pending text, or a regex
++    # search over all of it, would take quadratic time overall.
++    tail = _pending_scheme_tail(state)
++    if not (match := SCHEME_RE.search(tail)):
+         return False
+ 
+     proto = match.group(1)
+-    if not (link := state.md.linkify.match_at_start(state.src[pos - len(proto) :])):
++    # The pending text is not updated in silent mode (e.g. when scanning a
++    # link label), so it may not be the text preceding the current position.
++    if state.src[pos - len(proto) : pos] != proto:
++        return False
++    if not (link := _match_at_start(state, pos - len(proto), pos)):
+         return False
+     url: str = link.url
+ 
+     # disallow '*' at the end of the link (conflicts with emphasis)
+     url = url.rstrip("*")
++    if len(url) <= len(proto) + 3:
++        # nothing after `proto://`
++        return False
+ 
+     full_url = state.md.normalizeLink(url)
+     if not state.md.validateLink(full_url):
+         return False
+ 
+     if not silent:
+-        state.pending = state.pending[: -len(proto)]
++        state.truncatePending(len(proto))
+ 
+         token = state.push("link_open", "a", 1)
+         token.attrs = {"href": full_url}
+@@ -60,3 +74,76 @@ def linkify(state: StateInline, silent: bool) -> bool:
+ 
+     state.pos += len(url) - len(proto)
+     return True
++
++
++def _pending_scheme_tail(state: StateInline) -> str:
++    """The end of the pending text that ``SCHEME_RE`` can match against:
++    the trailing run of scheme characters, preceded by one other character
++    (if any), plus a trailing newline (if any, since ``$`` matches before it).
++    """
++    out: list[str] = []
++    newline_ok = True
++    for chunk in reversed(state._pending):
++        i = len(chunk)
++        if newline_ok and i and chunk[i - 1] == "\n":
++            i -= 1
++        newline_ok = False
++        while i > 0 and _SCHEME_CHAR_RE.match(chunk, i - 1):
++            i -= 1
++        if i > 0:
++            out.append(chunk[i - 1 :])
++            break
++        out.append(chunk)
++    return "".join(reversed(out))
++
++
++# Characters at which a link match on a truncated text may stop short of
++# the match on the full text (see ``_match_at_start``).
++_UNSAFE_LINK_END = frozenset("[({\"'.-!")
++_LINK_CANDIDATE_CAP = 2048
++_LINK_CANDIDATE_MARGIN = 16
++
++
++def _match_at_start(state: StateInline, start: int, pos: int) -> Any:
++    """``linkify.match_at_start(state.src[start:])``, without copying the
++    whole remaining source for each candidate (which is quadratic).
++
++    No link contains a whitespace (or control) character, and the linkify-it
++    patterns treat one the same as the end of the text, so the text can be
++    cut at the first one. Within a long run of non-whitespace, a capped
++    text is tried first, and its result used only if it cannot differ from
++    the result on the full text; otherwise the full text is used.
++    """
++    linkify = state.md.linkify
++    assert linkify is not None
++    src = state.src
++    end = _next_whitespace(state, pos)
++    if end - start <= _LINK_CANDIDATE_CAP:
++        return linkify.match_at_start(src[start:end])
++
++    cut = start + _LINK_CANDIDATE_CAP
++    link = linkify.match_at_start(src[start:cut])
++    if link is None:
++        # the link cannot be longer than the capped text, without matching it
++        return None
++    last = link.last_index
++    if (
++        last <= _LINK_CANDIDATE_CAP - _LINK_CANDIDATE_MARGIN
++        and src[start + last] not in _UNSAFE_LINK_END
++        and "'" not in src[start : start + last]
++    ):
++        return link
++    return linkify.match_at_start(src[start:end])
++
++
++def _next_whitespace(state: StateInline, pos: int) -> int:
++    """Position of the first whitespace character at or after ``pos``
++    (or the end of the source); the last answer is cached on the state,
++    so that scanning a long run of non-whitespace is not repeated."""
++    cached = getattr(state, "_linkify_ws_cache", None)
++    if cached is not None and cached[0] <= pos <= cached[1]:
++        return int(cached[1])
++    match = _LINK_END_RE.search(state.src, pos)
++    end = match.start() if match else len(state.src)
++    state._linkify_ws_cache = (pos, end)  # type: ignore[attr-defined]
++    return end
+diff --git a/markdown_it/rules_inline/newline.py b/markdown_it/rules_inline/newline.py
+index 1085a87..3314fb3 100644
+--- a/markdown_it/rules_inline/newline.py
++++ b/markdown_it/rules_inline/newline.py
+@@ -1,6 +1,6 @@
+ """Process '\n'."""
+ 
+-from ..common.utils import charStrAt, isStrSpace
++from ..common.utils import isStrSpace
+ from .state_inline import StateInline
+ 
+ 
+@@ -10,27 +10,18 @@ def newline(state: StateInline, silent: bool) -> bool:
+     if state.src[pos] != "\n":
+         return False
+ 
+-    pmax = len(state.pending) - 1
+     maximum = state.posMax
+ 
+     # '  \n' -> hardbreak
+-    # Lookup in pending chars is bad practice! Don't copy to other rules!
+-    # Pending string is stored in concat mode, indexed lookups will cause
+-    # conversion to flat mode.
++    # (trailing spaces are looked up without joining the pending chunks)
+     if not silent:
+-        if pmax >= 0 and charStrAt(state.pending, pmax) == " ":
+-            if pmax >= 1 and charStrAt(state.pending, pmax - 1) == " ":
+-                # Find whitespaces tail of pending chars.
+-                ws = pmax - 1
+-                while ws >= 1 and charStrAt(state.pending, ws - 1) == " ":
+-                    ws -= 1
+-                state.pending = state.pending[:ws]
+-
+-                state.push("hardbreak", "br", 0)
+-            else:
+-                state.pending = state.pending[:-1]
+-                state.push("softbreak", "br", 0)
+-
++        trailing = state.countPendingTrailing(" ")
++        if trailing >= 2:
++            state.truncatePending(trailing)
++            state.push("hardbreak", "br", 0)
++        elif trailing == 1:
++            state.truncatePending(1)
++            state.push("softbreak", "br", 0)
+         else:
+             state.push("softbreak", "br", 0)
+ 
+diff --git a/markdown_it/rules_inline/state_inline.py b/markdown_it/rules_inline/state_inline.py
+index de35287..1620a51 100644
+--- a/markdown_it/rules_inline/state_inline.py
++++ b/markdown_it/rules_inline/state_inline.py
+@@ -54,7 +54,9 @@ class StateInline(StateBase):
+         self.pos = 0
+         self.posMax = len(self.src)
+         self.level = 0
+-        self.pending = ""
++        # Pending text, stored as a list of (non-empty) chunks, so that
++        # appending to it is O(1) (see the ``pending`` property).
++        self._pending: list[str] = []
+         self.pendingLevel = 0
+ 
+         # Stores { start: end } pairs. Useful for backtrack
+@@ -81,19 +83,67 @@ class StateInline(StateBase):
+             f"(pos=[{self.pos} of {self.posMax}], token={len(self.tokens)})"
+         )
+ 
++    @property
++    def pending(self) -> str:
++        """Text not yet pushed as a token.
++
++        Note: reading it joins the stored chunks, which is O(length).
++        Rules should prefer :meth:`appendPending` to ``pending += ...``,
++        which is O(1), whereas ``+=`` copies the whole pending text.
++        """
++        chunks = self._pending
++        if not chunks:
++            return ""
++        if len(chunks) > 1:
++            chunks[:] = ["".join(chunks)]
++        return chunks[0]
++
++    @pending.setter
++    def pending(self, value: str) -> None:
++        self._pending = [value] if value else []
++
++    def appendPending(self, text: str) -> None:
++        """Append text to :attr:`pending` (in O(1) time)."""
++        if text:
++            self._pending.append(text)
++
++    def countPendingTrailing(self, chars: str = " ") -> int:
++        """Return the number of trailing characters of pending text in ``chars``,
++        without joining the pending text."""
++        count = 0
++        for chunk in reversed(self._pending):
++            stripped = len(chunk) - len(chunk.rstrip(chars))
++            count += stripped
++            if stripped < len(chunk):
++                break
++        return count
++
++    def truncatePending(self, count: int) -> None:
++        """Remove ``count`` characters from the end of pending text,
++        without joining the pending text."""
++        chunks = self._pending
++        while count > 0 and chunks:
++            last = chunks[-1]
++            if len(last) <= count:
++                count -= len(last)
++                chunks.pop()
++            else:
++                chunks[-1] = last[:-count]
++                count = 0
++
+     def pushPending(self) -> Token:
+         token = Token("text", "", 0)
+         token.content = self.pending
+         token.level = self.pendingLevel
+         self.tokens.append(token)
+-        self.pending = ""
++        self._pending = []
+         return token
+ 
+     def push(self, ttype: str, tag: str, nesting: Literal[-1, 0, 1]) -> Token:
+         """Push new token to "stream".
+         If pending text exists - flush it as text token
+         """
+-        if self.pending:
++        if self._pending:
+             self.pushPending()
+ 
+         token = Token(ttype, tag, nesting)
+diff --git a/markdown_it/rules_inline/text.py b/markdown_it/rules_inline/text.py
+index ef0cc9c..7bb1665 100644
+--- a/markdown_it/rules_inline/text.py
++++ b/markdown_it/rules_inline/text.py
+@@ -16,7 +16,7 @@ def text(state: StateInline, silent: bool) -> bool:
+         return False
+ 
+     if not silent:
+-        state.pending += state.src[state.pos : pos]
++        state.appendPending(state.src[state.pos : pos])
+ 
+     state.pos = pos
+ 
