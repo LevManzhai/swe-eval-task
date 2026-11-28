@@ -1,0 +1,2012 @@
+diff --git a/src/mistune/_inline/delimiters.py b/src/mistune/_inline/delimiters.py
+index 4b98d8c..5e035c4 100644
+--- a/src/mistune/_inline/delimiters.py
++++ b/src/mistune/_inline/delimiters.py
+@@ -47,9 +47,21 @@ class DelimiterScanner:
+         return positions[index] if index < len(positions) else None
+ 
+ 
++def _is_escaped(src: str, pos: int) -> bool:
++    backslashes = 0
++    pos -= 1
++    while pos >= 0 and src[pos] == "\\":
++        backslashes += 1
++        pos -= 1
++    return backslashes % 2 == 1
++
++
+ def _formatting_closer(src: str, start: int, marker: str) -> bool:
+     char = marker[0]
+     end = start + len(marker)
++    if _is_escaped(src, start):
++        # an escaped character is a literal, not a delimiter
++        return False
+     if end < len(src) and src[end] == char and not src.startswith(marker, end):
+         return False
+     if not start:
+diff --git a/src/mistune/block_parser.py b/src/mistune/block_parser.py
+index 5d3910b..430c8fa 100644
+--- a/src/mistune/block_parser.py
++++ b/src/mistune/block_parser.py
+@@ -14,11 +14,11 @@ from .helpers import (
+     parse_link_title,
+     unescape_char,
+ )
+-from .list_parser import LIST_PATTERN, parse_list
++from .list_parser import LIST_PATTERN, _ParagraphTracker, parse_list
+ from .util import escape_url, expand_leading_tab, expand_tab, unikey
+ 
+ _INDENT_CODE_TRIM = re.compile(r"^ {1,4}", flags=re.M)
+-_ATX_HEADING_TRIM = re.compile(r"(\s+|^)#+\s*$")
++_ATX_HEADING_TRIM = re.compile(r"([ \t]+|^)#+[ \t]*$")
+ _BLOCK_QUOTE_TRIM = re.compile(r"^ ?", flags=re.M)
+ 
+ _BLANK_TO_LINE = re.compile(r"[ \t]*\n")
+@@ -32,7 +32,7 @@ _BLOCK_QUOTE_LINE = re.compile(r"^ {0,3}>([^\n]*(?:\n|$))")
+ class BlockParser(Parser[BlockState]):
+     state_cls = BlockState
+ 
+-    BLANK_LINE = re.compile(r"(^[ \t\v\f]*\n)+", re.M)
++    BLANK_LINE = re.compile(r"(^[ \t]*\n)+", re.M)
+ 
+     RAW_HTML = (
+         r"^ {0,3}("
+@@ -45,7 +45,7 @@ class BlockParser(Parser[BlockState]):
+ 
+     BLOCK_HTML = (
+         r"^ {0,3}(?:"
+-        r"(?:</?" + _BLOCK_TAGS_PATTERN + r"(?:[ \t]+|\n|$))"
++        r"(?:</?" + _BLOCK_TAGS_PATTERN + r"(?:[ \t]+|\n|$|/?>))"
+         r"|<!--"  # comment
+         r"|<\?"  # script
+         r"|<![A-Z]"
+@@ -53,7 +53,7 @@ class BlockParser(Parser[BlockState]):
+     )
+ 
+     SPECIFICATION = {
+-        "blank_line": r"(^[ \t\v\f]*\n)+",
++        "blank_line": r"(^[ \t]*\n)+",
+         "atx_heading": r"^ {0,3}(?P<atx_1>#{1,6})(?!#+)(?P<atx_2>[ \t]*|[ \t]+.*?)$",
+         "setex_heading": r"^ {0,3}(?P<setext_1>=|-){1,}[ \t]*$",
+         "fenced_code": (
+@@ -133,6 +133,7 @@ class BlockParser(Parser[BlockState]):
+         code = _INDENT_CODE_TRIM.sub("", code)
+         code = code.strip("\n")
+         state.append_token({"type": "block_code", "raw": code, "style": "indent"})
++        _append_trailing_blank_line(state, end_pos)
+         return end_pos
+ 
+     def parse_fenced_code(self, m: Match[str], state: BlockState) -> Optional[int]:
+@@ -177,7 +178,7 @@ class BlockParser(Parser[BlockState]):
+         token = {"type": "block_code", "raw": code, "style": "fenced", "marker": marker}
+         if info:
+             info = unescape_char(info)
+-            token["attrs"] = {"info": info.strip()}
++            token["attrs"] = {"info": info.strip(" \t")}
+ 
+         state.append_token(token)
+         return end_pos
+@@ -186,7 +187,7 @@ class BlockParser(Parser[BlockState]):
+         """Parse token for ATX heading. An ATX heading is started with 1 to 6
+         symbol of ``#``."""
+         level = len(m.group("atx_1"))
+-        text = m.group("atx_2").strip(string.whitespace)
++        text = m.group("atx_2").strip(" \t")
+         # remove last #
+         if text:
+             text = _ATX_HEADING_TRIM.sub("", text)
+@@ -296,58 +297,50 @@ class BlockParser(Parser[BlockState]):
+         assert text is not None
+         lazy_line_starts: Set[int] = set()
+ 
+-        sc = self.compile_sc(["blank_line", "indent_code", "fenced_code"])
+-        require_marker = bool(sc.match(text))
++        # only an open paragraph in the block quote can take lazy
++        # continuation lines
++        tracker = _ParagraphTracker()
++        tracker.feed(text)
+ 
+         state.cursor += len(state.get_line(state.cursor))
+ 
+         end_pos: Optional[int] = None
+-        if require_marker:
+-            while state.cursor < state.cursor_max:
+-                quote = _parse_block_quote_line(state.get_line(state.cursor))
+-                if quote is None:
+-                    break
++        break_sc = self.compile_sc(
++            [
++                "blank_line",
++                "thematic_break",
++                "fenced_code",
++                "atx_heading",
++                "list",
++                "block_html",
++            ]
++        )
++        while state.cursor < state.cursor_max:
++            quote = _parse_block_quote_line(state.get_line(state.cursor))
++            if quote is not None:
+                 text += quote
++                tracker.feed(quote)
+                 state.cursor += len(state.get_line(state.cursor))
+-        else:
+-            prev_blank_line = False
+-            break_sc = self.compile_sc(
+-                [
+-                    "blank_line",
+-                    "thematic_break",
+-                    "fenced_code",
+-                    "list",
+-                    "block_html",
+-                ]
+-            )
+-            while state.cursor < state.cursor_max:
+-                quote = _parse_block_quote_line(state.get_line(state.cursor))
+-                if quote is not None:
+-                    text += quote
+-                    state.cursor += len(state.get_line(state.cursor))
+-                    if not quote.strip():
+-                        prev_blank_line = True
+-                    else:
+-                        prev_blank_line = False
+-                    continue
++                continue
+ 
+-                if prev_blank_line:
+-                    # CommonMark Example 249
+-                    # because of laziness, a blank line is needed between
+-                    # a block quote and a following paragraph
+-                    break
++            if not tracker.para_open:
++                # CommonMark Example 249
++                # because of laziness, a blank line is needed between
++                # a block quote and a following paragraph
++                break
+ 
+-                m4 = break_sc.match(state.src, state.cursor)
+-                if m4:
+-                    end_pos = self.parse_method(m4, state)
+-                    if end_pos:
+-                        break
++            m4 = break_sc.match(state.src, state.cursor)
++            if m4:
++                end_pos = self.parse_method(m4, state)
++                if end_pos:
++                    break
+ 
+-                # lazy continuation line
+-                line = state.get_line(state.cursor)
+-                lazy_line_starts.add(len(text))
+-                text += expand_leading_tab(line, 3)
+-                state.cursor += len(line)
++            # lazy continuation line
++            line = state.get_line(state.cursor)
++            lazy_line_starts.add(len(text))
++            text += expand_leading_tab(line, 3)
++            tracker.feed(line)
++            state.cursor += len(line)
+ 
+         # according to CommonMark Example 6, the second tab should be
+         # treated as 4 spaces
+@@ -389,6 +382,9 @@ class BlockParser(Parser[BlockState]):
+ 
+     def parse_raw_html(self, m: Match[str], state: BlockState) -> Optional[int]:
+         marker = m.group(0).strip()
++        if marker.endswith(">") and not marker.startswith("<!"):
++            # the block_html pattern can end with the end of the tag
++            marker = marker[:-1].rstrip("/")
+ 
+         # rule 2
+         if marker == "<!--":
+@@ -494,6 +490,7 @@ class BlockParser(Parser[BlockState]):
+         code = _INDENT_CODE_TRIM.sub("", code)
+         code = code.strip("\n")
+         state.append_token({"type": "block_code", "raw": code, "style": "indent"})
++        _append_trailing_blank_line(state, end_pos)
+         return end_pos
+ 
+     def _parse_plain_paragraph(self, state: BlockState, sc: Pattern[str]) -> bool:
+@@ -506,7 +503,7 @@ class BlockParser(Parser[BlockState]):
+                 break
+ 
+             line = state.get_line(pos)
+-            if not line.strip():
++            if not line.strip(" \t\n"):
+                 break
+ 
+             pos += len(line)
+@@ -519,6 +516,15 @@ class BlockParser(Parser[BlockState]):
+         return True
+ 
+ 
++def _append_trailing_blank_line(state: BlockState, end_pos: int) -> None:
++    # blank lines consumed at the end of a block are between two blocks of
++    # a container, which makes a list loose
++    if state.parent is not None and end_pos < state.cursor_max:
++        start = state.src.rfind("\n", 0, end_pos - 1) + 1
++        if not state.src[start:end_pos].strip(" \t\n"):
++            state.append_token({"type": "blank_line"})
++
++
+ def _parse_html_to_end(state: BlockState, end_marker: str, start_pos: int) -> int:
+     marker_pos = state.src.find(end_marker, start_pos)
+     if marker_pos == -1:
+@@ -598,7 +604,7 @@ def _find_indent_code_end(src: str, start: int, end: int) -> int:
+         newline = src.find("\n", pos, end)
+         line_end = end if newline < 0 else newline + 1
+         line = src[pos:line_end]
+-        if _is_indent_code_line(line) or not line.strip():
++        if _is_indent_code_line(line) or not line.strip(" \t\n"):
+             pos = line_end
+             continue
+         break
+diff --git a/src/mistune/directives/_fenced.py b/src/mistune/directives/_fenced.py
+index 31a20dd..b65de24 100644
+--- a/src/mistune/directives/_fenced.py
++++ b/src/mistune/directives/_fenced.py
+@@ -1,5 +1,5 @@
+ import re
+-from typing import TYPE_CHECKING, List, Match, Optional
++from typing import TYPE_CHECKING, List, Match, Optional, Tuple
+ 
+ from ._base import BaseDirective, DirectiveParser, DirectivePlugin
+ 
+@@ -20,6 +20,46 @@ _directive_re = re.compile(
+ )
+ 
+ 
++_fence_line_re = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,}|:{3,}|([^\s\w])\2{2,})(?P<info>[^\n]*)$")
++
++
++def _find_directive_end(src: str, pos: int, marker: str, markers: str) -> Optional[Tuple[int, int]]:
++    """Find the closing fence of a directive opened with ``marker``.
++
++    Nested directives (with any fence length) and fenced code blocks inside
++    the content are skipped, so that their closing fences can not close the
++    outer directive. Returns the start and end position of the closing line.
++    """
++    # the rest of the opening line belongs to the directive
++    newline = src.find("\n", pos)
++    if newline == -1:
++        return None
++    pos = newline + 1
++
++    # stack of open fences: (fence char, fence length, is_code)
++    stack: List[Tuple[str, int, bool]] = [(marker[0], len(marker), False)]
++    while pos < len(src):
++        newline = src.find("\n", pos)
++        line_end = len(src) if newline == -1 else newline + 1
++        line = src[pos:line_end].rstrip("\n")
++        m = _fence_line_re.match(line)
++        if m:
++            fence = m.group("fence")
++            info = m.group("info")
++            char, length, is_code = stack[-1]
++            if fence[0] == char and len(fence) >= length and not info.strip(" \t"):
++                stack.pop()
++                if not stack:
++                    return pos, line_end
++            elif not is_code:
++                if fence[0] in markers and _type_re.match(info):
++                    stack.append((fence[0], len(fence), False))
++                elif fence[0] in "`~" and not (fence[0] == "`" and "`" in info):
++                    stack.append((fence[0], len(fence), True))
++        pos = line_end
++    return None
++
++
+ class FencedParser(DirectiveParser):
+     name = "fenced_directive"
+ 
+@@ -104,22 +144,14 @@ class FencedDirective(BaseDirective):
+         )
+ 
+     def _process_directive(self, block: "BlockParser", marker: str, start: int, state: "BlockState") -> Optional[int]:
+-        mlen = len(marker)
+         cursor_start = start + len(marker)
+-
+-        _end_pattern = (
+-            r"^ {0,3}" + marker[0] + "{" + str(mlen) + r",}"
+-            r"[ \t]*(?:\n|$)"
+-        )
+-        _end_re = re.compile(_end_pattern, re.M)
+-
+-        _end_m = _end_re.search(state.src, cursor_start)
+-        if _end_m:
+-            text = state.src[cursor_start : _end_m.start()]
+-            end_pos = _end_m.end()
+-        else:
++        end = _find_directive_end(state.src, cursor_start, marker, self.markers)
++        if end is None:
+             text = state.src[cursor_start:]
+             end_pos = state.cursor_max
++        else:
++            text = state.src[cursor_start : end[0]]
++            end_pos = end[1]
+ 
+         m = _directive_re.match(text)
+         if not m:
+@@ -149,3 +181,7 @@ class FencedDirective(BaseDirective):
+             md.block.register("fenced_code", None, self.parse_fenced_code)
+         else:
+             self.register_block_parser(md, "fenced_code")
++            # directives can be nested in block quotes and list items
++            for rules in (md.block.block_quote_rules, md.block.list_rules):
++                if self.parser.name not in rules:
++                    md.block.insert_rule(rules, self.parser.name, before="fenced_code")
+diff --git a/src/mistune/directives/_rst.py b/src/mistune/directives/_rst.py
+index d65ded2..55f2cf0 100644
+--- a/src/mistune/directives/_rst.py
++++ b/src/mistune/directives/_rst.py
+@@ -33,7 +33,7 @@ class RSTParser(DirectiveParser):
+     def parse_content(m: Match[str]) -> str:
+         text = m.group("text")
+         leading = len(m.group(1)) + 2
+-        return "\n".join(line[leading:] for line in text.splitlines()) + "\n"
++        return "\n".join(line[leading:] for line in text.rstrip("\n").split("\n")) + "\n"
+ 
+ 
+ class RSTDirective(BaseDirective):
+diff --git a/src/mistune/inline_parser.py b/src/mistune/inline_parser.py
+index c2b7ac1..8f78020 100644
+--- a/src/mistune/inline_parser.py
++++ b/src/mistune/inline_parser.py
+@@ -53,10 +53,10 @@ class InlineParser(Parser[InlineState]):
+     state_cls = InlineState
+ 
+     #: linebreak leaves two spaces at the end of line
+-    STD_LINEBREAK = r"(?:\\| {2,})\n\s*"
++    STD_LINEBREAK = r"(?:\\| {2,})\n[ \t]*"
+ 
+     #: every new line becomes <br>
+-    HARD_LINEBREAK = r" *\n\s*"
++    HARD_LINEBREAK = r" *\n[ \t]*"
+ 
+     # we only need to find the start pattern of an inline token
+     SPECIFICATION = {
+diff --git a/src/mistune/list_parser.py b/src/mistune/list_parser.py
+index b6f3954..21b1671 100644
+--- a/src/mistune/list_parser.py
++++ b/src/mistune/list_parser.py
+@@ -4,8 +4,9 @@ from __future__ import annotations
+ 
+ import re
+ from dataclasses import dataclass
+-from typing import TYPE_CHECKING, Any, Iterable, Match, Optional, Pattern, cast
++from typing import TYPE_CHECKING, Any, Iterable, Match, Optional, Pattern, Tuple, cast
+ 
++from .helpers import BLOCK_TAGS, HTML_ATTRIBUTES, HTML_TAGNAME
+ from .util import strip_end
+ 
+ if TYPE_CHECKING:
+@@ -18,7 +19,149 @@ LIST_PATTERN = (
+     r"(?P<list_3>[ \t]*|[ \t].+)$"
+ )
+ 
+-_LINE_HAS_TEXT = re.compile(r"(\s*)\S")
++_LINE_HAS_TEXT = re.compile(r"[ \t]*[^ \t\n]")
++
++_FENCE_START = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
++_ATX_START = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
++_THEMATIC_BREAK = re.compile(r"^ {0,3}(?:(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})$")
++_SETEXT_UNDERLINE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
++_QUOTE_START = re.compile(r"^ {0,3}> ?")
++_ITEM_START = re.compile(r"^ {0,3}(?:[*+-]|\d{1,9}[.)])(?=[ \t]|$)")
++_HTML_END_MARKERS = (
++    (
++        re.compile(r"^ {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)", re.I),
++        re.compile(r"</(?:script|pre|style|textarea)>", re.I),
++    ),
++    (re.compile(r"^ {0,3}<!--"), re.compile(r"-->")),
++    (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
++    (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
++    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),
++)
++_HTML_BLOCK_START = re.compile(
++    r"^ {0,3}</?(?:" + "|".join(BLOCK_TAGS) + r")(?:[ \t]|$|/?>)",
++    re.I,
++)
++_HTML_TAG_LINE = re.compile(
++    r"^ {0,3}(?:<" + HTML_TAGNAME + HTML_ATTRIBUTES + r"[ \t]*/?>|</" + HTML_TAGNAME + r"[ \t]*>)[ \t]*$"
++)
++
++
++class _ParagraphTracker:
++    """Track whether the content of a container block ends with an open
++    paragraph, which is the only block that can take lazy continuation
++    lines."""
++
++    def __init__(self) -> None:
++        self._para_open = False
++        self._pending: list[str] = []
++        self.fence: Optional[Tuple[str, int]] = None
++        self.html_open = False
++        self.html_end: Optional[Pattern[str]] = None
++        self.quote: Optional["_ParagraphTracker"] = None
++
++    @property
++    def para_open(self) -> bool:
++        # lines are processed lazily, most containers never need to know
++        if self._pending:
++            pending = self._pending
++            self._pending = []
++            for line in pending:
++                self._feed(line)
++        return self._para_open
++
++    @para_open.setter
++    def para_open(self, value: bool) -> None:
++        self._para_open = value
++
++    def feed(self, line: str) -> None:
++        self._pending.append(line)
++
++    def feed_text(self, text: str) -> None:
++        if text.endswith("\n"):
++            text = text[:-1]
++        for line in text.split("\n"):
++            self.feed(line)
++
++    def _feed(self, line: str) -> None:
++        line = _expand_leading_tabs(line.rstrip("\n"))
++        if self.fence is not None:
++            m = _FENCE_START.match(line)
++            if m and m.group(1)[0] == self.fence[0] and len(m.group(1)) >= self.fence[1] and not m.group(2).strip(" \t"):
++                self.fence = None
++            self.para_open = False
++            return
++
++        if self.html_open:
++            if self.html_end is None:
++                if not line.strip(" \t"):
++                    self.html_open = False
++            elif self.html_end.search(line):
++                self.html_open = False
++                self.html_end = None
++            self.para_open = False
++            return
++
++        if not line.strip(" \t"):
++            self.para_open = False
++            self.quote = None
++            return
++
++        quote = _QUOTE_START.match(line)
++        if quote:
++            if self.quote is None:
++                self.quote = _ParagraphTracker()
++            self.quote.feed(line[quote.end() :])
++            self.para_open = self.quote.para_open
++            return
++        if self.quote is not None and self.para_open:
++            # a lazy continuation line of the paragraph in the block quote
++            return
++        self.quote = None
++        self.para_open = self._feed_block(line)
++
++    def _feed_block(self, line: str) -> bool:
++        if _count_indent(line) >= 4:
++            # indented code can not interrupt a paragraph
++            return self.para_open
++
++        m = _FENCE_START.match(line)
++        if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
++            self.fence = (m.group(1)[0], len(m.group(1)))
++            return False
++
++        if _ATX_START.match(line) or _THEMATIC_BREAK.match(line):
++            return False
++
++        if self.para_open and _SETEXT_UNDERLINE.match(line):
++            return False
++
++        for start, end in _HTML_END_MARKERS:
++            m = start.match(line)
++            if m:
++                if not end.search(line, m.end()):
++                    self.html_open = True
++                    self.html_end = end
++                return False
++
++        if _HTML_BLOCK_START.match(line) or (not self.para_open and _HTML_TAG_LINE.match(line)):
++            self.html_open = True
++            self.html_end = None
++            return False
++
++        m = _ITEM_START.match(line)
++        if m:
++            rest = line[m.end() :]
++            if not rest.strip(" \t"):
++                return False
++            child = _ParagraphTracker()
++            child.feed(rest[1:] if _count_indent(rest) >= 5 else rest.lstrip(" \t"))
++            # keep the state of a nested block which is still open
++            self.fence = child.fence
++            self.html_open = child.html_open
++            self.html_end = child.html_end
++            return child.para_open
++
++        return True
+ 
+ 
+ @dataclass
+@@ -53,7 +196,7 @@ def parse_list(block: "BlockParser", m: Match[str], state: "BlockState") -> int:
+     """Parse tokens for ordered and unordered list."""
+     item = _create_list_marker(m, "list")
+     text = item.text
+-    if not text.strip():
++    if not text.strip(" \t\n"):
+         # Example 285
+         # an empty list item cannot interrupt a paragraph
+         end_pos = state.append_paragraph()
+@@ -105,9 +248,18 @@ def parse_list(block: "BlockParser", m: Match[str], state: "BlockState") -> int:
+         return end_pos
+ 
+     state.append_token(token)
++    if state.parent is not None and state.cursor < state.cursor_max and _ends_with_blank_line(state.src, state.cursor):
++        # the blank lines at the end of the list are between two blocks of
++        # the parent container, they make a parent list loose
++        state.append_token({"type": "blank_line"})
+     return state.cursor
+ 
+ 
++def _ends_with_blank_line(src: str, pos: int) -> bool:
++    start = src.rfind("\n", 0, pos - 1) + 1
++    return not src[start:pos].strip(" \t\n")
++
++
+ def _transform_tight_list(token: dict[str, Any]) -> None:
+     if token["tight"]:
+         # reset tight list item
+@@ -170,24 +322,28 @@ def _collect_list_item_lines(
+     src = ""
+     next_item = None
+     prev_blank_line = False
++    tracker = _ParagraphTracker()
++    tracker.feed_text(text)
+     while state.cursor < state.cursor_max:
+         raw_line = state.get_line(state.cursor)
+         next_pos = state.cursor + len(raw_line)
+         if block.BLANK_LINE.match(raw_line):
+             src += "\n"
+             prev_blank_line = True
++            tracker.feed("")
+             state.cursor = next_pos
+             continue
+ 
+         has_continuation = _has_continuation_indent(raw_line, continue_width)
+         if has_continuation:
+-            if prev_blank_line and not text and not src.strip():
++            if prev_blank_line and not text and not src.strip(" \t\n"):
+                 # Example 280
+                 # A list item can begin with at most one blank line
+                 break
+ 
+             src += raw_line
+             prev_blank_line = False
++            tracker.feed(_strip_continuation_indent(raw_line.rstrip("\n"), continue_width))
+             state.cursor = next_pos
+             continue
+ 
+@@ -212,7 +368,13 @@ def _collect_list_item_lines(
+             # not a continue line, and previous line is blank
+             break
+ 
++        if not tracker.para_open:
++            # only a paragraph can have lazy continuation lines, an empty
++            # list item can not have lazy continuation lines either
++            break
++
+         src += raw_line
++        tracker.feed(line)
+         state.cursor = next_pos
+ 
+     return _ListItemLines(src)
+@@ -278,9 +440,9 @@ def _match_list_item_break(
+ 
+ def _get_list_bullet(c: str) -> str:
+     if c == ".":
+-        bullet = r"\d{0,9}\."
++        bullet = r"\d{1,9}\."
+     elif c == ")":
+-        bullet = r"\d{0,9}\)"
++        bullet = r"\d{1,9}\)"
+     elif c == "*":
+         bullet = r"\*"
+     elif c == "+":
+diff --git a/src/mistune/markdown.py b/src/mistune/markdown.py
+index 6dbdbf5..15e4b39 100644
+--- a/src/mistune/markdown.py
++++ b/src/mistune/markdown.py
+@@ -65,7 +65,7 @@ class Markdown:
+                 text = tok.pop("text")
+                 # process inline text
+                 # avoid striping emsp or other unicode spaces
+-                tok["children"] = self.inline(text.strip(" \r\n\t\f"), state.env)
++                tok["children"] = self.inline(text.strip(" \r\n\t"), state.env)
+             yield tok
+ 
+     def parse(self, s: str, state: Optional[BlockState] = None) -> Tuple[Union[str, List[Dict[str, Any]]], BlockState]:
+diff --git a/src/mistune/plugins/abbr.py b/src/mistune/plugins/abbr.py
+index e29b7b5..783a2b4 100644
+--- a/src/mistune/plugins/abbr.py
++++ b/src/mistune/plugins/abbr.py
+@@ -27,7 +27,7 @@ def parse_ref_abbr(block: "BlockParser", m: Match[str], state: "BlockState") ->
+         ref = {}
+     key = m.group("abbr_key")
+     text = m.group("abbr_text")
+-    ref[key] = text.strip()
++    ref[key] = text.strip(" \t\n")
+     state.env["ref_abbrs"] = ref
+     # abbr definition can split paragraph
+     state.append_token({"type": "blank_line"})
+diff --git a/src/mistune/plugins/def_list.py b/src/mistune/plugins/def_list.py
+index 92cf169..9cc87c2 100644
+--- a/src/mistune/plugins/def_list.py
++++ b/src/mistune/plugins/def_list.py
+@@ -37,7 +37,7 @@ def _parse_def_item(
+     head: str,
+     definitions: List[Tuple[str, bool]],
+ ) -> Iterable[Dict[str, Any]]:
+-    for line in head.splitlines():
++    for line in head.rstrip("\n").split("\n"):
+         yield {
+             "type": "def_list_head",
+             "text": line,
+@@ -118,13 +118,13 @@ def _scan_definition_tail(src: str, pos: int, max_pos: int) -> int:
+         if DD_START_RE.match(line):
+             break
+ 
+-        if line.strip():
++        if line.strip(" \t\n"):
+             pos += len(line)
+             continue
+ 
+         while pos < max_pos:
+             line = _get_line(src, pos, max_pos)
+-            if line.strip():
++            if line.strip(" \t\n"):
+                 break
+             pos += len(line)
+ 
+diff --git a/src/mistune/plugins/footnotes.py b/src/mistune/plugins/footnotes.py
+index 8783304..8ffc83c 100644
+--- a/src/mistune/plugins/footnotes.py
++++ b/src/mistune/plugins/footnotes.py
+@@ -66,23 +66,23 @@ def parse_footnote_item(block: "BlockParser", key: str, index: int, state: Block
+         raise ValueError("Missing 'ref_footnotes'.")
+     text = ref[key]
+ 
+-    lines = text.splitlines()
++    lines = text.rstrip("\n").split("\n")
+     second_line = None
+     for second_line in lines[1:]:
+         if second_line:
+             break
+ 
+     if second_line:
+-        spaces = len(second_line) - len(second_line.lstrip())
++        spaces = len(second_line) - len(second_line.lstrip(" \t"))
+         pattern = re.compile(r"^ {" + str(spaces) + r",}", flags=re.M)
+-        text = pattern.sub("", text).strip()
++        text = pattern.sub("", text).strip(" \t\n")
+ 
+         footer_state = BlockState()
+         footer_state.process(text)
+         block.parse(footer_state)
+         children = footer_state.tokens
+     else:
+-        text = text.strip()
++        text = text.strip(" \t\n")
+         children = [{"type": "paragraph", "text": text}]
+     return {"type": "footnote_item", "children": children, "attrs": {"key": key, "index": index}}
+ 
+diff --git a/src/mistune/plugins/spoiler.py b/src/mistune/plugins/spoiler.py
+index 3d2c69e..af97d73 100644
+--- a/src/mistune/plugins/spoiler.py
++++ b/src/mistune/plugins/spoiler.py
+@@ -53,7 +53,7 @@ def parse_inline_spoiler(inline: "InlineParser", m: Match[str], state: "InlineSt
+     close = state.delimiters.find("!<", pos + 1)
+     if close is None or state.src.find("\n", pos, close) >= 0:
+         return None
+-    text = state.src[pos:close].strip()
++    text = state.src[pos:close].strip(" \t")
+     if not text:
+         return None
+     new_state = state.copy()
+diff --git a/src/mistune/plugins/table.py b/src/mistune/plugins/table.py
+index d48b4fc..510e201 100644
+--- a/src/mistune/plugins/table.py
++++ b/src/mistune/plugins/table.py
+@@ -107,7 +107,7 @@ def _process_thead(header: str, align: str) -> Union[Tuple[None, None], Tuple[Di
+             aligns.append(None)
+ 
+     children: List[Dict[str, Any]] = [
+-        {"type": "table_cell", "text": text.strip(), "attrs": {"align": aligns[i], "head": True}}
++        {"type": "table_cell", "text": text.strip(" \t"), "attrs": {"align": aligns[i], "head": True}}
+         for i, text in enumerate(headers)
+     ]
+     thead: Dict[str, Any] = {"type": "table_head", "children": children}
+@@ -120,7 +120,7 @@ def _process_row(text: str, aligns: List[Optional[str]]) -> Optional[Dict[str, A
+         return None
+ 
+     children: List[Dict[str, Any]] = [
+-        {"type": "table_cell", "text": text.strip(), "attrs": {"align": aligns[i], "head": False}}
++        {"type": "table_cell", "text": text.strip(" \t"), "attrs": {"align": aligns[i], "head": False}}
+         for i, text in enumerate(cells)
+     ]
+     return {"type": "table_row", "children": children}
+@@ -158,10 +158,10 @@ def _split_table_cells(text: str) -> List[str]:
+     pos = 0
+     while pos < len(text):
+         if text[pos] == "|" and not _is_escaped_pipe(text, pos):
+-            cells.append(text[start:pos].strip())
++            cells.append(text[start:pos].strip(" \t"))
+             start = pos + 1
+         pos += 1
+-    cells.append(text[start:].strip())
++    cells.append(text[start:].strip(" \t"))
+     return cells
+ 
+ 
+diff --git a/src/mistune/renderers/_list.py b/src/mistune/renderers/_list.py
+index 27b65f6..b6a9a32 100644
+--- a/src/mistune/renderers/_list.py
++++ b/src/mistune/renderers/_list.py
+@@ -44,7 +44,7 @@ def render_list_item(
+         prev = tok
+         text += renderer.render_token(tok, state)
+ 
+-    lines = text.splitlines()
++    lines = (text[:-1] if text.endswith("\n") else text).split("\n")
+     text = (lines[0] if lines else "") + "\n"
+     prefix = " " * len(leading)
+     for line in lines[1:]:
+diff --git a/src/mistune/renderers/html.py b/src/mistune/renderers/html.py
+index 09e7b04..c4d4d0e 100644
+--- a/src/mistune/renderers/html.py
++++ b/src/mistune/renderers/html.py
+@@ -169,9 +169,9 @@ class HTMLRenderer(BaseRenderer):
+     def block_code(self, code: str, info: Optional[str] = None) -> str:
+         attrs: Dict[str, object] = {}
+         if info is not None:
+-            info = safe_entity(info.strip())
++            info = safe_entity(info.strip(" \t"))
+         if info:
+-            lang = info.split(None, 1)[0]
++            lang = re.split(r"[ \t]", info, 1)[0]
+             attrs["class"] = "language-" + lang
+         return "<pre><code" + self.render_attrs(attrs) + ">" + escape_text(code) + "</code></pre>\n"
+ 
+diff --git a/src/mistune/renderers/markdown.py b/src/mistune/renderers/markdown.py
+index 4a61a04..d48e157 100644
+--- a/src/mistune/renderers/markdown.py
++++ b/src/mistune/renderers/markdown.py
+@@ -1,18 +1,36 @@
+ import re
+-from textwrap import indent
+-from typing import Any, Dict, Iterable, cast
++import string
++from typing import Any, Dict, Iterable, List, Optional, cast
+ 
+ from ..core import BaseRenderer, BlockState
+-from ..util import strip_end
+-from ._list import render_list, render_list_item
++from ..util import escape_url, strip_end
+ 
+ fenced_re = re.compile(r"^ {0,3}([`~]+)", re.M)
+ _backtick_run_re = re.compile(r"`+")
+-_literal_inline_markers_re = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);|([\\`<!&])")
++_entity_re = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);")
++_url_entity_re = re.compile(r"&(?=#[0-9]+;|#[xX][0-9a-fA-F]+;|[a-zA-Z][a-zA-Z0-9]*;)")
++_info_escape_re = re.compile(r"\\(?=[" + re.escape(string.punctuation) + r"])")
++_atx_closing_re = re.compile(r"(^|[ \t])(#+)[ \t]*$")
++_inline_math_re = re.compile(r"\$(?!\$)(?!\s)(?:[^$\\\n]|\\.)+?\$")
+ 
+ #: leading markers that would be parsed as a new block (list, heading, block
+ #: quote) if they appear unescaped at the start of a line.
+-_block_prefix_re = re.compile(r"^(\s*)(>|[-+*]|#{1,6}|\d{1,9}[.)])(\s|$)")
++_block_prefix_re = re.compile(r"^([ \t]*)(>|[-+*]|#{1,6}|\d{1,9}[.)])([ \t]|$)")
++#: lines that would be parsed as a setext underline or a thematic break
++_underline_re = re.compile(r"^[ \t]*(?:=+|-+)[ \t]*$|^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$")
++#: line starts that are syntax of plugins: definition lists, fenced
++#: directives with colons and rst directives
++_plugin_prefix_re = re.compile(r"^[ \t]*(?::[ \t:]|:$|\.\.[ \t])")
++
++#: characters that are always escaped in text
++_ALWAYS_ESCAPE = frozenset("\\`[]<!~^$")
++
++#: an internal marker for the start of a line in inline text, other line
++#: breaks are in the raw content of inline tokens, e.g. inline HTML
++_LINE_START = "\uf8ff\ue000\uf8ff"
++
++#: the largest number of an ordered list marker
++_MAX_LIST_NUMBER = 999999999
+ 
+ 
+ class MarkdownRenderer(BaseRenderer):
+@@ -20,74 +38,142 @@ class MarkdownRenderer(BaseRenderer):
+ 
+     NAME = "markdown"
+ 
++    def __init__(self) -> None:
++        super(MarkdownRenderer, self).__init__()
++        self._inline_level = 0
++        self._pipe = "\\|"
++        self._link_level = 0
++
+     def __call__(self, tokens: Iterable[Dict[str, Any]], state: BlockState) -> str:
++        tokens = list(tokens)
+         out = self.render_tokens(tokens, state)
++        if state.parent is not None:
++            # a nested document, e.g. the footnotes section
++            return strip_end(out + "\n")
++        refs = "\n\n".join(self.render_referrences(state))
++        if not refs and tokens and tokens[-1]["type"] == "block_html":
++            # a HTML block at the end of the document can contain trailing
++            # blank lines, when it has no end condition
++            raw = cast(str, tokens[-1]["raw"])
++            body = self.render_tokens(tokens[:-1], state).strip("\n")
++            if raw.endswith("\n"):
++                return (strip_end(body + "\n") + "\n" if body else "") + raw
+         # special handle for line breaks
+-        out += "\n\n".join(self.render_referrences(state)) + "\n"
++        out += refs + "\n"
+         return strip_end(out)
+ 
+     def render_referrences(self, state: BlockState) -> Iterable[str]:
+         ref_links = state.env["ref_links"]
+         for key in ref_links:
+             attrs = ref_links[key]
+-            text = "[" + attrs["label"] + "]: " + attrs["url"]
++            text = "[" + attrs["label"] + "]: " + _render_link_destination(attrs["url"])
+             title = attrs.get("title")
+             if title:
+-                text += ' "' + title + '"'
++                text += " " + _render_link_title(title)
+             yield text
+ 
++        ref_abbrs = state.env.get("ref_abbrs")
++        if ref_abbrs:
++            for key in ref_abbrs:
++                text = "*[" + key + "]:"
++                title = ref_abbrs[key]
++                if title:
++                    text += " " + title
++                yield text
++
+     def render_children(self, token: Dict[str, Any], state: BlockState) -> str:
+         children = token["children"]
+         return self.render_tokens(children, state)
+ 
++    def render_inline(self, token: Dict[str, Any], state: BlockState, multiline: Optional[bool] = None) -> str:
++        """Render the inline children of a block token."""
++        if multiline is None:
++            multiline = _has_line_break(token)
++        pipe = self._pipe
++        # lines with pipes could be parsed as a table, so pipes in text are
++        # written as entities when the text has multiple lines
++        self._pipe = "&#124;" if multiline else "\\|"
++        self._inline_level += 1
++        try:
++            return _escape_block_prefix(self.render_children(token, state))
++        finally:
++            self._inline_level -= 1
++            self._pipe = pipe
++
++    def iter_tokens(self, tokens: Iterable[Dict[str, Any]], state: BlockState) -> Iterable[str]:
++        tokens = list(tokens)
++        outputs: List[str] = []
++        prev_out = ""
++        for index, tok in enumerate(tokens):
++            if tok["type"] == "text":
++                prev_tok = tokens[index - 1] if index else None
++                next_tok = tokens[index + 1] if index + 1 < len(tokens) else None
++                out = _escape_text(cast(str, tok["raw"]), _edge_char(prev_tok), _edge_char(next_tok), self._pipe)
++                if self._link_level:
++                    # a bare URL would be a link inside of the link text
++                    out = _bare_url_start_re.sub("&#104;", out)
++            else:
++                if tok["type"] in _EMPHASIS_TYPES and _ends_with_delimiter(prev_out):
++                    # do not merge with the delimiters of the previous token
++                    tok.setdefault("_char", "_" if prev_out[-1] == "*" else "*")
++                if tok["type"] == "linebreak" and (
++                    not prev_out or prev_out[-1].isspace() or prev_out.endswith(_LINE_START)
++                ):
++                    # spaces before the line break would be lost
++                    out = "\\\n" + _LINE_START
++                else:
++                    out = self.render_token(tok, state)
++            if out:
++                prev_out = out
++            outputs.append(out)
++
++        for index, tok in enumerate(tokens[:-1]):
++            if tok["type"] == "link" and not outputs[index].startswith("<") and _is_url_link(tok):
++                raw = cast(str, tok["children"][0]["raw"])
++                m = _url_link_re.match(raw + outputs[index + 1])
++                if m and m.end() == len(raw):
++                    continue
++                # the following text would become a part of the bare URL, the
++                # URL in the link text must not be a link by itself
++                text = "&#" + str(ord(raw[0])) + ";" + _escape_text(raw[1:], None, None, self._pipe)
++                outputs[index] = "[" + text + "]" + _render_link_target(tok)
++        return outputs
++
+     def text(self, token: Dict[str, Any], state: BlockState) -> str:
+-        raw = cast(str, token["raw"])
+-        # a text token that is made up entirely of "*"/"_" is a literal
+-        # emphasis delimiter -- either an escaped marker from the source
+-        # (``\*``) or an unmatched leftover -- so every character must stay
+-        # escaped, or it would re-parse as emphasis on the round-trip. Prose
+-        # punctuation such as ``2 * 3`` or ``snake_case`` arrives mixed with
+-        # other characters and is left untouched.
+-        if raw and all(c in "*_" for c in raw):
+-            return "".join("\\" + c for c in raw)
+-        # Keep literal escapes, code delimiters, image introducers, HTML
+-        # delimiters and entity prefixes from becoming markup on re-parse.
+-        # Complete entity references already in this token keep their meaning;
+-        # escaped ampersands arrive in a separate text token.
+-        return _literal_inline_markers_re.sub(lambda m: "\\" + m[1] if m[1] else m[0], raw)
++        return _escape_text(cast(str, token["raw"]), None, None, self._pipe)
+ 
+     def emphasis(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "*" + self.render_children(token, state) + "*"
++        char = cast(str, token.pop("_char", "*"))
++        _set_edge_chars(token, char)
++        return char + self.render_children(token, state) + char
+ 
+     def strong(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "**" + self.render_children(token, state) + "**"
++        char = cast(str, token.pop("_char", "*"))
++        _set_edge_chars(token, char)
++        return char * 2 + self.render_children(token, state) + char * 2
+ 
+     def link(self, token: Dict[str, Any], state: BlockState) -> str:
+-        label = cast(str, token.get("label"))
+-        text = self.render_children(token, state)
+-        out = "[" + text + "]"
+-        if label:
+-            return out + "[" + label + "]"
+-
+-        attrs = token["attrs"]
+-        url: str = attrs["url"]
+-        title = attrs.get("title")
+-        if text == url and not title:
+-            return "<" + text + ">"
+-        elif "mailto:" + text == url and not title:
+-            return "<" + text + ">"
+-
+-        out += "("
+-        if "(" in url or ")" in url:
+-            out += "<" + url + ">"
+-        else:
+-            out += url
+-        if title:
+-            out += ' "' + title + '"'
+-        return out + ")"
++        autolink = token.get("_autolink")
++        if autolink:
++            return cast(str, autolink)
++
++        children = token.get("children") or []
++        if _is_autolink(token):
++            return "<" + cast(str, children[0]["raw"]) + ">"
++        if _is_url_link(token):
++            # a bare URL of the url plugin
++            return cast(str, children[0]["raw"])
++        return "[" + self.render_link_text(token, state) + "]" + _render_link_target(token)
+ 
+     def image(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "!" + self.link(token, state)
++        return "![" + self.render_link_text(token, state) + "]" + _render_link_target(token)
++
++    def render_link_text(self, token: Dict[str, Any], state: BlockState) -> str:
++        self._link_level += 1
++        try:
++            return self.render_children(token, state)
++        finally:
++            self._link_level -= 1
+ 
+     def codespan(self, token: Dict[str, Any], state: BlockState) -> str:
+         code = cast(str, token["raw"])
+@@ -96,16 +182,22 @@ class MarkdownRenderer(BaseRenderer):
+         longest = max((len(run) for run in _backtick_run_re.findall(code)), default=0)
+         fence = "`" * (longest + 1)
+         # A space on each side keeps the delimiter from merging with a leading or
+-        # trailing backtick; the parser strips this padding back off.
+-        if code.startswith("`") or code.endswith("`"):
++        # trailing backtick; the parser strips this padding back off. Content
++        # that starts and ends with a space needs the padding as well, or the
++        # parser would strip its own spaces.
++        if (
++            code.startswith("`")
++            or code.endswith("`")
++            or (code.startswith(" ") and code.endswith(" ") and code.strip(" "))
++        ):
+             return fence + " " + code + " " + fence
+         return fence + code + fence
+ 
+     def linebreak(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "  \n"
++        return "  \n" + _LINE_START
+ 
+     def softbreak(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "\n"
++        return "\n" + _LINE_START
+ 
+     def blank_line(self, token: Dict[str, Any], state: BlockState) -> str:
+         return ""
+@@ -114,20 +206,32 @@ class MarkdownRenderer(BaseRenderer):
+         return cast(str, token["raw"])
+ 
+     def paragraph(self, token: Dict[str, Any], state: BlockState) -> str:
+-        text = self.render_children(token, state)
+-        return _escape_block_prefix(text) + "\n\n"
++        return self.render_inline(token, state) + "\n\n"
+ 
+     def heading(self, token: Dict[str, Any], state: BlockState) -> str:
+         level = cast(int, token["attrs"]["level"])
++        text = self.render_inline(token, state)
++        if "\n" in text and level <= 2:
++            # only a setext heading can have multiple lines
++            marker = "=" if level == 1 else "-"
++            width = max(len(line) for line in text.split("\n"))
++            return text + "\n" + marker * max(width, 3) + "\n\n"
++
++        text = text.replace("\n", " ")
++        # a trailing "#" sequence would be parsed as the closing sequence
++        m = _atx_closing_re.search(text)
++        if m:
++            text = text[: m.start(2)] + "\\" + text[m.start(2) :]
+         marker = "#" * level
+-        text = self.render_children(token, state)
++        if not text:
++            return marker + "\n\n"
+         return marker + " " + text + "\n\n"
+ 
+     def thematic_break(self, token: Dict[str, Any], state: BlockState) -> str:
+         return "***\n\n"
+ 
+     def block_text(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return _escape_block_prefix(self.render_children(token, state)) + "\n"
++        return self.render_inline(token, state) + "\n"
+ 
+     def block_code(self, token: Dict[str, Any], state: BlockState) -> str:
+         attrs = token.get("attrs", {})
+@@ -136,34 +240,65 @@ class MarkdownRenderer(BaseRenderer):
+         if code and code[-1] != "\n":
+             code += "\n"
+ 
+-        marker = token.get("marker")
+-        if not marker:
++        marker = cast(Optional[str], token.get("marker"))
++        if not marker or _has_closing_fence(code, marker):
+             marker = _get_fenced_marker(code)
+-        marker2 = cast(str, marker)
+-        return marker2 + info + "\n" + code + marker2 + "\n\n"
++        if info:
++            info = _info_escape_re.sub(r"\\\\", info)
++            if marker[0] == "`" and "`" in info:
++                marker = _get_tilde_marker(code)
++            if info[0] == marker[0]:
++                info = "\\" + info
++        return marker + info + "\n" + code + marker + "\n\n"
+ 
+     def block_quote(self, token: Dict[str, Any], state: BlockState) -> str:
+-        text = indent(self.render_children(token, state), "> ", lambda _: True)
+-        text = text.rstrip("> \n")
+-        return text + "\n\n"
++        text = self.render_children(token, state).strip("\n")
++        return _prefix_lines(text, ">") + "\n\n"
+ 
+     def block_html(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return cast(str, token["raw"]) + "\n\n"
++        return cast(str, token["raw"]).rstrip("\n") + "\n\n"
+ 
+     def block_error(self, token: Dict[str, Any], state: BlockState) -> str:
+         return ""
+ 
+     def list(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return render_list(self, token, state)
++        attrs = token["attrs"]
++        tight = token.get("tight", True)
++        bullet = cast(str, token.get("bullet", "-"))
++        start = cast(int, attrs.get("start", 1))
++        items = []
++        for index, item in enumerate(token["children"]):
++            if attrs.get("ordered"):
++                number = start + index
++                if number > _MAX_LIST_NUMBER:
++                    number = start
++                leading = str(number) + bullet + " "
++            else:
++                leading = bullet + " "
++            item["parent"] = {"leading": leading, "tight": tight}
++            try:
++                items.append(self.render_token(item, state).strip("\n"))
++            finally:
++                item.pop("parent", None)
++
++        sep = "\n" if tight else "\n\n"
++        return sep.join(items) + "\n\n"
+ 
+     def list_item(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return render_list_item(self, token, state)
++        parent = token.get("parent")
++        if parent:
++            leading = parent["leading"]
++            tight = parent["tight"]
++        else:
++            leading = "- "
++            tight = False
++        out = _render_list_item(self, token, state, leading, tight)
++        return out + ("\n" if tight else "\n\n")
+ 
+     def task_list_item(self, token: Dict[str, Any], state: BlockState) -> str:
+-        checked = token.get("attrs", {}).get("checked")
+-        marker = "[x] " if checked else "[ ] "
+-        return render_list_item(self, token, state, marker)
++        return self.list_item(token, state)
+ 
++    # table plugin
+     def table(self, token: Dict[str, Any], state: BlockState) -> str:
+         children = token.get("children", [])
+         if not children:
+@@ -199,19 +334,380 @@ class MarkdownRenderer(BaseRenderer):
+     def table_cell(self, token: Dict[str, Any], state: BlockState) -> str:
+         return _render_table_cell(self, token, state)
+ 
++    # formatting plugins
++    def strikethrough(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "~~" + self.render_children(token, state) + "~~"
++
++    def mark(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "==" + self.render_children(token, state) + "=="
++
++    def insert(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "^^" + self.render_children(token, state) + "^^"
++
++    def superscript(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "^" + _escape_spaces(self.render_children(token, state)) + "^"
++
++    def subscript(self, token: Dict[str, Any], state: BlockState) -> str:
++        children = token["children"]
++        if len(children) == 1 and children[0]["type"] == "text" and children[0]["raw"] == "~":
++            return "~~~"
++        return "~" + _escape_spaces(self.render_children(token, state)) + "~"
++
++    # math plugin
++    def inline_math(self, token: Dict[str, Any], state: BlockState) -> str:
++        raw = cast(str, token["raw"])
++        text = "$" + raw + "$"
++        m = _inline_math_re.match(text)
++        if m and m.end() == len(text):
++            return text
++        longest = max((len(run) for run in _backtick_run_re.findall(raw)), default=0)
++        fence = "`" * (longest + 1)
++        return "$" + fence + raw + fence + "$"
++
++    def block_math(self, token: Dict[str, Any], state: BlockState) -> str:
++        raw = cast(str, token["raw"])
++        if self._inline_level:
++            # display math inside of a paragraph
++            return "$$" + raw + "$$"
++        return "$$\n" + raw + "\n$$\n\n"
++
++    # ruby plugin
++    def ruby(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "[" + cast(str, token["raw"]) + "(" + cast(str, token["attrs"]["rt"]) + ")]"
++
++    # spoiler plugin
++    def inline_spoiler(self, token: Dict[str, Any], state: BlockState) -> str:
++        return ">! " + self.render_children(token, state) + " !<"
++
++    def block_spoiler(self, token: Dict[str, Any], state: BlockState) -> str:
++        text = self.render_children(token, state).strip("\n")
++        return _prefix_lines(text, ">!") + "\n\n"
++
++    # abbr plugin
++    def abbr(self, token: Dict[str, Any], state: BlockState) -> str:
++        return self.render_children(token, state)
++
++    # footnotes plugin
++    def footnote_ref(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "[^" + cast(str, token["raw"]) + "]"
++
++    def footnotes(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "\n" + "".join(self.render_token(item, state) for item in token["children"])
++
++    def footnote_item(self, token: Dict[str, Any], state: BlockState) -> str:
++        key = cast(str, token["attrs"]["key"])
++        text = self.render_children(token, state).strip("\n")
++        return "[^" + key + "]: " + _indent_lines(text, "    ") + "\n\n"
++
++    # admonition directive
++    def admonition(self, token: Dict[str, Any], state: BlockState) -> str:
++        attrs = token.get("attrs", {})
++        title = ""
++        content = ""
++        for child in token["children"]:
++            if child["type"] == "admonition_title":
++                title = self.render_inline(child, state).replace("\n", " ")
++            else:
++                content = self.render_children(child, state).strip("\n")
++        runs = [len(m) for m in re.findall(r"^ {0,3}(`{3,})", content, re.M)]
++        fence = "`" * max(3, max(runs, default=0) + 1)
++        out = fence + "{" + cast(str, attrs["name"]) + "}"
++        if title:
++            out += " " + title
++        out += "\n"
++        if attrs.get("class"):
++            out += ":class: " + cast(str, attrs["class"]) + "\n"
++        if content:
++            out += "\n" + content + "\n"
++        return out + fence + "\n\n"
++
++    # def_list plugin
++    def def_list(self, token: Dict[str, Any], state: BlockState) -> str:
++        out = ""
++        prev = None
++        for child in token["children"]:
++            if child["type"] == "def_list_head" and prev == "def_list_item":
++                # a blank line is required before the next term
++                out += "\n"
++            out += self.render_token(child, state)
++            prev = child["type"]
++        return out + "\n"
++
++    def def_list_head(self, token: Dict[str, Any], state: BlockState) -> str:
++        return self.render_inline(token, state, True) + "\n"
++
++    def def_list_item(self, token: Dict[str, Any], state: BlockState) -> str:
++        children = token["children"]
++        text = self.render_children(token, state).strip("\n")
++        out = ":   " + _indent_lines(text, "    ") + "\n"
++        if len(children) == 1 and children[0]["type"] == "block_text":
++            return out
++        # a loose definition is separated by a blank line
++        return "\n" + out
++
++
++def _prefix_lines(text: str, marker: str) -> str:
++    if not text:
++        return marker
++    return "\n".join((marker + " " + line) if line else marker for line in text.split("\n"))
++
++
++def _indent_lines(text: str, prefix: str) -> str:
++    lines = text.split("\n")
++    return "\n".join([lines[0]] + [(prefix + line) if line else "" for line in lines[1:]])
++
++
++def _escape_spaces(text: str) -> str:
++    return text.replace(" ", "\\ ")
++
++
++def _render_list_item(
++    renderer: MarkdownRenderer,
++    item: Dict[str, Any],
++    state: BlockState,
++    leading: str,
++    tight: bool,
++) -> str:
++    prefix = " " * len(leading)
++    if item["type"] == "task_list_item":
++        checked = item.get("attrs", {}).get("checked")
++        leading += "[x] " if checked else "[ ] "
++
++    parts: List[str] = []
++    prev_type = None
++    for index, tok in enumerate(item["children"]):
++        if tok["type"] == "blank_line":
++            continue
++        text = renderer.render_token(tok, state).strip("\n")
++        if index == 0 and tok["type"] == "heading" and item["type"] == "task_list_item":
++            # the checkbox belongs to the text of the heading
++            checkbox = leading[len(prefix) :]
++            leading = leading[: len(prefix)]
++            if text.startswith("#"):
++                pos = text.find(" ")
++                text = text[: pos + 1] + checkbox + text[pos + 1 :] if pos > 0 else text + " " + checkbox
++            else:
++                text = checkbox + text
++        if tight and prev_type == "block_quote" and tok["type"] in ("block_text", "paragraph"):
++            # end the block quote, or the text would be a lazy continuation
++            parts[-1] += "\n>"
++        parts.append(text)
++        prev_type = tok["type"]
++
++    if parts and parts[0] == "***" and leading.startswith("*"):
++        # "* ***" would be a thematic break
++        parts[0] = "___"
++    text = ("\n" if tight else "\n\n").join(parts)
++    if not text:
++        return leading.rstrip(" ") + " "
++
++    lines = text.split("\n")
++    first = lines[0]
++    if not first or first.startswith((" ", "\t")):
++        # the content can not start with spaces on the marker line
++        out = leading.rstrip(" ")
++        rest = lines
++    else:
++        out = leading + first
++        rest = lines[1:]
++    for line in rest:
++        if line:
++            out += "\n" + prefix + line
++        else:
++            out += "\n"
++    return out
++
++
++def _render_link_target(token: Dict[str, Any]) -> str:
++    label = token.get("label")
++    if label:
++        return "[" + cast(str, label) + "]"
++
++    attrs = token["attrs"]
++    out = "(" + _render_link_destination(cast(str, attrs["url"]))
++    title = attrs.get("title")
++    if title:
++        out += " " + _render_link_title(title)
++    return out + ")"
++
++
++_autolink_re = re.compile(r"[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*")
++_email_re = re.compile(
++    r"[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9]"
++    r"(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
++    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*"
++)
++
++
++def _is_autolink(token: Dict[str, Any]) -> bool:
++    """A link can be written as an autolink if its text is its URL."""
++    children = token.get("children") or []
++    attrs = token.get("attrs") or {}
++    if token.get("label") or attrs.get("title") or len(children) != 1 or children[0]["type"] != "text":
++        return False
++    text = cast(str, children[0]["raw"])
++    url = attrs.get("url")
++    if _autolink_re.fullmatch(text):
++        return escape_url(text) == url
++    return _email_re.fullmatch(text) is not None and escape_url("mailto:" + text) == url
++
++
++def _has_line_break(token: Dict[str, Any]) -> bool:
++    for child in token.get("children") or []:
++        if child["type"] in ("softbreak", "linebreak") or _has_line_break(child):
++            return True
++    return False
++
++
++_bare_url_start_re = re.compile(r"(?<![\w&#])h(?=ttps?://)")
++_url_link_re = re.compile(r"""https?:\/\/[^\s<]+[^<.,:;"')\]\s]""")
++
++
++def _is_url_link(token: Dict[str, Any]) -> bool:
++    children = token.get("children") or []
++    attrs = token.get("attrs") or {}
++    if token.get("label") or attrs.get("title") or len(children) != 1 or children[0]["type"] != "text":
++        return False
++    text = cast(str, children[0]["raw"])
++    return _url_link_re.fullmatch(text) is not None and escape_url(text) == attrs.get("url")
++
++
++def _edge_char(token: Optional[Dict[str, Any]]) -> Optional[str]:
++    if token is not None and token["type"] in ("softbreak", "linebreak"):
++        return "\n"
++    return None
++
++
++def _escape_text(raw: str, prev_char: Optional[str], next_char: Optional[str], pipe: str = "\\|") -> str:
++    """Escape the characters of a text which could be parsed as inline markup.
++    ``prev_char`` and ``next_char`` are the characters around the text, if
++    they are known."""
++    out = []
++    length = len(raw)
++    for index, c in enumerate(raw):
++        if c in _ALWAYS_ESCAPE:
++            out.append("\\" + c)
++            continue
++
++        if c == "|":
++            out.append(pipe)
++            continue
++
++        if c in "*_":
++            before = raw[index - 1] if index else prev_char
++            after = raw[index + 1] if index + 1 < length else next_char
++            if before is not None and after is not None:
++                # a delimiter surrounded by spaces, or an underscore inside
++                # of a word can never be emphasis
++                if before.isspace() and after.isspace():
++                    out.append(c)
++                    continue
++                if c == "_" and before.isalnum() and after.isalnum():
++                    out.append(c)
++                    continue
++            out.append("\\" + c)
++            continue
++
++        if c == "&":
++            if _entity_re.match(raw, index):
++                # a complete entity reference keeps its meaning
++                out.append(c)
++                continue
++            after = raw[index + 1] if index + 1 < length else next_char
++            if after is not None and after.isspace():
++                out.append(c)
++            else:
++                out.append("\\&")
++            continue
++
++        if c == "=":
++            before = raw[index - 1] if index else None
++            after = raw[index + 1] if index + 1 < length else None
++            if before is None or after is None or before == "=" or after == "=":
++                out.append("\\=")
++                continue
++
++        if c == ">" and index + 1 < length and raw[index + 1] == "!":
++            out.append("\\>")
++            continue
++
++        out.append(c)
++    return "".join(out)
++
++
++_EMPHASIS_TYPES = ("emphasis", "strong")
++
++
++def _ends_with_delimiter(text: str) -> bool:
++    if not text or text[-1] not in "*_":
++        return False
++    backslashes = len(text) - 1 - len(text[:-1].rstrip("\\"))
++    return backslashes % 2 == 0
++
++
++def _set_edge_chars(token: Dict[str, Any], char: str) -> None:
++    """Choose the delimiter of nested emphasis in ``token``, so that the
++    delimiter runs are parsed back into the same structure."""
++    other = "_" if char == "*" else "*"
++    children = [c for c in token.get("children") or [] if not (c["type"] == "text" and not c["raw"])]
++    edges = (id(children[0]), id(children[-1])) if children else ()
++    for index, child in enumerate(children):
++        if child["type"] not in _EMPHASIS_TYPES:
++            continue
++        before = children[index - 1] if index else None
++        after = children[index + 1] if index + 1 < len(children) else None
++        if (before and before["type"] == "text" and before["raw"][-1:].isalnum()) or (
++            after and after["type"] == "text" and after["raw"][:1].isalnum()
++        ):
++            # only "*" works inside of a word
++            child["_char"] = "*"
++        elif child["type"] == "strong" and id(child) in edges:
++            # a run of the same delimiters: ***foo***, ****foo****
++            child["_char"] = char
++        else:
++            child["_char"] = other
++
++
++def _render_link_destination(url: str) -> str:
++    url = _url_entity_re.sub("&amp;", url)
++    if not url or "(" in url or ")" in url or "<" in url or any(ord(c) <= 32 or c == "\x7f" for c in url):
++        return "<" + url.replace("\\", "\\\\").replace("<", "\\<").replace(">", "\\>") + ">"
++    return url.replace("\\", "\\\\")
++
++
++def _render_link_title(title: str) -> str:
++    return '"' + title.replace("\\", "\\\\").replace('"', '\\"') + '"'
++
+ 
+ def _escape_block_prefix(text: str) -> str:
+     """Backslash-escape a leading block marker on each line so that literal
+     text is not re-parsed as a list, heading or block quote."""
+-    return "\n".join(_escape_line_prefix(line) for line in text.split("\n"))
++    lines = text.split("\n" + _LINE_START)
++    out = [_escape_line_prefix(lines[0])]
++    for line in lines[1:]:
++        if line.startswith("<"):
++            # inline HTML could start a HTML block, but an indented line
++            # can only be a paragraph continuation
++            out.append("    " + line)
++        else:
++            out.append(_escape_line_prefix(line))
++    return "\n".join(out).replace(_LINE_START, "")
+ 
+ 
+ def _escape_line_prefix(line: str) -> str:
+     m = _block_prefix_re.match(line)
+-    if not m:
+-        return line
+-    indent_, marker = m.group(1), m.group(2)
+-    return indent_ + marker[:-1] + "\\" + marker[-1] + line[m.end(2) :]
++    if m:
++        indent_, marker = m.group(1), m.group(2)
++        return indent_ + marker[:-1] + "\\" + marker[-1] + line[m.end(2) :]
++    if _underline_re.match(line) or _plugin_prefix_re.match(line) or line.lstrip(" \t").startswith(">"):
++        stripped = line.lstrip(" \t")
++        return line[: len(line) - len(stripped)] + "\\" + stripped
++    return line
++
++
++def _has_closing_fence(code: str, marker: str) -> bool:
++    pattern = r"^ {0,3}" + re.escape(marker[0]) + "{" + str(len(marker)) + r",}[ \t]*$"
++    return re.search(pattern, code, re.M) is not None
+ 
+ 
+ def _get_fenced_marker(code: str) -> str:
+@@ -235,6 +731,11 @@ def _get_fenced_marker(code: str) -> str:
+     return "`" * (max(ticks) + 1)
+ 
+ 
++def _get_tilde_marker(code: str) -> str:
++    waves = [len(s) for s in fenced_re.findall(code) if s[0] == "~"]
++    return "~" * max(3, max(waves, default=0) + 1)
++
++
+ def _render_table_row(renderer: MarkdownRenderer, cells: Iterable[Dict[str, Any]], state: BlockState) -> str:
+     return "| " + " | ".join(_render_table_cell(renderer, cell, state) for cell in cells) + " |"
+ 
+@@ -253,12 +754,27 @@ def _render_table_delimiter(aligns: Iterable[Any]) -> str:
+     return "| " + " | ".join(cells) + " |"
+ 
+ 
++def _escape_table_pipes(text: str) -> str:
++    """Escape every pipe which is not escaped yet, it would split the cell."""
++    out: List[str] = []
++    backslashes = 0
++    for c in text:
++        if c == "|" and backslashes % 2 == 0:
++            out.append("\\")
++        out.append(c)
++        if c == "\\":
++            backslashes += 1
++        else:
++            backslashes = 0
++    return "".join(out)
++
++
+ def _render_table_cell(renderer: MarkdownRenderer, token: Dict[str, Any], state: BlockState) -> str:
+     if "children" in token:
+-        text = renderer.render_children(token, state)
++        text = renderer.render_inline(token, state)
+     else:
+         text = cast(str, token.get("raw", ""))
+-    return text.replace("\n", " ").replace("|", "\\|").strip()
++    return _escape_table_pipes(text.replace("\n", " ")).strip(" \t")
+ 
+ 
+ def _table_cell_align(token: Dict[str, Any]) -> Any:
+diff --git a/src/mistune/renderers/rst.py b/src/mistune/renderers/rst.py
+index 6c3953e..fee72ef 100644
+--- a/src/mistune/renderers/rst.py
++++ b/src/mistune/renderers/rst.py
+@@ -1,10 +1,64 @@
+-from textwrap import indent
+-from typing import Any, Dict, Iterable, List, cast
++import re
++import unicodedata
++from typing import Any, Dict, Iterable, List, Optional, cast
+ 
+ from ..core import BaseRenderer, BlockState
+ from ..util import strip_end
+ from ._list import render_list, render_list_item
+ 
++#: an internal marker of a hard line break in inline text
++_LINE_BREAK = ""
++
++#: characters with a meaning in inline markup
++_INLINE_SPECIAL = frozenset("\\*`|_")
++#: characters that may precede the start-string of inline markup
++_MARKUP_BEFORE = frozenset("-:/'\"<([{")
++#: characters that may follow the end-string of inline markup
++_MARKUP_AFTER = frozenset("-.,:;!?\\/'\")]}>")
++#: inline tokens rendered as inline markup
++_MARKUP_TOKENS = frozenset(["emphasis", "strong", "codespan", "link", "image", "footnote_ref"])
++
++_enumerator_re = re.compile(r"^(\(?)(\d+|[a-zA-Z]|[ivxlcdmIVXLCDM]+|#)([.)])(?=[ \t]|$)")
++
++
++def _indent(text: str, prefix: str) -> str:
++    """Indent the non-empty lines of ``text``, only LF is a line break."""
++    return "\n".join((prefix + line) if line.strip(" \t") else line for line in text.split("\n"))
++
++
++def _escape_text(text: str) -> str:
++    return "".join(("\\" + c) if c in _INLINE_SPECIAL else c for c in text)
++
++
++def _text_width(text: str) -> int:
++    width = 0
++    for c in text:
++        if unicodedata.combining(c):
++            continue
++        width += 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
++    return width
++
++
++def _escape_block_start(text: str) -> str:
++    """Escape the start of a paragraph, which could be parsed as a list,
++    a field list, an option list, a comment, a directive or a transition."""
++    if not text:
++        return text
++    m = _enumerator_re.match(text)
++    if m:
++        return text[: m.start(3)] + "\\" + text[m.start(3) :]
++    c = text[0]
++    if not c.isalnum() and not c.isspace() and c != "\\" and c.isascii():
++        return "\\" + text
++    return text
++
++
++def _escape_block_end(text: str) -> str:
++    # a paragraph ending with "::" would introduce a literal block
++    if text.endswith("::"):
++        return text[:-1] + "\\:"
++    return text
++
+ 
+ class RSTRenderer(BaseRenderer):
+     """A renderer for converting Markdown to ReST."""
+@@ -22,7 +76,18 @@ class RSTRenderer(BaseRenderer):
+     }
+     INLINE_IMAGE_PREFIX = "img-"
+ 
++    def __init__(self) -> None:
++        super(RSTRenderer, self).__init__()
++        self._nested = 0
++        self._heading_level = 0
++
+     def iter_tokens(self, tokens: Iterable[Dict[str, Any]], state: BlockState) -> Iterable[str]:
++        tokens = list(tokens)
++        if tokens and _is_inline_token(tokens[0]):
++            return self._iter_inline_tokens(tokens, state)
++        return self._iter_block_tokens(tokens, state)
++
++    def _iter_block_tokens(self, tokens: List[Dict[str, Any]], state: BlockState) -> Iterable[str]:
+         prev = None
+         for tok in tokens:
+             # ignore blank line
+@@ -32,8 +97,29 @@ class RSTRenderer(BaseRenderer):
+             prev = tok
+             yield self.render_token(tok, state)
+ 
++    def _iter_inline_tokens(self, tokens: List[Dict[str, Any]], state: BlockState) -> List[str]:
++        outputs = [self.render_token(tok, state) for tok in tokens]
++        for index, tok in enumerate(tokens):
++            if tok["type"] not in _MARKUP_TOKENS or not outputs[index]:
++                continue
++            before = _last_char(outputs[:index])
++            after = _first_char(outputs[index + 1 :])
++            # inline markup must be separated from the text around it, an
++            # escaped space is a separator which is not rendered
++            if before is not None and not before.isspace() and before not in _MARKUP_BEFORE:
++                outputs[index] = "\\ " + outputs[index]
++            if after is not None and not after.isspace() and after not in _MARKUP_AFTER:
++                outputs[index] = outputs[index] + "\\ "
++        return outputs
++
+     def __call__(self, tokens: Iterable[Dict[str, Any]], state: BlockState) -> str:
++        if state.parent is not None:
++            # a nested document, e.g. the footnotes section
++            return strip_end(self.render_tokens(tokens, state))
++
+         state.env["inline_images"] = []
++        self._heading_level = 0
++        tokens = _clean_transitions(list(tokens))
+         out = self.render_tokens(tokens, state)
+         # special handle for line breaks
+         out += "\n\n".join(self.render_referrences(state)) + "\n"
+@@ -43,28 +129,61 @@ class RSTRenderer(BaseRenderer):
+         images = state.env["inline_images"]
+         for index, token in enumerate(images):
+             attrs = token["attrs"]
+-            alt = self.render_children(token, state)
++            alt = self.render_children(token, state).replace(_LINE_BREAK, " ")
+             ident = self.INLINE_IMAGE_PREFIX + str(index)
+-            yield ".. |" + ident + "| image:: " + attrs["url"] + "\n   :alt: " + alt
++            text = ".. |" + ident + "| image:: " + attrs["url"]
++            if alt:
++                text += "\n   :alt: " + alt
++            yield text
+ 
+     def render_children(self, token: Dict[str, Any], state: BlockState) -> str:
+         children = token["children"]
+         return self.render_tokens(children, state)
+ 
++    def render_plain(self, tokens: Iterable[Dict[str, Any]], state: BlockState) -> str:
++        """Render inline tokens as text without markup, inline markup can
++        not be nested in reStructuredText."""
++        out = ""
++        for tok in tokens:
++            tok_type = tok["type"]
++            if tok_type == "text":
++                out += _escape_text(cast(str, tok["raw"]))
++            elif tok_type == "codespan":
++                out += _escape_text(cast(str, tok["raw"]))
++            elif tok_type in ("linebreak", "softbreak"):
++                out += " "
++            elif "children" in tok:
++                out += self.render_plain(tok["children"], state)
++            elif tok_type == "inline_html":
++                continue
++            else:
++                out += self.render_token(tok, state)
++        return out
++
+     def text(self, token: Dict[str, Any], state: BlockState) -> str:
+-        text = cast(str, token["raw"])
+-        return text.replace("|", r"\|")
++        return _escape_text(cast(str, token["raw"]))
+ 
+     def emphasis(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "*" + self.render_children(token, state) + "*"
++        text = self.render_plain(token["children"], state)
++        if not text.strip():
++            return text
++        return "*" + text + "*"
+ 
+     def strong(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "**" + self.render_children(token, state) + "**"
++        text = self.render_plain(token["children"], state)
++        if not text.strip():
++            return text
++        return "**" + text + "**"
+ 
+     def link(self, token: Dict[str, Any], state: BlockState) -> str:
+         attrs = token["attrs"]
+-        text = self.render_children(token, state)
+-        return "`" + text + " <" + cast(str, attrs["url"]) + ">`__"
++        text = self.render_plain(token["children"], state).replace("<", "\\<")
++        url = cast(str, attrs["url"])
++        if url.endswith("_"):
++            url = url[:-1] + "\\_"
++        if text:
++            text += " "
++        return "`" + text + "<" + url + ">`__"
+ 
+     def image(self, token: Dict[str, Any], state: BlockState) -> str:
+         refs: List[Dict[str, Any]] = state.env["inline_images"]
+@@ -73,10 +192,17 @@ class RSTRenderer(BaseRenderer):
+         return "|" + self.INLINE_IMAGE_PREFIX + str(index) + "|"
+ 
+     def codespan(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "``" + cast(str, token["raw"]) + "``"
++        code = cast(str, token["raw"])
++        if not code.strip():
++            return _escape_text(code)
++        if "``" in code or code != code.strip():
++            # a literal can not contain "``" nor start or end with spaces
++            literal = code.strip().replace("\\", "\\\\").replace("`", "\\`")
++            return ":literal:`" + literal + "`"
++        return "``" + code + "``"
+ 
+     def linebreak(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "<linebreak>"
++        return _LINE_BREAK
+ 
+     def softbreak(self, token: Dict[str, Any], state: BlockState) -> str:
+         return " "
+@@ -85,48 +211,79 @@ class RSTRenderer(BaseRenderer):
+         # rst does not support inline html
+         return ""
+ 
++    def _render_text_block(self, token: Dict[str, Any], state: BlockState) -> str:
++        text = self.render_children(token, state)
++        lines = [line.strip(" ") for line in text.split(_LINE_BREAK)]
++        if len(lines) > 1:
++            # a line block keeps the line breaks
++            return "\n".join(("| " + line) if line else "|" for line in lines)
++        text = lines[0]
++        children = token["children"]
++        if children and children[0]["type"] == "text":
++            text = _escape_block_start(text)
++        return _escape_block_end(text)
++
+     def paragraph(self, token: Dict[str, Any], state: BlockState) -> str:
+         children = token["children"]
+         if len(children) == 1 and children[0]["type"] == "image":
+             image = children[0]
+             attrs = image["attrs"]
+             title = cast(str, attrs.get("title"))
+-            alt = self.render_children(image, state)
++            alt = self.render_children(image, state).replace(_LINE_BREAK, " ")
+             text = ".. figure:: " + cast(str, attrs["url"])
+             if title:
+                 text += "\n   :alt: " + title
+-            text += "\n\n" + indent(alt, "   ")
++            if alt:
++                text += "\n\n" + _indent(alt, "   ")
+         else:
+-            text = self.render_tokens(children, state)
+-            lines = text.split("<linebreak>")
+-            if len(lines) > 1:
+-                text = "\n".join("| " + line for line in lines)
++            text = self._render_text_block(token, state)
+         return text + "\n\n"
+ 
+     def heading(self, token: Dict[str, Any], state: BlockState) -> str:
+-        attrs = token["attrs"]
+-        text = self.render_children(token, state)
+-        marker = self.HEADING_MARKERS[attrs["level"]]
+-        return text + "\n" + marker * len(text) + "\n\n"
++        text = self.render_children(token, state).replace(_LINE_BREAK, " ").strip(" ")
++        if self._nested:
++            # sections can not be nested in other blocks
++            text = self.render_plain(token["children"], state).strip(" ")
++            return ("**" + text + "**" if text else "") + "\n\n"
++        if not text:
++            return ""
++
++        # a section title can be at most one level deeper than the previous
++        level = min(cast(int, token["attrs"]["level"]), self._heading_level + 1)
++        self._heading_level = level
++        marker = self.HEADING_MARKERS[level]
++        if token["children"] and token["children"][0]["type"] == "text":
++            text = _escape_block_start(text)
++        return text + "\n" + marker * max(_text_width(text), 1) + "\n\n"
+ 
+     def thematic_break(self, token: Dict[str, Any], state: BlockState) -> str:
++        if self._nested:
++            # a transition is only allowed between sections and paragraphs
++            return ""
+         return "--------------\n\n"
+ 
+     def block_text(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return self.render_children(token, state) + "\n"
++        return self._render_text_block(token, state) + "\n"
+ 
+     def block_code(self, token: Dict[str, Any], state: BlockState) -> str:
+         attrs = token.get("attrs", {})
+         info = cast(str, attrs.get("info"))
+-        code = indent(cast(str, token["raw"]), "   ")
++        raw = cast(str, token["raw"])
++        if not raw.strip(" \t\n"):
++            return ""
++        code = _indent(raw, "   ")
+         if info:
+-            lang = info.split()[0]
++            lang = re.split(r"[ \t]", info, 1)[0]
+             return ".. code:: " + lang + "\n\n" + code + "\n"
+         else:
+             return "::\n\n" + code + "\n\n"
+ 
+     def block_quote(self, token: Dict[str, Any], state: BlockState) -> str:
+-        text = indent(self.render_children(token, state), "   ")
++        self._nested += 1
++        try:
++            text = _indent(self.render_children(token, state), "   ")
++        finally:
++            self._nested -= 1
+         prev = token.get("prev")
+         ignore_blocks = (
+             "paragraph",
+@@ -140,14 +297,18 @@ class RSTRenderer(BaseRenderer):
+         return text
+ 
+     def block_html(self, token: Dict[str, Any], state: BlockState) -> str:
+-        raw = token["raw"]
+-        return ".. raw:: html\n\n" + indent(raw, "   ") + "\n\n"
++        raw = cast(str, token["raw"]).strip("\n")
++        return ".. raw:: html\n\n" + _indent(raw, "   ") + "\n\n"
+ 
+     def block_error(self, token: Dict[str, Any], state: BlockState) -> str:
+         return ""
+ 
+     def list(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return render_list(self, token, state)
++        self._nested += 1
++        try:
++            return render_list(self, token, state)
++        finally:
++            self._nested -= 1
+ 
+     def list_item(self, token: Dict[str, Any], state: BlockState) -> str:
+         return render_list_item(self, token, state)
+@@ -156,3 +317,88 @@ class RSTRenderer(BaseRenderer):
+         checked = token.get("attrs", {}).get("checked")
+         marker = "[x] " if checked else "[ ] "
+         return render_list_item(self, token, state, marker)
++
++    # plugins
++    def strikethrough(self, token: Dict[str, Any], state: BlockState) -> str:
++        return self.render_children(token, state)
++
++    def footnote_ref(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "[" + str(token["attrs"]["index"]) + "]_"
++
++    def footnotes(self, token: Dict[str, Any], state: BlockState) -> str:
++        return "\n" + "".join(self.render_token(item, state) for item in token["children"])
++
++    def footnote_item(self, token: Dict[str, Any], state: BlockState) -> str:
++        index = str(token["attrs"]["index"])
++        self._nested += 1
++        try:
++            text = self.render_children(token, state).strip("\n")
++        finally:
++            self._nested -= 1
++        return ".. [" + index + "] " + _indent(text, "   ").lstrip(" ") + "\n\n"
++
++    def table(self, token: Dict[str, Any], state: BlockState) -> str:
++        rows = []
++        children = token.get("children", [])
++        for part in children:
++            if part["type"] == "table_head":
++                rows.append(part["children"])
++            else:
++                rows.extend(row["children"] for row in part.get("children", []))
++        if not rows:
++            return ""
++
++        out = ".. list-table::\n"
++        if children and children[0]["type"] == "table_head":
++            out += "   :header-rows: 1\n"
++        out += "\n"
++        for cells in rows:
++            for index, cell in enumerate(cells):
++                text = self.render_children(cell, state).replace(_LINE_BREAK, " ").strip(" ")
++                text = _escape_block_start(text) if text else "\\"
++                out += ("   * - " if index == 0 else "     - ") + text + "\n"
++        return out + "\n"
++
++
++def _is_inline_token(token: Dict[str, Any]) -> bool:
++    return token["type"] in (
++        "text",
++        "emphasis",
++        "strong",
++        "codespan",
++        "link",
++        "image",
++        "linebreak",
++        "softbreak",
++        "inline_html",
++        "footnote_ref",
++        "strikethrough",
++    )
++
++
++def _last_char(outputs: List[str]) -> Optional[str]:
++    for out in reversed(outputs):
++        if out:
++            return " " if out.endswith(_LINE_BREAK) else out[-1]
++    return None
++
++
++def _first_char(outputs: List[str]) -> Optional[str]:
++    for out in outputs:
++        if out:
++            return " " if out.startswith(_LINE_BREAK) else out[0]
++    return None
++
++
++def _clean_transitions(tokens: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++    """A transition can not begin a document or a section, and two
++    transitions can not be next to each other."""
++    blocks = [tok for tok in tokens if tok["type"] != "blank_line"]
++    result: List[Dict[str, Any]] = []
++    for tok in blocks:
++        if tok["type"] == "thematic_break":
++            prev = result[-1] if result else None
++            if prev is None or prev["type"] in ("thematic_break", "heading"):
++                continue
++        result.append(tok)
++    return result
+diff --git a/src/mistune/util.py b/src/mistune/util.py
+index 7b74b6d..a297998 100644
+--- a/src/mistune/util.py
++++ b/src/mistune/util.py
+@@ -88,7 +88,7 @@ def strip_end(src: str) -> str:
+     time.
+     """
+     end = len(src)
+-    while end and src[end - 1].isspace():
++    while end and src[end - 1] in " \t\n":
+         end -= 1
+ 
+     newline = src.find("\n", end)

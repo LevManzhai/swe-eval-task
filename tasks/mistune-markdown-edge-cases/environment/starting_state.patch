@@ -1,0 +1,951 @@
+diff --git a/docs/changes.rst b/docs/changes.rst
+index 26a6f5a..7e4c0bb 100644
+--- a/docs/changes.rst
++++ b/docs/changes.rst
+@@ -33,22 +33,10 @@ Version 3.4.0
+ * Recognize inline HTML comments permitted by CommonMark 0.31.2.
+ * Parse links containing full reference images without treating the image's
+   reference label as a nested link.
+-* Preserve reference definitions parsed inside multi-paragraph footnotes.
+-* Accept definition-list markers indented by up to three spaces.
+-* Prefer longer registered abbreviation matches over shorter prefixes.
+-* Require at least one digit in ordered list continuation markers.
+-* Add Markdown rendering for strikethrough, mark, and insert plugins.
+-* Preserve escaped pipes in table code spans, literal trailing heading hashes,
+-  meaningful code span edge spaces, and leading blank lines in Markdown output.
+-* Keep images whose alt text matches their URL from becoming autolinks.
+-* Preserve non-line-break separator characters in rendered lists and hard line
+-  breaks in tight ReST list items.
+ * Document per-document renderer context and correct the custom Markdown
+   renderer example.
+ * Preserve literal backslashes, image introducers, HTML delimiters and entity
+   prefixes when rendering Markdown for a round trip.
+-* Only recognize task list markers in a list item's leading paragraph,
+-  preserving literal markers in headings.
+ * Bound the global convenience-parser cache and avoid retaining caller-owned
+   renderers and plugin objects.
+ * Add public HTML output helpers for raw HTML, attributes, and URL policy.
+diff --git a/src/mistune/block_parser.py b/src/mistune/block_parser.py
+index 3d6a9cf..5d3910b 100644
+--- a/src/mistune/block_parser.py
++++ b/src/mistune/block_parser.py
+@@ -109,10 +109,7 @@ class BlockParser(Parser[BlockState]):
+ 
+     def parse_blank_line(self, m: Match[str], state: BlockState) -> int:
+         """Parse token for blank lines."""
+-        if state.cursor == 0:
+-            state.append_token({"type": "blank_line", "newlines": m.group(0).count("\n")})
+-        else:
+-            state.append_token({"type": "blank_line"})
++        state.append_token({"type": "blank_line"})
+         return m.end()
+ 
+     def parse_thematic_break(self, m: Match[str], state: BlockState) -> int:
+diff --git a/src/mistune/list_parser.py b/src/mistune/list_parser.py
+index ac31e09..b6f3954 100644
+--- a/src/mistune/list_parser.py
++++ b/src/mistune/list_parser.py
+@@ -212,11 +212,6 @@ def _collect_list_item_lines(
+             # not a continue line, and previous line is blank
+             break
+ 
+-        if not text and not src.strip():
+-            # an empty list item has no paragraph to continue,
+-            # so a line without enough indentation ends the list
+-            break
+-
+         src += raw_line
+         state.cursor = next_pos
+ 
+@@ -239,11 +234,8 @@ def _build_list_item_source(text: str, src: str, continue_width: int) -> str:
+ def _compile_list_break_sc(block: "BlockParser", leading_width: int) -> Pattern[str]:
+     pairs = [(name, block.specification[name]) for name in _get_list_break_rules(block)]
+     if leading_width < 3:
+-        # Relax the leading indent bound only. Matching on a bare "3" would
+-        # rewrite the first quantifier of any rule that has no indent prefix --
+-        # e.g. a fenced directive's "{3,}" marker run.
+-        _repl = " {0,%d}" % leading_width
+-        pairs = [(n, p.replace(" {0,3}", _repl, 1)) for n, p in pairs]
++        _repl_w = str(leading_width)
++        pairs = [(n, p.replace("3", _repl_w, 1)) for n, p in pairs]
+ 
+     regex = "|".join(r"(?P<%s>(?<=\n)%s)" % pair for pair in pairs)
+     return re.compile(regex, re.M)
+@@ -286,9 +278,9 @@ def _match_list_item_break(
+ 
+ def _get_list_bullet(c: str) -> str:
+     if c == ".":
+-        bullet = r"\d{1,9}\."
++        bullet = r"\d{0,9}\."
+     elif c == ")":
+-        bullet = r"\d{1,9}\)"
++        bullet = r"\d{0,9}\)"
+     elif c == "*":
+         bullet = r"\*"
+     elif c == "+":
+diff --git a/src/mistune/plugins/abbr.py b/src/mistune/plugins/abbr.py
+index 55d3229..e29b7b5 100644
+--- a/src/mistune/plugins/abbr.py
++++ b/src/mistune/plugins/abbr.py
+@@ -81,7 +81,7 @@ def process_text(
+ 
+     abbrs_re = state.env.get("abbrs_re")
+     if not abbrs_re:
+-        abbrs_re = re.compile(r"|".join(re.escape(k) for k in sorted(ref, key=len, reverse=True)))
++        abbrs_re = re.compile(r"|".join(re.escape(k) for k in ref.keys()))
+         state.env["abbrs_re"] = abbrs_re
+ 
+     pos = 0
+diff --git a/src/mistune/plugins/def_list.py b/src/mistune/plugins/def_list.py
+index 90e5701..92cf169 100644
+--- a/src/mistune/plugins/def_list.py
++++ b/src/mistune/plugins/def_list.py
+@@ -12,9 +12,8 @@ __all__ = ["def_list"]
+ 
+ # https://michelf.ca/projects/php-markdown/extra/#def-list
+ 
+-DEF_PATTERN = r"^ {0,3}:[ \t]+.*(?:\n|$)"
+-DD_START_RE = re.compile(r"^ {0,3}:[ \t]+", re.M)
+-DD_MARKER_RE = re.compile(r"^ {0,3}:[ \t]")
++DEF_PATTERN = r"^:[ \t]+.*(?:\n|$)"
++DD_START_RE = re.compile(r"^:[ \t]+", re.M)
+ TRIM_RE = re.compile(r"^ {0,4}", re.M)
+ HAS_BLANK_LINE_RE = re.compile(r"\n[ \t]*\n$")
+ 
+@@ -106,9 +105,7 @@ def _collect_definitions(src: str, pos: int, max_pos: int, loose: bool) -> Tuple
+         start = pos
+         pos += len(line)
+         pos = _scan_definition_tail(src, pos, max_pos)
+-        # drop marker indentation and ':' plus its trailing space or tab; a tab here would
+-        # otherwise survive TRIM_RE (spaces only) and make the line a code block
+-        text = DD_MARKER_RE.sub("  ", src[start:pos], count=1)
++        text = src[start:pos].replace(":", " ", 1)
+         definitions.append((text, loose))
+         loose = bool(HAS_BLANK_LINE_RE.search(text))
+ 
+diff --git a/src/mistune/plugins/footnotes.py b/src/mistune/plugins/footnotes.py
+index 02a607c..8783304 100644
+--- a/src/mistune/plugins/footnotes.py
++++ b/src/mistune/plugins/footnotes.py
+@@ -77,7 +77,8 @@ def parse_footnote_item(block: "BlockParser", key: str, index: int, state: Block
+         pattern = re.compile(r"^ {" + str(spaces) + r",}", flags=re.M)
+         text = pattern.sub("", text).strip()
+ 
+-        footer_state = state.child_state(text + "\n")
++        footer_state = BlockState()
++        footer_state.process(text)
+         block.parse(footer_state)
+         children = footer_state.tokens
+     else:
+diff --git a/src/mistune/plugins/table.py b/src/mistune/plugins/table.py
+index 14ae19f..d48b4fc 100644
+--- a/src/mistune/plugins/table.py
++++ b/src/mistune/plugins/table.py
+@@ -17,7 +17,6 @@ NP_TABLE_PATTERN = r"^ {0,3}\S[^\n]*\|[^\n]*(?:\n|$)"
+ ALIGN_CENTER = re.compile(r"^ *:-+: *$")
+ ALIGN_LEFT = re.compile(r"^ *:-+ *$")
+ ALIGN_RIGHT = re.compile(r"^ *-+: *$")
+-ALIGN_NONE = re.compile(r"^ *-+ *$")
+ 
+ 
+ def parse_table(block: "BlockParser", m: Match[str], state: "BlockState") -> Optional[int]:
+@@ -104,12 +103,8 @@ def _process_thead(header: str, align: str) -> Union[Tuple[None, None], Tuple[Di
+             aligns.append("left")
+         elif ALIGN_RIGHT.match(v):
+             aligns.append("right")
+-        elif ALIGN_NONE.match(v) or not v.strip():
+-            aligns.append(None)
+         else:
+-            # a delimiter cell must be dashes (optionally colon-flanked) or empty;
+-            # anything else means this is not a delimiter row, so not a table
+-            return None, None
++            aligns.append(None)
+ 
+     children: List[Dict[str, Any]] = [
+         {"type": "table_cell", "text": text.strip(), "attrs": {"align": aligns[i], "head": True}}
+diff --git a/src/mistune/plugins/task_lists.py b/src/mistune/plugins/task_lists.py
+index 266c3e1..718bf65 100644
+--- a/src/mistune/plugins/task_lists.py
++++ b/src/mistune/plugins/task_lists.py
+@@ -59,8 +59,6 @@ def _rewrite_list_item(tok: Dict[str, Any]) -> None:
+     children = tok["children"]
+     if children:
+         first_child = children[0]
+-        if first_child["type"] not in ("paragraph", "block_text"):
+-            return
+         text = first_child.get("text", "")
+         m = TASK_LIST_ITEM.match(text)
+         if m:
+diff --git a/src/mistune/renderers/_list.py b/src/mistune/renderers/_list.py
+index a94afc3..27b65f6 100644
+--- a/src/mistune/renderers/_list.py
++++ b/src/mistune/renderers/_list.py
+@@ -44,8 +44,7 @@ def render_list_item(
+         prev = tok
+         text += renderer.render_token(tok, state)
+ 
+-    # Markdown normalizes line endings to LF; other separators are content.
+-    lines = text.removesuffix("\n").split("\n")
++    lines = text.splitlines()
+     text = (lines[0] if lines else "") + "\n"
+     prefix = " " * len(leading)
+     for line in lines[1:]:
+diff --git a/src/mistune/renderers/markdown.py b/src/mistune/renderers/markdown.py
+index cc65262..4a61a04 100644
+--- a/src/mistune/renderers/markdown.py
++++ b/src/mistune/renderers/markdown.py
+@@ -21,27 +21,19 @@ class MarkdownRenderer(BaseRenderer):
+     NAME = "markdown"
+ 
+     def __call__(self, tokens: Iterable[Dict[str, Any]], state: BlockState) -> str:
+-        tokens = list(tokens)
+-        leading = ""
+-        i = 0
+-        while i < len(tokens) and tokens[i]["type"] == "blank_line" and "newlines" in tokens[i]:
+-            leading += "\n" * tokens[i]["newlines"]
+-            i += 1
+-        out = self.render_tokens(tokens[i:], state)
++        out = self.render_tokens(tokens, state)
+         # special handle for line breaks
+         out += "\n\n".join(self.render_referrences(state)) + "\n"
+-        return strip_end(leading + out)
++        return strip_end(out)
+ 
+     def render_referrences(self, state: BlockState) -> Iterable[str]:
+         ref_links = state.env["ref_links"]
+         for key in ref_links:
+             attrs = ref_links[key]
+-            # An empty destination must be explicit in a reference definition.
+-            url = attrs["url"] or "<>"
+-            text = "[" + attrs["label"] + "]: " + url
++            text = "[" + attrs["label"] + "]: " + attrs["url"]
+             title = attrs.get("title")
+             if title:
+-                text += ' "' + _escape_title(title) + '"'
++                text += ' "' + title + '"'
+             yield text
+ 
+     def render_children(self, token: Dict[str, Any], state: BlockState) -> str:
+@@ -70,16 +62,6 @@ class MarkdownRenderer(BaseRenderer):
+     def strong(self, token: Dict[str, Any], state: BlockState) -> str:
+         return "**" + self.render_children(token, state) + "**"
+ 
+-    # Inline formatting plugins (strikethrough, mark, insert)
+-    def strikethrough(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "~~" + self.render_children(token, state) + "~~"
+-
+-    def mark(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "==" + self.render_children(token, state) + "=="
+-
+-    def insert(self, token: Dict[str, Any], state: BlockState) -> str:
+-        return "^^" + self.render_children(token, state) + "^^"
+-
+     def link(self, token: Dict[str, Any], state: BlockState) -> str:
+         label = cast(str, token.get("label"))
+         text = self.render_children(token, state)
+@@ -90,9 +72,9 @@ class MarkdownRenderer(BaseRenderer):
+         attrs = token["attrs"]
+         url: str = attrs["url"]
+         title = attrs.get("title")
+-        if token["type"] == "link" and text == url and not title:
++        if text == url and not title:
+             return "<" + text + ">"
+-        elif token["type"] == "link" and "mailto:" + text == url and not title:
++        elif "mailto:" + text == url and not title:
+             return "<" + text + ">"
+ 
+         out += "("
+@@ -101,7 +83,7 @@ class MarkdownRenderer(BaseRenderer):
+         else:
+             out += url
+         if title:
+-            out += ' "' + _escape_title(title) + '"'
++            out += ' "' + title + '"'
+         return out + ")"
+ 
+     def image(self, token: Dict[str, Any], state: BlockState) -> str:
+@@ -113,14 +95,9 @@ class MarkdownRenderer(BaseRenderer):
+         # inside the content, otherwise the content would close the span early.
+         longest = max((len(run) for run in _backtick_run_re.findall(code)), default=0)
+         fence = "`" * (longest + 1)
+-        # Padding separates edge backticks from the delimiter and protects
+-        # meaningful spaces at both ends from the parser's space normalization.
+-        # All-space content is exempt from that normalization.
+-        if (
+-            code.startswith("`")
+-            or code.endswith("`")
+-            or (code.startswith(" ") and code.endswith(" ") and code.strip(" "))
+-        ):
++        # A space on each side keeps the delimiter from merging with a leading or
++        # trailing backtick; the parser strips this padding back off.
++        if code.startswith("`") or code.endswith("`"):
+             return fence + " " + code + " " + fence
+         return fence + code + fence
+ 
+@@ -142,18 +119,8 @@ class MarkdownRenderer(BaseRenderer):
+ 
+     def heading(self, token: Dict[str, Any], state: BlockState) -> str:
+         level = cast(int, token["attrs"]["level"])
+-        text = self.render_children(token, state)
+-        # An ATX heading ("# ...") occupies a single line, so a heading whose
+-        # rendered text spans several lines -- a multi-line setext heading --
+-        # must be re-emitted in setext form. As ATX the continuation lines
+-        # would fall out of the heading and become a paragraph on a re-parse.
+-        # Only levels 1 and 2 reach this branch, since an ATX heading never
+-        # contains a line break.
+-        if "\n" in text and level in (1, 2):
+-            underline = "=" if level == 1 else "-"
+-            return text + "\n" + underline * 3 + "\n\n"
+         marker = "#" * level
+-        text = re.sub(r"(^|[ \t])(#+)$", r"\1\\\2", text)
++        text = self.render_children(token, state)
+         return marker + " " + text + "\n\n"
+ 
+     def thematic_break(self, token: Dict[str, Any], state: BlockState) -> str:
+@@ -176,11 +143,8 @@ class MarkdownRenderer(BaseRenderer):
+         return marker2 + info + "\n" + code + marker2 + "\n\n"
+ 
+     def block_quote(self, token: Dict[str, Any], state: BlockState) -> str:
+-        # strip the children's trailing blank lines first so the quote marker is
+-        # not added to a dangling empty line; stripping it back off afterwards
+-        # would also eat a ">" that ends the content (an autolink or HTML tag).
+-        text = self.render_children(token, state).rstrip("\n")
+-        text = indent(text, "> ", lambda _: True)
++        text = indent(self.render_children(token, state), "> ", lambda _: True)
++        text = text.rstrip("> \n")
+         return text + "\n\n"
+ 
+     def block_html(self, token: Dict[str, Any], state: BlockState) -> str:
+@@ -236,13 +200,6 @@ class MarkdownRenderer(BaseRenderer):
+         return _render_table_cell(self, token, state)
+ 
+ 
+-def _escape_title(title: str) -> str:
+-    """Escape a link/image title for emission inside double quotes. The closing
+-    quote would otherwise end the title early on a re-parse; a backslash is
+-    escaped first so it can't combine with the following character."""
+-    return title.replace("\\", "\\\\").replace('"', '\\"')
+-
+-
+ def _escape_block_prefix(text: str) -> str:
+     """Backslash-escape a leading block marker on each line so that literal
+     text is not re-parsed as a list, heading or block quote."""
+@@ -301,9 +258,7 @@ def _render_table_cell(renderer: MarkdownRenderer, token: Dict[str, Any], state:
+         text = renderer.render_children(token, state)
+     else:
+         text = cast(str, token.get("raw", ""))
+-    # Code spans can already contain escaped pipes; keep an odd escape count.
+-    text = re.sub(r"\\.|[|]", lambda m: r"\|" if m[0] == "|" else m[0], text)
+-    return text.replace("\n", " ").strip()
++    return text.replace("\n", " ").replace("|", "\\|").strip()
+ 
+ 
+ def _table_cell_align(token: Dict[str, Any]) -> Any:
+diff --git a/src/mistune/renderers/rst.py b/src/mistune/renderers/rst.py
+index 2d58b4e..6c3953e 100644
+--- a/src/mistune/renderers/rst.py
++++ b/src/mistune/renderers/rst.py
+@@ -113,11 +113,7 @@ class RSTRenderer(BaseRenderer):
+         return "--------------\n\n"
+ 
+     def block_text(self, token: Dict[str, Any], state: BlockState) -> str:
+-        text = self.render_children(token, state)
+-        lines = text.split("<linebreak>")
+-        if len(lines) > 1:
+-            text = "\n".join("| " + line for line in lines)
+-        return text + "\n"
++        return self.render_children(token, state) + "\n"
+ 
+     def block_code(self, token: Dict[str, Any], state: BlockState) -> str:
+         attrs = token.get("attrs", {})
+diff --git a/tests/fixtures/abbr.txt b/tests/fixtures/abbr.txt
+index a29b20c..aa8e75f 100644
+--- a/tests/fixtures/abbr.txt
++++ b/tests/fixtures/abbr.txt
+@@ -97,27 +97,3 @@ Untrusted HTML should be escaped.
+ .
+ <p>Untrusted <abbr title="&lt;p&gt;This is some HTML&lt;/p&gt;">HTML</abbr> should be escaped.</p>
+ ````````````````````````````````
+-
+-```````````````````````````````` example
+-HTML5 and HTML
+-*[HTML]: Hyper Text Markup Language
+-*[HTML5]: Hyper Text Markup Language 5
+-.
+-<p><abbr title="Hyper Text Markup Language 5">HTML5</abbr> and <abbr title="Hyper Text Markup Language">HTML</abbr></p>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-New York City and New York
+-*[New York]: State
+-*[New York City]: City
+-.
+-<p><abbr title="City">New York City</abbr> and <abbr title="State">New York</abbr></p>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-HTML5 and HTML
+-*[HTML5]: Hyper Text Markup Language 5
+-*[HTML]: Hyper Text Markup Language
+-.
+-<p><abbr title="Hyper Text Markup Language 5">HTML5</abbr> and <abbr title="Hyper Text Markup Language">HTML</abbr></p>
+-````````````````````````````````
+diff --git a/tests/fixtures/def_list.txt b/tests/fixtures/def_list.txt
+index 9194e0b..0fa6cc8 100644
+--- a/tests/fixtures/def_list.txt
++++ b/tests/fixtures/def_list.txt
+@@ -213,16 +213,3 @@ Term
+ </dd>
+ </dl>
+ ````````````````````````````````
+-
+-
+-## Tab-Marked Definition
+-
+-```````````````````````````````` example
+-Term
+-:	Tab-marked def
+-.
+-<dl>
+-<dt>Term</dt>
+-<dd>Tab-marked def</dd>
+-</dl>
+-````````````````````````````````
+diff --git a/tests/fixtures/fix-commonmark.txt b/tests/fixtures/fix-commonmark.txt
+index 4fc0cd5..131d638 100644
+--- a/tests/fixtures/fix-commonmark.txt
++++ b/tests/fixtures/fix-commonmark.txt
+@@ -89,46 +89,6 @@ remainder of a partially consumed run can still match a later delimiter.
+ ````````````````````````````````
+ 
+ 
+-## Lists
+-
+-An empty list item has no paragraph, so an unindented line after it
+-is not a lazy continuation line.
+-
+-```````````````````````````````` example
+--
+-foo
+-.
+-<ul>
+-<li></li>
+-</ul>
+-<p>foo</p>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-- a
+--
+-b
+-.
+-<ul>
+-<li>a</li>
+-<li></li>
+-</ul>
+-<p>b</p>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-> 1.
+-> foo
+-.
+-<blockquote>
+-<ol>
+-<li></li>
+-</ol>
+-<p>foo</p>
+-</blockquote>
+-````````````````````````````````
+-
+-
+ ## Max depth
+ 
+ 
+diff --git a/tests/fixtures/table.txt b/tests/fixtures/table.txt
+index 4e14717..8a9ecad 100644
+--- a/tests/fixtures/table.txt
++++ b/tests/fixtures/table.txt
+@@ -76,29 +76,6 @@ paragraph</li>
+ </ul>
+ ````````````````````````````````
+ 
+-## Not a delimiter row
+-
+-```````````````````````````````` example
+-Name | Age
+-John | 30
+-Jane | 25
+-.
+-<p>Name | Age
+-John | 30
+-Jane | 25</p>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-a | b
+-foo | bar
+-1 | 2
+-.
+-<p>a | b
+-foo | bar
+-1 | 2</p>
+-````````````````````````````````
+-
+-
+ ## Table End
+ 
+ ```````````````````````````````` example
+diff --git a/tests/fixtures/task_lists.txt b/tests/fixtures/task_lists.txt
+index 1bb40d9..6bc0248 100644
+--- a/tests/fixtures/task_lists.txt
++++ b/tests/fixtures/task_lists.txt
+@@ -106,59 +106,3 @@ over two lines</li>
+ </ul>
+ </blockquote>
+ ````````````````````````````````
+-
+-# Leading headings are not task list paragraphs
+-
+-```````````````````````````````` example
+-- # [ ] unchecked heading
+-- ## [x] checked heading
+-- ### [X] uppercase checked heading
+-.
+-<ul>
+-<li><h1>[ ] unchecked heading</h1>
+-</li>
+-<li><h2>[x] checked heading</h2>
+-</li>
+-<li><h3>[X] uppercase checked heading</h3>
+-</li>
+-</ul>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-- [x] setext heading
+-  ==================
+-- [ ] setext heading
+-  ------------------
+-.
+-<ul>
+-<li><h1>[x] setext heading</h1>
+-</li>
+-<li><h2>[ ] setext heading</h2>
+-</li>
+-</ul>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-- # [x] heading
+-
+-  [ ] paragraph after heading
+-.
+-<ul>
+-<li><h1>[x] heading</h1>
+-<p>[ ] paragraph after heading</p>
+-</li>
+-</ul>
+-````````````````````````````````
+-
+-```````````````````````````````` example
+-- # [x] heading
+-  - [x] nested task
+-.
+-<ul>
+-<li><h1>[x] heading</h1>
+-<ul>
+-<li class="task-list-item"><input class="task-list-item-checkbox" type="checkbox" disabled checked/>nested task</li>
+-</ul>
+-</li>
+-</ul>
+-````````````````````````````````
+diff --git a/tests/test_def_list.py b/tests/test_def_list.py
+deleted file mode 100644
+index 728aedb..0000000
+--- a/tests/test_def_list.py
++++ /dev/null
+@@ -1,59 +0,0 @@
+-import pytest
+-
+-from mistune import create_markdown
+-
+-
+-@pytest.fixture(params=[False, True], ids=["plain", "speedup"])
+-def md(request):
+-    plugins = ["def_list", "speedup"] if request.param else ["def_list"]
+-    return create_markdown(plugins=plugins)
+-
+-
+-@pytest.mark.parametrize("indent", range(4))
+-@pytest.mark.parametrize("separator", [" ", "\t"], ids=["space", "tab"])
+-@pytest.mark.parametrize("loose", [False, True], ids=["tight", "loose"])
+-def test_definition_marker_indentation(md, indent, separator, loose):
+-    source = "Term\n" + ("\n" if loose else "") + " " * indent + ":" + separator + "definition\n"
+-    definition = "<p>definition</p>\n" if loose else "definition"
+-    assert md(source) == "<dl>\n<dt>Term</dt>\n<dd>" + definition + "</dd>\n</dl>\n"
+-
+-
+-def test_successive_definition_markers_with_different_indentation(md):
+-    source = "Term\n: first\n : second\n  : third\n   : fourth\n"
+-    assert md(source) == (
+-        "<dl>\n<dt>Term</dt>\n<dd>first</dd>\n<dd>second</dd>\n<dd>third</dd>\n<dd>fourth</dd>\n</dl>\n"
+-    )
+-
+-
+-def test_indented_definition_preserves_continuation_blocks(md):
+-    source = "Term\n   : definition\n    continuation\n\n        code\n\nparagraph\n"
+-    assert md(source) == (
+-        "<dl>\n<dt>Term</dt>\n<dd><p>definition\ncontinuation</p>\n"
+-        "<pre><code>code</code></pre>\n</dd>\n</dl>\n<p>paragraph</p>\n"
+-    )
+-
+-
+-def test_four_space_indented_colon_is_not_a_definition_marker(md):
+-    assert md("Term\n    : definition\n") == "<p>Term\n: definition</p>\n"
+-
+-
+-def test_indented_marker_requires_a_term(md):
+-    assert md("   : orphan\n") == "<p>: orphan</p>\n"
+-
+-
+-@pytest.mark.parametrize("speedup", [False, True])
+-def test_indented_definition_ast(speedup):
+-    plugins = ["def_list", "speedup"] if speedup else ["def_list"]
+-    md = create_markdown(renderer=None, plugins=plugins)
+-    assert md("Term\n   : definition\n") == [
+-        {
+-            "type": "def_list",
+-            "children": [
+-                {"type": "def_list_head", "children": [{"type": "text", "raw": "Term"}]},
+-                {
+-                    "type": "def_list_item",
+-                    "children": [{"type": "block_text", "children": [{"type": "text", "raw": "definition"}]}],
+-                },
+-            ],
+-        }
+-    ]
+diff --git a/tests/test_directives.py b/tests/test_directives.py
+index 5e0e44c..1367bb5 100644
+--- a/tests/test_directives.py
++++ b/tests/test_directives.py
+@@ -69,29 +69,6 @@ class TestCustomizeToc(BaseTestCase):
+         self.assertIn('<a href="#t-1">h1</a>', html)
+ 
+ 
+-class TestFencedDirectiveInList(BaseTestCase):
+-    md = create_markdown(  # type: ignore[list-item]
+-        escape=False,
+-        plugins=[FencedDirective([Admonition()], markers=":")],
+-    )
+-
+-    def test_marker_run_below_fence_length_is_not_a_directive(self):
+-        # A directive needs three or more markers, inside a list item as well
+-        # as outside one. The list break rules are recompiled per item, and a
+-        # marker run shorter than the fence must stay literal text.
+-        for text in (":{note}\nlazy\n", "100. item\n:{note}\nlazy\n"):
+-            self.assertNotIn("admonition", self.md(text))
+-
+-        html = self.md("- item\n:{note}\nlazy\n")
+-        self.assertNotIn("admonition", html)
+-        self.assertIn(":{note}", html)
+-
+-    def test_directive_still_breaks_a_list(self):
+-        html = self.md("- item\n:::{note}\nbody\n:::\n")
+-        self.assertIn('<section class="admonition note">', html)
+-        self.assertIn("<p>body</p>", html)
+-
+-
+ class TestDirectiveInclude(BaseTestCase):
+     md = create_markdown(escape=False, plugins=[RSTDirective([Include()])])  # type: ignore[list-item]
+ 
+diff --git a/tests/test_misc.py b/tests/test_misc.py
+index 52bef82..ce75d1c 100644
+--- a/tests/test_misc.py
++++ b/tests/test_misc.py
+@@ -42,24 +42,6 @@ class TestMiscCases(TestCase):
+         result = md("foo\nbar")
+         self.assertEqual(result.strip(), expected)
+ 
+-    def test_ordered_marker_needs_a_digit(self):
+-        self.assertEqual(
+-            mistune.html("1. a\n. b\n"),
+-            "<ol>\n<li>a\n. b</li>\n</ol>\n",
+-        )
+-        self.assertEqual(
+-            mistune.html("1) a\n) b\n"),
+-            "<ol>\n<li>a\n) b</li>\n</ol>\n",
+-        )
+-        self.assertEqual(
+-            mistune.html("1. a\n2. b\n"),
+-            "<ol>\n<li>a</li>\n<li>b</li>\n</ol>\n",
+-        )
+-        self.assertEqual(
+-            mistune.html("1. a\n123456789. b\n"),
+-            "<ol>\n<li>a</li>\n<li>b</li>\n</ol>\n",
+-        )
+-
+     def test_speedup_plugin_is_compat_noop(self):
+         base = mistune.create_markdown(escape=False)
+         compat = mistune.create_markdown(escape=False, plugins=["speedup"])
+diff --git a/tests/test_plugins.py b/tests/test_plugins.py
+index 11b3a92..1afbf14 100644
+--- a/tests/test_plugins.py
++++ b/tests/test_plugins.py
+@@ -64,35 +64,3 @@ class TestExtraPlugins(BaseTestCase):
+         md2 = create_markdown(escape=False, plugins=["math", math_in_quote])
+         self.assertNotIn('class="math"', md1(text))
+         self.assertIn('class="math"', md2(text))
+-
+-
+-class TestFootnoteReferenceDefinitions(BaseTestCase):
+-    def test_definition_before_another_paragraph(self):
+-        text = (
+-            "Text[^one].\n\n[^one]: See [link][ref].\n\n"
+-            "    [ref]: /url\n\n    Final paragraph.\n"
+-        )
+-        result = create_markdown(plugins=["footnotes"])(text)
+-        self.assertIn('<a href="/url">link</a>', result)
+-        self.assertIn("Final paragraph.", result)
+-        self.assertNotIn("[ref]", result)
+-
+-    def test_definition_at_end_of_footnote(self):
+-        text = "Text[^one].\n\n[^one]: See [link][ref].\n\n    [ref]: /url\n"
+-        result = create_markdown(plugins=["footnotes"])(text)
+-        self.assertIn('<a href="/url">link</a>', result)
+-        self.assertNotIn("[ref]", result)
+-
+-    def test_existing_document_definition_takes_precedence(self):
+-        text = (
+-            "Text[^one].\n\n[ref]: /original\n\n"
+-            "[^one]: See [link][ref].\n\n    [ref]: /replacement\n"
+-        )
+-        result = create_markdown(plugins=["footnotes"])(text)
+-        self.assertIn('<a href="/original">link</a>', result)
+-        self.assertNotIn("replacement", result)
+-
+-    def test_missing_reference_stays_literal(self):
+-        text = "Text[^one].\n\n[^one]: See [link][missing].\n\n    Another paragraph.\n"
+-        result = create_markdown(plugins=["footnotes"])(text)
+-        self.assertIn("[link][missing]", result)
+diff --git a/tests/test_renderers.py b/tests/test_renderers.py
+index 15a922f..97a98f3 100644
+--- a/tests/test_renderers.py
++++ b/tests/test_renderers.py
+@@ -19,17 +19,6 @@ load_renderer(RSTRenderer())
+ load_renderer(MarkdownRenderer())
+ 
+ 
+-class TestRSTRendererLineBreaks(TestCase):
+-    def test_tight_list_hard_breaks(self):
+-        render = create_markdown(renderer=RSTRenderer())
+-        for text, expected in (
+-            ("- first  \n  second\n", "- | first\n  | second\n"),
+-            ("1. first\\\n   second\n", "1. | first\n   | second\n"),
+-        ):
+-            with self.subTest(text=text):
+-                self.assertEqual(render(text), expected)
+-
+-
+ class TestMarkdownRendererRoundTrip(TestCase):
+     """Reformatting valid Markdown must not change its meaning: rendering the
+     reformatted source to HTML must match rendering the original source."""
+@@ -124,28 +113,6 @@ class TestMarkdownRendererRoundTrip(TestCase):
+         ):
+             self.assert_round_trip(text)
+ 
+-    def test_codespan_edge_spaces(self):
+-        for text in (
+-            "`  x  `",
+-            "`   x   `",
+-            "`  x `",
+-            "` x  `",
+-            "` `",
+-            "`   `",
+-            "``  a ` b  ``",
+-        ):
+-            with self.subTest(text=text):
+-                self.assert_round_trip(text)
+-
+-    def test_image_alt_matching_url_stays_an_image(self):
+-        for text in (
+-            "![https://example.com](https://example.com)",
+-            "![user@example.com](mailto:user@example.com)",
+-            "[![https://example.com](https://example.com)](/target)",
+-        ):
+-            with self.subTest(text=text):
+-                self.assert_round_trip(text)
+-
+     def test_link_autolinks_still_render(self):
+         self.assertEqual(
+             self.reformat("[https://example.com](https://example.com)"),
+@@ -167,68 +134,6 @@ class TestMarkdownRendererRoundTrip(TestCase):
+                     self.assertEqual([token["type"] for token in tokens], ["block_code"])
+                     self.assertEqual(tokens[0]["raw"], "\n".join(lines) + "\n")
+ 
+-    def test_link_title_containing_quote(self):
+-        # a double quote inside a link/image title must be escaped, or the
+-        # re-parse closes the title early and drops it
+-        for text in (
+-            "[t](/u 'say \"hi\"')\n",
+-            '[t](/u "say \\"hi\\"")\n',
+-            "![a](/u 'say \"hi\"')\n",
+-            "[t][r]\n\n[r]: /u 'say \"hi\"'\n",
+-            '[t](/u "back\\\\slash \\" quote")\n',
+-        ):
+-            self.assert_round_trip(text)
+-
+-    def test_empty_reference_link_destination(self):
+-        for reference in ("[text][r]", "[r][]", "[r]"):
+-            for title in ("", ' "title"', " 'say \"hi\"'"):
+-                with self.subTest(reference=reference, title=title):
+-                    text = reference + "\n\n[r]: <>" + title + "\n"
+-                    self.assertIn('href=""', self.to_html(text))
+-                    self.assert_round_trip(text)
+-
+-    def test_empty_reference_image_destination(self):
+-        for title in ("", ' "title"', " 'say \"hi\"'"):
+-            with self.subTest(title=title):
+-                text = "![alt][r]\n\n[r]: <>" + title + "\n"
+-                self.assertIn('src=""', self.to_html(text))
+-                self.assert_round_trip(text)
+-
+-    def test_unused_empty_reference_destination(self):
+-        self.assertEqual(self.reformat("[r]: <>\n"), "[r]: <>\n")
+-        self.assertEqual(self.reformat('[r]: <> "title"\n'), '[r]: <> "title"\n')
+-
+-    def test_nonempty_reference_destination_format(self):
+-        for destination in ("/url", "https://example.com", "/path(a)"):
+-            with self.subTest(destination=destination):
+-                text = '[text][r]\n\n[r]: ' + destination + ' "title"\n'
+-                self.assertEqual(self.reformat(text), text)
+-
+-    def test_block_quote_content_ending_in_gt(self):
+-        # a block quote whose content ends with ">" (an autolink, an inline
+-        # HTML tag, or a literal ">") must keep that character; it was being
+-        # stripped along with the trailing quote marker
+-        for text in (
+-            "> <https://example.com>\n",
+-            "> <b>raw</b>\n",
+-            "> ends with a literal &gt; >\n",
+-            "> > nested <https://example.com>\n",
+-            "> first\n>\n> <https://example.com>\n",
+-        ):
+-            self.assert_round_trip(text)
+-
+-    def test_multiline_setext_heading(self):
+-        # a setext heading may span several lines; re-emitting it as an ATX
+-        # heading ("# ...") drops every line after the first out of the
+-        # heading, because an ATX heading is a single line
+-        for text in (
+-            "Foo\nBar\n===\n",
+-            "Foo\nBar\n---\n",
+-            "one\ntwo\nthree\n===\n",
+-            "Foo *bar\nbaz*\n====\n",
+-        ):
+-            self.assert_round_trip(text)
+-
+     def test_real_markers_preserved(self):
+         for text in (
+             "* bullet\n",
+@@ -240,20 +145,6 @@ class TestMarkdownRendererRoundTrip(TestCase):
+         ):
+             self.assert_round_trip(text)
+ 
+-    def test_heading_literal_trailing_hashes(self):
+-        for text in (
+-            "foo #\n---\n",
+-            "foo ###\n===\n",
+-            "# foo \\#\n",
+-            "###### \\###\n",
+-            "foo\t###\n---\n",
+-            "foo#\n---\n",
+-            "# C#\n",
+-            "# `foo #`\n",
+-        ):
+-            with self.subTest(text=text):
+-                self.assert_round_trip(text)
+-
+     def test_prose_not_over_escaped(self):
+         for text in (
+             "snake_case_var\n",
+@@ -263,47 +154,9 @@ class TestMarkdownRendererRoundTrip(TestCase):
+         ):
+             self.assert_round_trip(text)
+ 
+-    def test_leading_blank_lines_preserved(self):
+-        # blank_line tokens at the start of the document were rendered as
+-        # empty strings, so leading newlines disappeared on reformat
+-        self.assertEqual(self.reformat("\nabc"), "\nabc\n")
+-        self.assertEqual(self.reformat("\n\n\n\nabc"), "\n\n\n\nabc\n")
+-
+-
+ class TestRendererListLineEndings(TestCase):
+     non_line_breaks = ("\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+ 
+-    def test_markdown_list_content(self):
+-        reformat = create_markdown(renderer=MarkdownRenderer())
+-        to_html = create_markdown(escape=False)
+-        for separator in self.non_line_breaks:
+-            content = "before" + separator + "after"
+-            for template in (
+-                "- {}\n",
+-                "1. {}\n",
+-                "- parent\n  - {}\n",
+-                "- first\n\n- {}\n",
+-                "- `{}`\n",
+-                "- item\n\n  ```\n  {}\n  ```\n",
+-            ):
+-                with self.subTest(separator=repr(separator), template=template):
+-                    source = template.format(content)
+-                    result = reformat(source)
+-                    self.assertIn(content, result)
+-                    self.assertEqual(to_html(result), to_html(source))
+-
+-    def test_rst_list_content(self):
+-        render = create_markdown(renderer=RSTRenderer())
+-        for separator in self.non_line_breaks:
+-            content = "before" + separator + "after"
+-            for source, expected in (
+-                ("- " + content + "\n", "- " + content + "\n"),
+-                ("1. " + content + "\n", "1. " + content + "\n"),
+-                ("- `" + content + "`\n", "- ``" + content + "``\n"),
+-            ):
+-                with self.subTest(separator=repr(separator), source=source):
+-                    self.assertEqual(render(source), expected)
+-
+     def test_markdown_list_line_endings(self):
+         reformat = create_markdown(renderer=MarkdownRenderer())
+         expected = "- first\n  continued\n- second\n"
+@@ -373,19 +226,6 @@ class TestMarkdownRendererPlugins(TestCase):
+         result = md("| A | B |\n|---|---|\n| 1 | 2 |\n")
+         self.assertEqual(result, "| A | B |\n| --- | --- |\n| 1 | 2 |\n")
+ 
+-    def test_table_codespan_escaped_pipes_round_trip(self):
+-        md = create_markdown(renderer=MarkdownRenderer(), plugins=["table"])
+-        to_html = create_markdown(plugins=["table"])
+-        for cell in (r"`a\|b`", r"`a\\\|b`", r"`a\|b\|c`"):
+-            for source in (
+-                "| Header |\n| --- |\n| " + cell + " |\n",
+-                "| " + cell + " |\n| --- |\n| Body |\n",
+-            ):
+-                with self.subTest(source=source):
+-                    result = md(source)
+-                    self.assertEqual(result, source)
+-                    self.assertEqual(to_html(result), to_html(source))
+-
+     def test_table_plain_escaped_pipe_round_trip(self):
+         md = create_markdown(renderer=MarkdownRenderer(), plugins=["table"])
+         to_html = create_markdown(plugins=["table"])
+@@ -393,11 +233,6 @@ class TestMarkdownRendererPlugins(TestCase):
+         self.assertEqual(md(source), source)
+         self.assertEqual(to_html(md(source)), to_html(source))
+ 
+-    def test_formatting_plugins_markdown(self):
+-        md = create_markdown(renderer=MarkdownRenderer(), plugins=["strikethrough", "mark", "insert"])
+-        self.assertEqual(md("~~gone~~, ==marked== and ^^inserted^^\n"), "~~gone~~, ==marked== and ^^inserted^^\n")
+-        self.assertEqual(md("~~a **b** c~~\n"), "~~a **b** c~~\n")
+-
+     def test_standalone_list_item(self):
+         renderer = MarkdownRenderer()
+         token = {
