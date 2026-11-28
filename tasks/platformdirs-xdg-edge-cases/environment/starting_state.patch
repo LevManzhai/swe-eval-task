@@ -1,0 +1,1497 @@
+diff --git a/.github/THREAT_MODEL.md b/.github/THREAT_MODEL.md
+index 94254fa..ee9a61c 100644
+--- a/.github/THREAT_MODEL.md
++++ b/.github/THREAT_MODEL.md
+@@ -51,12 +51,12 @@ An attacker who controls any of these already has what platformdirs could give t
+ 
+ ## Untrusted inputs
+ 
+-| Input                                                                                 | Comes from                                                                                 | What platformdirs guarantees                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+-| `appname`, `appauthor`, `version`, and the `name` of `place_*_file` and `find_*_file` | Possibly derived by the application from package metadata, plugins or remote configuration | Rejects an absolute or drive-qualified value and one that climbs out with `..`.                                                                                                                                                                                                                                                                                                                                                                                                                         |
+-| Existing entries in a shared parent                                                   | Another local user who can write that parent                                               | Must not make platformdirs create or return a path outside the chosen base; report any way it does.                                                                                                                                                                                                                                                                                                                                                                                                     |
+-| `$XDG_RUNTIME_DIR`, the default runtime directory and the temporary fallback          | The session, or another user on a shared `/tmp`                                            | `user_runtime_dir` uses `$XDG_RUNTIME_DIR` on Unix and macOS, and the Unix default, only as a directory, not a symlink, owned by the user with mode `0o700`; on Unix, `$XDG_RUNTIME_DIR` is also refused below a world-writable parent without the sticky bit, or below an entry of a world-writable directory that neither root nor the user owns; otherwise platformdirs falls back. The temporary fallback raises `PermissionError` when it is a symlink, not a directory, or owned by another user. |
+-| Relative XDG values                                                                   | A misconfigured environment                                                                | Ignored, as the XDG Base Directory specification requires; only absolute values are used.                                                                                                                                                                                                                                                                                                                                                                                                               |
++| Input                                                                                 | Comes from                                                                                 | What platformdirs guarantees                                                                                                                                                                                                                                                                                     |
++| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
++| `appname`, `appauthor`, `version`, and the `name` of `place_*_file` and `find_*_file` | Possibly derived by the application from package metadata, plugins or remote configuration | Rejects an absolute or drive-qualified value and one that climbs out with `..`.                                                                                                                                                                                                                                  |
++| Existing entries in a shared parent                                                   | Another local user who can write that parent                                               | Must not make platformdirs create or return a path outside the chosen base; report any way it does.                                                                                                                                                                                                              |
++| `$XDG_RUNTIME_DIR`, the default runtime directory and the temporary fallback          | The session, or another user on a shared `/tmp`                                            | `user_runtime_dir` uses `$XDG_RUNTIME_DIR` on Unix and macOS, and the Unix default, only as a directory, not a symlink, owned by the user with mode `0o700`; otherwise platformdirs falls back. The temporary fallback raises `PermissionError` when it is a symlink, not a directory, or owned by another user. |
++| Relative XDG values                                                                   | A misconfigured environment                                                                | Ignored, as the XDG Base Directory specification requires; only absolute values are used.                                                                                                                                                                                                                        |
+ 
+ ## Threats and controls
+ 
+@@ -102,9 +102,6 @@ Every workflow pins third-party actions to a commit SHA.
+   stays inside the base, and Windows 11 stops an elevated process from following a junction a standard user planted
+   there.
+ - A fully qualified `WIN_PD_OVERRIDE_*` variable replaces the Known Folder answer; the environment is trusted.
+-- Group-writable parents of `$XDG_RUNTIME_DIR` are not checked.
+-- A parent of `$XDG_RUNTIME_DIR` that another user plants between the parent check and the creation still receives the
+-  missing directories, empty; platformdirs does not return that path.
+ 
+ ## Keeping this current
+ 
+diff --git a/docs/api.rst b/docs/api.rst
+index b01c019..49c0cf5 100644
+--- a/docs/api.rst
++++ b/docs/api.rst
+@@ -277,8 +277,7 @@ Windows. Executables here are available to all users.
+ 
+ These methods are available on :class:`~platformdirs.PlatformDirs` instances. They yield both user and site directories
+ for a given type, enabling configuration merging and fallback patterns. See :ref:`howto:Merging config from multiple
+-sources` for a practical example. The most specific directory comes first. Spellings that differ only by a trailing
+-separator or ``/.`` appear once; string iterators keep the first spelling.
++sources` for a practical example. The most specific directory comes first, and each distinct directory appears once.
+ 
+ - :meth:`~platformdirs.api.PlatformDirsABC.iter_data_dirs` / :meth:`~platformdirs.api.PlatformDirsABC.iter_data_paths`
+ - :meth:`~platformdirs.api.PlatformDirsABC.iter_config_dirs` /
+diff --git a/docs/changelog.rst b/docs/changelog.rst
+index 94d0e55..210310e 100644
+--- a/docs/changelog.rst
++++ b/docs/changelog.rst
+@@ -12,14 +12,6 @@
+  4.14.5 (2026-11-04)
+ *********************
+ 
+-.. _release-4-14-5-fixed:
+-
+-Fixed
+-=====
+-
+-- Resolve the temporary :func:`~platformdirs.user_runtime_dir` fallback to ``/runtime-<uid>`` instead of
+-  ``//runtime-<uid>`` when the temporary directory is ``/`` (:pr:`687`) by :user:`darrenhuai` and :user:`gaborbernat`.
+-
+ .. _release-4-14-4:
+ 
+ *********************
+@@ -32,28 +24,12 @@ Fixed
+  4.14.3 (2026-11-01)
+ *********************
+ 
+-.. _release-4-14-3-fixed:
+-
+-Fixed
+-=====
+-
+-- Preserve trailing whitespace in absolute XDG directory values instead of resolving a different directory (:pr:`679`)
+-  by :user:`mikegit123git` and :user:`gaborbernat`.
+-
+ .. _release-4-14-2:
+ 
+ *********************
+  4.14.2 (2026-10-31)
+ *********************
+ 
+-.. _release-4-14-2-fixed:
+-
+-Fixed
+-=====
+-
+-- Deduplicate equivalent XDG directory spellings across string and path iterators and file searches (:pr:`677`) by
+-  :user:`AlvaroBalbin` and :user:`gaborbernat`.
+-
+ .. _release-4-14-1:
+ 
+ *********************
+@@ -88,27 +64,12 @@ Added
+ Fixed
+ =====
+ 
+-- Return the media and fonts directories under root's home for root with ``use_site_for_root``, ignoring the invoking
+-  user's ``XDG_*_DIR``, ``user-dirs.dirs`` and ``XDG_DATA_HOME``, and create no inherited media directory under
+-  ``ensure_exists`` (:pr:`661`) by :user:`gaborbernat`.
+-- Raise ``ValueError`` from ``site_data_dir`` and ``site_config_dir`` under ``multipath=True`` when ``appname`` or
+-  ``version`` contains ``os.pathsep``, rather than returning a string that splits into a directory outside the site base
+-  (:pr:`662`) by :user:`gaborbernat`.
+-- Parse an unquoted ``user-dirs.dirs`` value with a long run of blanks in linear time, rather than in time quadratic in
+-  the run's length on every Unix media directory lookup (:pr:`663`) by :user:`gaborbernat`.
+-- Treat a relative ``HOME`` as unset on Unix, macOS and iOS, taking the home from the password database or raising
+-  ``RuntimeError``, rather than resolving user directories against the working directory (:pr:`664`) by
+-  :user:`gaborbernat`.
+-- Refuse a symlink as ``XDG_RUNTIME_DIR`` in :func:`~platformdirs.user_runtime_dir` when the value ends with ``/`` or
+-  ``/.``, which made the check follow the link (:pr:`665`) by :user:`gaborbernat`.
+ - Redirect ``user_*_dir`` calls with ``use_site_for_root=True`` when the effective uid is 0, so a setuid-root process
+   gets the site directories, and name and check the runtime directory by the effective uid (:pr:`666`) by
+   :user:`gaborbernat`.
+ - Apply the ``XDG_RUNTIME_DIR`` check of the Unix :func:`~platformdirs.user_runtime_dir` to the macOS one, so it no
+   longer uses a directory that is a symlink, owned by another user or not mode ``0700`` (:pr:`667`) by
+   :user:`gaborbernat`.
+-- Reject an ``XDG_RUNTIME_DIR`` below a parent that another user can replace, such as their own entry in ``/tmp``,
+-  instead of creating the runtime directory through it (:pr:`668`) by :user:`gaborbernat`.
+ - Stop accepting a Unix runtime directory that another user creates between the owner check and its use:
+   ``ensure_exists`` and :meth:`~platformdirs.unix.Unix.place_runtime_file` create it before checking it, and
+   :meth:`~platformdirs.api.PlatformDirsABC.find_runtime_file` checks it again after a hit (:pr:`669`) by
+@@ -116,9 +77,6 @@ Fixed
+ - Raise ``PermissionError`` on macOS when ``ensure_exists`` would create the site cache through a
+   ``/Library/Caches/$appname`` that is a symlink, not a directory, or owned by a user other than root and the current
+   one (:pr:`670`) by :user:`gaborbernat`.
+-- With ``ensure_exists``, raise ``FileExistsError`` when a configured media directory such as ``user_documents_dir`` is
+-  a regular file or a symlink to one, instead of returning the file's path. Dangling symlinks are still returned
+-  unchanged (:pr:`672`) by :user:`rupayon123` and :user:`gaborbernat`.
+ 
+ .. _release-4-13-7:
+ 
+@@ -131,21 +89,15 @@ Fixed
+ Fixed
+ =====
+ 
+-- Fall back to the default media directories when ``user-dirs.dirs`` exists but cannot be read, rather than raising
+-  ``PermissionError`` or ``IsADirectoryError`` (:pr:`632`) by :user:`Debasishhh` and :user:`gaborbernat`.
+ - Resolve the Windows Projects directory from ``USERPROFILE`` when ``HOME`` is empty, rather than raising
+   ``RuntimeError`` (:pr:`635`) by :user:`pabszero` and :user:`gaborbernat`.
+ - Resolve ``$HOME`` entries in ``user-dirs.dirs`` to ``/Documents`` instead of ``//Documents`` when the home directory
+   is ``/`` (:pr:`636`) by :user:`darrenhuai` and :user:`gaborbernat`.
+-- Print the error and keep listing directories in ``python -m platformdirs`` when the home directory is unknown, rather
+-  than stopping with ``RuntimeError`` (:pr:`638`) by :user:`tongwentao` and :user:`gaborbernat`.
+ - Raise ``FileNotFoundError`` from the ``place_*_file`` methods when the user directory is on a missing Windows drive or
+   network share, rather than recursing until ``RecursionError`` (:pr:`639`) by :user:`nk-batman21` and
+   :user:`gaborbernat`.
+ - Search the directories of a subclass's overridden ``iter_*_paths`` method in ``find_*_file`` and ``find_*_files``,
+   rather than the base class ones (:pr:`640`) by :user:`KennyMcSimpson` and :user:`gaborbernat`.
+-- Keep ``isolated_dirs`` paths under a relative root after the working directory changes, and yield the root as an
+-  absolute path (:pr:`643`) by :user:`0x5t4l1n` and :user:`gaborbernat`.
+ - Ignore Windows folder overrides with a UNC path missing its server or share name, such as ``\\server``, instead of
+   treating the application name as the share (:pr:`647`) by :user:`RedCat888` and :user:`gaborbernat`.
+ 
+diff --git a/docs/changelog/686.bugfix.rst b/docs/changelog/686.bugfix.rst
+deleted file mode 100644
+index c47a5ab..0000000
+--- a/docs/changelog/686.bugfix.rst
++++ /dev/null
+@@ -1,2 +0,0 @@
+-Accept ``use_site_for_root`` in :func:`~platformdirs.user_fonts_dir`, :func:`~platformdirs.user_fonts_path` and the media
+-directory and path functions, so they can return root's own directories as the matching properties do.
+diff --git a/docs/explanation.rst b/docs/explanation.rst
+index 04ff828..0745b59 100644
+--- a/docs/explanation.rst
++++ b/docs/explanation.rst
+@@ -492,9 +492,7 @@ When ``multipath=True``, ``site_data_dir`` and ``site_config_dir`` return all pa
+ Writing to ``site_*`` directories typically requires root privileges. Normal users can only read from these locations.
+ 
+ ``user_runtime_dir`` uses ``XDG_RUNTIME_DIR`` only if it names a directory, not a symlink, that the effective user owns
+-with mode ``0700``, as the spec requires. It also rejects a path below a parent that another user can replace: an entry
+-of a directory writable by every user, such as ``/tmp``, that root or the user does not own, or a directory writable by
+-every user without the sticky bit. If the variable is unset or fails that check, ``platformdirs`` emits a
++with mode ``0700``, as the spec requires. If the variable is unset or fails that check, ``platformdirs`` emits a
+ :class:`~platformdirs.RuntimeDirWarning` once for each distinct cause and tries ``/run/user/<uid>``
+ (``/var/run/user/<uid>`` on FreeBSD and NetBSD, ``/tmp/run/user/<uid>`` on OpenBSD) under the same check. When that
+ directory is missing or fails the check, it falls back to ``runtime-<uid>`` in :func:`tempfile.gettempdir`, created with
+@@ -512,10 +510,9 @@ turn warnings into errors and run without a login session, such as in a containe
+     When ``use_site_for_root=True`` is passed and the process is running as root (effective uid 0), ``user_*_dir``
+     calls are redirected to their ``site_*_dir`` equivalents. This is useful for system daemons and installers that
+     should write to system-wide directories rather than ``/root/.local/...``. XDG user environment variables (e.g.
+-    ``XDG_DATA_HOME``) and ``user-dirs.dirs`` are bypassed when the redirect is active, since they are typically
+-    inherited from the calling user via ``sudo`` and would defeat the purpose. The media and fonts directories, which
+-    have no site equivalent, return their default under root's home. The parameter is accepted on all platforms but
+-    only has an effect on Unix.
++    ``XDG_DATA_HOME``) are bypassed when the redirect is active, since they are typically inherited from the calling
++    user via ``sudo`` and would defeat the purpose. The parameter is accepted on all platforms but only has an effect on
++    Unix.
+ 
+ See :class:`platformdirs.unix.Unix` for the full API reference.
+ 
+diff --git a/docs/howto.rst b/docs/howto.rst
+index 13f1fff..8b9da3c 100644
+--- a/docs/howto.rst
++++ b/docs/howto.rst
+@@ -245,9 +245,8 @@ isolates under ``tmp_path`` and yields the root:
+         assert my_app_init(PlatformDirs("MyApp")) == {"theme": "dark"}
+ 
+ Each kind lands in ``<root>/<kind>``, for example ``<root>/user_config/MyApp``, and the module-level functions follow
+-the same layout. A relative root is made absolute on entry, so changing the working directory inside the context does
+-not move it. On Unix, isolation ignores ``use_site_for_root`` so user and site kinds stay separate even for root. The
+-redirection covers :data:`~platformdirs.PlatformDirs` in the current process only: a subprocess, or another platform
++the same layout. On Unix, isolation ignores ``use_site_for_root`` so user and site kinds stay separate even for root.
++The redirection covers :data:`~platformdirs.PlatformDirs` in the current process only: a subprocess, or another platform
+ class such as :class:`~platformdirs.unix.Unix` on macOS, still resolves the real directories.
+ 
+ Overriding directories with environment variables
+diff --git a/docs/parameters.rst b/docs/parameters.rst
+index e7fbda1..379be75 100644
+--- a/docs/parameters.rst
++++ b/docs/parameters.rst
+@@ -155,10 +155,6 @@ Unix/macOS only. When ``True``, ``site_data_dir`` and ``site_config_dir`` return
+     >>> site_data_dir("SuperApp", multipath=True)  # on Linux
+     '/usr/local/share/SuperApp:/usr/share/SuperApp'
+ 
+-With ``multipath=True``, an ``appname`` or ``version`` that contains ``os.pathsep`` raises :class:`ValueError`, since
+-the joined string could not be split back into its directories. The ``*_path`` properties return a single directory and
+-keep such names.
+-
+ **Type**: ``bool``
+ 
+ **Default**: ``False``
+@@ -191,11 +187,10 @@ Defaults to ``False``.
+ 
+ This applies to the data, config, cache, state, log, runtime and preference directories, user and site alike.
+ platformdirs creates a media directory such as ``user_documents_dir`` only when the user set it through an ``XDG_*_DIR``
+-variable or ``user-dirs.dirs``. It returns a dangling symlink there unchanged and raises ``FileExistsError`` when the
+-path is a regular file or a symlink to one. It never creates platform defaults such as ``~/Documents``, or the fonts,
+-bin and applications directories, because the desktop session or the system owns them. On Android the applications
+-directory is the data directory, so platformdirs creates it too. The module-level media functions, such as
+-:func:`~platformdirs.user_documents_path`, take it as a keyword-only argument.
++variable or ``user-dirs.dirs``, and returns a dangling symlink there unchanged. It never creates platform defaults such
++as ``~/Documents``, or the fonts, bin and applications directories, because the desktop session or the system owns them.
++On Android the applications directory is the data directory, so platformdirs creates it too. The module-level media
++functions, such as :func:`~platformdirs.user_documents_path`, take it as a keyword-only argument.
+ 
+ On Unix, macOS, iOS and Android, platformdirs creates the user directories and each missing parent with mode ``0700``,
+ as the `XDG Base Directory Specification <https://specifications.freedesktop.org/basedir/latest/>`_ asks. Site and media
+@@ -230,10 +225,6 @@ Unix-only. When ``True``, redirects ``user_*_dir`` calls to their ``site_*_dir``
+ 
+ When enabled, XDG user environment variables (e.g., ``XDG_DATA_HOME``) are bypassed for the redirected directories. This
+ is useful for system services running as root that should use system-wide directories rather than root's home directory.
+-The media and fonts directories have no site equivalent, so they ignore ``XDG_*_DIR``, ``user-dirs.dirs`` and
+-``XDG_DATA_HOME`` and return their default under root's home, such as ``/root/Documents``, without creating it.
+-The module-level media and fonts functions, such as :func:`~platformdirs.user_documents_path`, take it as a
+-keyword-only argument.
+ 
+ .. code-block:: python
+ 
+@@ -278,12 +269,9 @@ Supported XDG variables:
+ - ``XDG_CONFIG_DIRS`` - system config directories (colon-separated).
+ - ``XDG_RUNTIME_DIR`` - user runtime directory.
+ 
+-XDG values must be absolute paths. ``platformdirs`` keeps whitespace in accepted values, so a trailing space or tab is
+-part of the directory name. A value with whitespace before the initial ``/`` is relative and ignored.
+-
+-On Unix, macOS and iOS the home directory comes from ``HOME``, or from the password database when ``HOME`` is unset,
+-empty or relative. Without an absolute home from either, a directory under the home raises ``RuntimeError``, while site
+-directories and absolute XDG values still resolve.
++On Unix and macOS the home directory comes from ``HOME``, or from the password database when ``HOME`` is unset or empty.
++Without either, a directory under the home raises ``RuntimeError``, while site directories and absolute XDG values still
++resolve.
+ 
+ **Windows environment variable overrides**: On Windows, ``WIN_PD_OVERRIDE_*`` environment variables can override default
+ paths. See the :ref:`explanation:Windows` section for details.
+diff --git a/src/platformdirs/__init__.py b/src/platformdirs/__init__.py
+index 1b4b157..be0eb4c 100644
+--- a/src/platformdirs/__init__.py
++++ b/src/platformdirs/__init__.py
+@@ -329,103 +329,90 @@ def site_log_dir(
+     ).site_log_dir
+ 
+ 
+-def user_documents_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_documents_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: documents directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_documents_dir
++    return PlatformDirs(ensure_exists=ensure_exists).user_documents_dir
+ 
+ 
+-def user_downloads_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_downloads_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: downloads directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_downloads_dir
++    return PlatformDirs(ensure_exists=ensure_exists).user_downloads_dir
+ 
+ 
+-def user_pictures_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_pictures_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: pictures directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_pictures_dir
++    return PlatformDirs(ensure_exists=ensure_exists).user_pictures_dir
+ 
+ 
+-def user_videos_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_videos_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: videos directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_videos_dir
++    return PlatformDirs(ensure_exists=ensure_exists).user_videos_dir
+ 
+ 
+-def user_music_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_music_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: music directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_music_dir
++    return PlatformDirs(ensure_exists=ensure_exists).user_music_dir
+ 
+ 
+-def user_desktop_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_desktop_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: desktop directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_desktop_dir
++    return PlatformDirs(ensure_exists=ensure_exists).user_desktop_dir
+ 
+ 
+-def user_projects_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_projects_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: projects directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_projects_dir
++    return PlatformDirs(ensure_exists=ensure_exists).user_projects_dir
+ 
+ 
+-def user_publicshare_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_publicshare_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: public share directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_publicshare_dir
++    return PlatformDirs(ensure_exists=ensure_exists).user_publicshare_dir
+ 
+ 
+-def user_templates_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
++def user_templates_dir(*, ensure_exists: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: templates directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_templates_dir
+-
++    return PlatformDirs(ensure_exists=ensure_exists).user_templates_dir
+ 
+-def user_fonts_dir(*, use_site_for_root: bool = False) -> str:
+-    """:param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+-
+-    :returns: fonts directory tied to the user
+ 
+-    """
+-    return PlatformDirs(use_site_for_root=use_site_for_root).user_fonts_dir
++def user_fonts_dir() -> str:
++    """:returns: fonts directory tied to the user"""
++    return PlatformDirs().user_fonts_dir
+ 
+ 
+ def user_preference_dir(  # ruff:ignore[too-many-arguments]
+@@ -846,103 +833,90 @@ def site_log_path(
+     ).site_log_path
+ 
+ 
+-def user_documents_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_documents_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: documents path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_documents_path
++    return PlatformDirs(ensure_exists=ensure_exists).user_documents_path
+ 
+ 
+-def user_downloads_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_downloads_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: downloads path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_downloads_path
++    return PlatformDirs(ensure_exists=ensure_exists).user_downloads_path
+ 
+ 
+-def user_pictures_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_pictures_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: pictures path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_pictures_path
++    return PlatformDirs(ensure_exists=ensure_exists).user_pictures_path
+ 
+ 
+-def user_videos_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_videos_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: videos path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_videos_path
++    return PlatformDirs(ensure_exists=ensure_exists).user_videos_path
+ 
+ 
+-def user_music_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_music_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: music path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_music_path
++    return PlatformDirs(ensure_exists=ensure_exists).user_music_path
+ 
+ 
+-def user_desktop_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_desktop_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: desktop path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_desktop_path
++    return PlatformDirs(ensure_exists=ensure_exists).user_desktop_path
+ 
+ 
+-def user_projects_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_projects_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: projects path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_projects_path
++    return PlatformDirs(ensure_exists=ensure_exists).user_projects_path
+ 
+ 
+-def user_publicshare_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_publicshare_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: public share path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_publicshare_path
++    return PlatformDirs(ensure_exists=ensure_exists).user_publicshare_path
+ 
+ 
+-def user_templates_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
++def user_templates_path(*, ensure_exists: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+-    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: templates path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_templates_path
+-
++    return PlatformDirs(ensure_exists=ensure_exists).user_templates_path
+ 
+-def user_fonts_path(*, use_site_for_root: bool = False) -> Path:
+-    """:param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+-
+-    :returns: fonts path tied to the user
+ 
+-    """
+-    return PlatformDirs(use_site_for_root=use_site_for_root).user_fonts_path
++def user_fonts_path() -> Path:
++    """:returns: fonts path tied to the user"""
++    return PlatformDirs().user_fonts_path
+ 
+ 
+ def user_preference_path(  # ruff:ignore[too-many-arguments]
+diff --git a/src/platformdirs/__main__.py b/src/platformdirs/__main__.py
+index fe395b8..dfb8449 100644
+--- a/src/platformdirs/__main__.py
++++ b/src/platformdirs/__main__.py
+@@ -66,10 +66,10 @@ def _print_dirs(dirs: PlatformDirsABC) -> None:
+ 
+ 
+ def _dir_or_error(dirs: PlatformDirsABC, prop: str) -> str:
+-    # A missing home or an unusable runtime directory should not stop the diagnostic report.
++    # user_runtime_dir raises when its temporary fallback is not a directory the user owns.
+     try:
+         return getattr(dirs, prop)
+-    except (PermissionError, RuntimeError) as error:
++    except PermissionError as error:
+         return str(error)
+ 
+ 
+diff --git a/src/platformdirs/_xdg.py b/src/platformdirs/_xdg.py
+index 22866da..642842e 100644
+--- a/src/platformdirs/_xdg.py
++++ b/src/platformdirs/_xdg.py
+@@ -6,7 +6,6 @@ import os
+ import posixpath
+ import sys
+ from contextlib import suppress
+-from pathlib import Path
+ from typing import Final
+ 
+ from .api import PlatformDirsABC
+@@ -165,22 +164,24 @@ class XDGMixin(PlatformDirsABC):
+ 
+ 
+ def _xdg_dir(env_var: str) -> str | None:
+-    path: Final = os.environ.get(env_var, "")
++    path: Final = os.environ.get(env_var, "").strip()
+     return path if posixpath.isabs(path) else None
+ 
+ 
+ def _xdg_dir_list(env_var: str) -> list[str]:
+-    return [path for path in os.environ.get(env_var, "").split(os.pathsep) if posixpath.isabs(path)]
++    return [
++        stripped for path in os.environ.get(env_var, "").split(os.pathsep) if posixpath.isabs(stripped := path.strip())
++    ]
+ 
+ 
+ def _expand_user(path: str) -> str:
+-    """Expand the leading ``~`` of ``path`` like :func:`os.path.expanduser`, treating a relative ``HOME`` as unset on POSIX.
++    """Expand the leading ``~`` of ``path`` like :func:`os.path.expanduser`, treating an empty ``HOME`` as unset on POSIX.
+ 
+-    :raises RuntimeError: if the home directory cannot be resolved to an absolute path.
++    :raises RuntimeError: if the home directory cannot be resolved.
+ 
+     """
+-    if sys.platform != "win32" and "HOME" in os.environ and not _is_absolute(os.environ["HOME"]):
+-        # expanduser uses HOME verbatim, so an empty one roots the path at / and a relative one at the working directory
++    if sys.platform != "win32" and "HOME" in os.environ and not os.environ["HOME"]:
++        # expanduser roots the path at / for an empty HOME; Rust's std::env::home_dir treats it as unset too
+         expanded = path
+         with suppress(ImportError, KeyError):
+             import pwd  # ruff:ignore[import-outside-top-level]  # missing on WASI
+@@ -188,17 +189,12 @@ def _expand_user(path: str) -> str:
+             expanded = pwd.getpwuid(os.getuid()).pw_dir.rstrip("/") + path[1:] or "/"
+     else:
+         expanded = os.path.expanduser(path)  # ruff:ignore[os-path-expanduser]  # str(Path) rewrites separators on Windows
+-    if not _is_absolute(expanded):
+-        msg = f"could not determine the home directory for {path!r}, set an absolute HOME or XDG variable"
++    if expanded.startswith("~"):
++        msg = f"could not determine the home directory for {path!r}, set HOME or an absolute XDG variable"
+         raise RuntimeError(msg)
+     return expanded
+ 
+ 
+-def _is_absolute(path: str) -> bool:
+-    # is_absolute accepts a Windows drive path, posixpath.isabs the POSIX home the Unix class gets on any host
+-    return posixpath.isabs(path) or Path(path).is_absolute()
+-
+-
+ __all__ = [
+     "XDGMixin",
+     "_expand_user",
+diff --git a/src/platformdirs/api.py b/src/platformdirs/api.py
+index 7122990..c7e1a52 100644
+--- a/src/platformdirs/api.py
++++ b/src/platformdirs/api.py
+@@ -4,6 +4,7 @@ from __future__ import annotations
+ 
+ import os
+ from abc import ABC, abstractmethod
++from contextlib import suppress
+ from copy import copy
+ from pathlib import Path
+ from typing import TYPE_CHECKING
+@@ -59,9 +60,7 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
+         """An optional parameter which indicates that the entire list of data dirs should be returned.
+ 
+         When ``False``, only the first item is returned. Affects ``site_data_dir``, ``site_config_dir`` and
+-        ``site_applications_dir`` on Unix and macOS, and ``site_cache_dir`` on macOS under Homebrew. All but
+-        ``site_applications_dir`` raise :class:`ValueError` under it when `appname` or `version` contains
+-        :data:`os.pathsep`.
++        ``site_applications_dir`` on Unix and macOS, and ``site_cache_dir`` on macOS under Homebrew.
+ 
+         """
+         self.opinion = opinion
+@@ -157,19 +156,12 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
+     def _optionally_create_media_directory(self, path: str) -> None:
+         # Only called for a media directory the user configured. Media directories are often symlinks to removable or
+         # network storage, so a dangling link is returned as-is, like before ensure_exists covered them.
+-        try:
++        with suppress(FileExistsError):
+             self._optionally_create_directory(path, private=False)
+-        except FileExistsError:
+-            if not (directory := Path(path)).is_symlink() or directory.exists():
+-                raise
+ 
+     def _select_site_dirs(self, dirs: list[str]) -> str:
+         # Site lists are built without touching the disk, so ensure_exists only creates what the caller gets back.
+         selected = dirs if self.multipath else dirs[:1]
+-        if self.multipath and any(os.pathsep in path for path in selected):
+-            # Callers split the joined string on os.pathsep, so a separator inside one entry reads as two directories.
+-            msg = f"multipath cannot join site directories that contain {os.pathsep!r}, got {selected!r}"
+-            raise ValueError(msg)
+         for path in selected:
+             self._optionally_create_directory(path, private=False)
+         return os.pathsep.join(selected)
+@@ -717,10 +709,10 @@ def _unique(dirs: Iterable[str]) -> Iterator[str]:
+     """:yield: ``dirs`` in order, skipping any directory already yielded."""
+     # Lazy on purpose: under ensure_exists reading a site_*_dir creates it, so draining ``dirs`` up front would
+     # create directories for a caller that stops after the first entry.
+-    seen: set[Path] = set()
++    seen: set[str] = set()
+     for path in dirs:
+-        if (normalized := Path(path)) not in seen:
+-            seen.add(normalized)
++        if path not in seen:
++            seen.add(path)
+             yield path
+ 
+ 
+diff --git a/src/platformdirs/testing.py b/src/platformdirs/testing.py
+index e1fa0ef..914a84e 100644
+--- a/src/platformdirs/testing.py
++++ b/src/platformdirs/testing.py
+@@ -39,15 +39,14 @@ def isolated_dirs(root: str | os.PathLike[str]) -> Generator[Path, None, None]:
+     ``PlatformDirs("app", version="1.0").user_config_path`` becomes ``<root>/user_config/app/1.0``. Every thread of the
+     current process sees the change, and subprocesses do not.
+ 
+-    On Unix, ``use_site_for_root`` is ignored inside the context so user and site directories keep separate kinds. A
+-    relative ``root`` is made absolute on entry, so changing the working directory does not move the isolation root.
++    On Unix, ``use_site_for_root`` is ignored inside the context so user and site directories keep separate kinds.
+ 
+     :param root: directory that holds the redirected directories
+ 
+-    :returns: the absolute isolation root as a :class:`~pathlib.Path`
++    :returns: ``root`` as a :class:`~pathlib.Path`
+ 
+     """
+-    base = Path(root).absolute()
++    base = Path(root)
+     patches = {
+         name: _redirect(
+             base / (kind := name.removesuffix("_dir")), app=kind in _APP_KINDS, private=kind.startswith("user_")
+diff --git a/src/platformdirs/unix.py b/src/platformdirs/unix.py
+index bf732ed..e953dbe 100644
+--- a/src/platformdirs/unix.py
++++ b/src/platformdirs/unix.py
+@@ -3,7 +3,6 @@
+ from __future__ import annotations
+ 
+ import os
+-import posixpath
+ import re
+ import stat
+ import sys
+@@ -190,7 +189,7 @@ class _UnixDefaults(PlatformDirsABC):  # ruff:ignore[too-many-public-methods]
+ 
+     def _temp_runtime_dir(self) -> str:
+         # Another user can pre-create this predictable name, and XDG requires an owned runtime dir with mode 0700.
+-        path = _temp_runtime_fallback()
++        path = f"{gettempdir()}/runtime-{geteuid()}"
+         with suppress(FileExistsError):
+             self._optionally_create_directory(path, private=True)
+         if problem := _runtime_dir_problem(path, missing_ok=not self.ensure_exists, check_mode=False):
+@@ -267,11 +266,10 @@ class Unix(XDGMixin, _UnixDefaults):
+         """Runtime directory tied to the user, e.g. ``$XDG_RUNTIME_DIR/$appname/$version``.
+ 
+         Accepts ``$XDG_RUNTIME_DIR`` only as a directory, not a symlink, that the user owns with mode ``0700``, as the
+-        XDG spec requires, and only below parents no other user can replace. Creates a missing one that way under
+-        ``ensure_exists``. When the variable is unset or fails that check, emits one
+-        :class:`~platformdirs.RuntimeDirWarning` per cause and falls back to the platform default
+-        (``/tmp/run/user/<uid>`` on OpenBSD, ``/var/run/user/<uid>`` on FreeBSD/NetBSD, ``/run/user/<uid>`` elsewhere)
+-        if it passes the same check, else to ``runtime-<uid>`` in the temporary directory. Root with
++        XDG spec requires, and creates a missing one that way under ``ensure_exists``. When the variable is unset or
++        fails that check, emits one :class:`~platformdirs.RuntimeDirWarning` per cause and falls back to the platform
++        default (``/tmp/run/user/<uid>`` on OpenBSD, ``/var/run/user/<uid>`` on FreeBSD/NetBSD, ``/run/user/<uid>``
++        elsewhere) if it passes the same check, else to ``runtime-<uid>`` in the temporary directory. Root with
+         ``use_site_for_root`` gets the site equivalent.
+ 
+         :raises PermissionError: if the temporary fallback is a symlink, not a directory, owned by another user, or
+@@ -284,15 +282,9 @@ class Unix(XDGMixin, _UnixDefaults):
+         if not (path := _xdg_dir("XDG_RUNTIME_DIR")):
+             reason = "XDG_RUNTIME_DIR is not set"
+         else:
+-            # Creating the missing levels follows whatever symlink sits at a parent, so check the parents first.
+-            if not (skipped := bool(_runtime_dir_parent_problem(path))):
+-                with suppress(OSError):
+-                    self._optionally_create_directory(path, private=True)
+-            # A leaf left missing because the parent check skipped creation is reported as that parent problem.
+-            if not (
+-                problem := _runtime_dir_problem(path, missing_ok=skipped or not self.ensure_exists)
+-                or _runtime_dir_parent_problem(path)
+-            ):
++            with suppress(OSError):
++                self._optionally_create_directory(path, private=True)
++            if not (problem := _runtime_dir_problem(path, missing_ok=not self.ensure_exists)):
+                 return self._append_app_name_and_version(path, private=True)
+             reason = f"XDG_RUNTIME_DIR {problem}"
+         _warn_once(f"{reason}, falling back to {(fallback := self._default_runtime_dir())}")
+@@ -322,18 +314,6 @@ class Unix(XDGMixin, _UnixDefaults):
+         """Bin directory tied to the user, or site equivalent when root with ``use_site_for_root``."""
+         return self.site_bin_dir if self._use_site else super().user_bin_dir
+ 
+-    @property
+-    def user_fonts_dir(self) -> str:
+-        """Fonts directory tied to the user, ignoring ``$XDG_DATA_HOME`` when root with ``use_site_for_root``."""
+-        return super(XDGMixin, self).user_fonts_dir if self._use_site else super().user_fonts_dir
+-
+-    def _xdg_media_dir(self, env_var: str) -> str | None:
+-        # The XDG_*_DIR variables and user-dirs.dirs belong to the user who started the root process.
+-        return None if self._use_site else super()._xdg_media_dir(env_var)
+-
+-    def _user_media_dir(self, key: str, default: str) -> str:
+-        return _expand_user(default) if self._use_site else super()._user_media_dir(key, default)
+-
+     @property
+     def user_data_path(self) -> Path:
+         """Data path tied to the user, or the first site entry when root with ``use_site_for_root``."""
+@@ -360,9 +340,8 @@ _USER_DIRS_LINE: Final = re.compile(
+     [ \t]*(?P<key>\w+)[ \t]*=[ \t]*  # KEY=, blanks allowed around the key and after the =
+     (?:
+         "(?P<quoted>(?:[^"\\]|\\.)*)"  # a double-quoted value with backslash escapes, text after it ignored
+-        |(?P<bare>[^"\s](?:[^ \t\n]|[ \t]+[^ \t\n\#])*)  # or an unquoted value; blanks join it only before a word
+-                                                         # that starts no comment, and each run is matched once so
+-                                                         # long runs stay linear
++        |(?P<bare>[^"\s].*?)          # or an unquoted value, up to
++        (?:[ \t]+\#.*|[ \t]*)$         # a comment, which sh starts at a word-initial #, or the line end
+     )
+     """,
+     re.VERBOSE,
+@@ -380,15 +359,14 @@ def _get_user_dirs_folder(key: str) -> str | None:
+     """
+     config_home = _xdg_dir("XDG_CONFIG_HOME") or _expand_user("~/.config")
+     user_dirs_config_path = Path(config_home) / "user-dirs.dirs"
+-    folder = None
+-    try:
+-        # the file holds raw path bytes, and surrogateescape round-trips undecodable ones like os.fsdecode
+-        with user_dirs_config_path.open(encoding=sys.getfilesystemencoding(), errors="surrogateescape") as stream:
+-            for line in stream:
+-                if (entry := _USER_DIRS_LINE.match(line)) and entry["key"] == key:
+-                    folder = _resolve_user_dirs_value(entry) or folder
+-    except OSError:  # a missing or unreadable file leaves the defaults in place
++    if not user_dirs_config_path.exists():
+         return None
++    folder = None
++    # the file holds raw path bytes, and surrogateescape round-trips undecodable ones like os.fsdecode
++    with user_dirs_config_path.open(encoding=sys.getfilesystemencoding(), errors="surrogateescape") as stream:
++        for line in stream:
++            if (entry := _USER_DIRS_LINE.match(line)) and entry["key"] == key:
++                folder = _resolve_user_dirs_value(entry) or folder
+     return folder
+ 
+ 
+@@ -407,15 +385,10 @@ def _resolve_user_dirs_value(entry: re.Match[str]) -> str | None:
+     return f"{prefix}{value}" or "/"
+ 
+ 
+-def _temp_runtime_fallback() -> str:
+-    # A temporary directory of / would give "//runtime-<uid>", which pathlib keeps as a distinct root.
+-    return posixpath.join(gettempdir(), f"runtime-{geteuid()}")
+-
+-
+ def _in_own_runtime_dir(path: Path) -> bool:
+     # The lookup let a missing runtime directory pass, so another user may have created it since. The fallback goes
+     # first because a rejected XDG_RUNTIME_DIR, such as /tmp, contains it.
+-    for base in (_temp_runtime_fallback(), _xdg_dir("XDG_RUNTIME_DIR")):
++    for base in (f"{gettempdir()}/runtime-{geteuid()}", _xdg_dir("XDG_RUNTIME_DIR")):
+         if base and path.is_relative_to(base):
+             return not _runtime_dir_problem(base, missing_ok=False, check_mode=False)
+     return True
+@@ -429,8 +402,7 @@ def _runtime_dir_problem(path: str, *, missing_ok: bool, check_mode: bool = True
+ 
+     """
+     try:
+-        # A trailing / or /. makes lstat follow a final symlink, while Path, which creates the directory, drops it.
+-        info = os.lstat(str(Path(path)))
++        info = os.lstat(path)
+     except FileNotFoundError:
+         return None if missing_ok else f"{path} is missing"
+     except OSError as error:
+@@ -445,22 +417,6 @@ def _runtime_dir_problem(path: str, *, missing_ok: bool, check_mode: bool = True
+     return next((f"{path} {problem}" for failed, problem in checks if failed), None)
+ 
+ 
+-def _runtime_dir_parent_problem(path: str) -> str | None:
+-    if sys.platform == "win32":  # every directory reports as writable by everyone there
+-        return None
+-    in_shared_dir = False
+-    for parent in reversed(Path(path).parents):
+-        try:
+-            if in_shared_dir and (owner := os.lstat(parent).st_uid) not in {0, geteuid()}:
+-                return f"{path} is below {parent}, owned by uid {owner}"
+-            mode = parent.stat().st_mode  # a symlink that got past the owner check is judged by its target
+-        except OSError:
+-            return None  # the missing rest gets created, or _runtime_dir_problem reports the path itself
+-        if (in_shared_dir := bool(mode & stat.S_IWOTH)) and not mode & stat.S_ISVTX:
+-            return f"{path} is below {parent}, writable by every user"
+-    return None
+-
+-
+ def _warn_once(message: str) -> None:
+     # Each read of user_runtime_dir repeats the check, so a warning per read would flood long-running programs.
+     if message not in _WARNED:
+diff --git a/tests/test_api.py b/tests/test_api.py
+index 154b1e0..d6aab93 100644
+--- a/tests/test_api.py
++++ b/tests/test_api.py
+@@ -444,16 +444,6 @@ def _touch(path: Path) -> Path:
+     return path
+ 
+ 
+-@pytest.mark.parametrize("dirs_class", [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")])
+-@pytest.mark.parametrize("kind", [pytest.param("config", id="config"), pytest.param("data", id="data")])
+-@pytest.mark.parametrize(
+-    "suffix", [pytest.param("", id="same"), pytest.param("/", id="slash"), pytest.param("/.", id="dot")]
+-)
+-def test_equivalent_xdg_dirs_keep_first_spelling(equivalent_xdg_dirs: tuple[Unix | MacOS, str], kind: str) -> None:
+-    dirs, home = equivalent_xdg_dirs
+-    assert list(getattr(dirs, f"iter_{kind}_dirs")()) == [home]
+-
+-
+ @pytest.fixture
+ def equivalent_xdg_dirs(
+     tmp_path: Path,
+@@ -470,28 +460,6 @@ def equivalent_xdg_dirs(
+     return dirs_class(), home
+ 
+ 
+-@pytest.mark.parametrize("dirs_class", [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")])
+-@pytest.mark.parametrize("kind", [pytest.param("config", id="config"), pytest.param("data", id="data")])
+-@pytest.mark.parametrize(
+-    "suffix", [pytest.param("", id="same"), pytest.param("/", id="slash"), pytest.param("/.", id="dot")]
+-)
+-def test_equivalent_xdg_paths_appear_once(equivalent_xdg_dirs: tuple[Unix | MacOS, str], kind: str) -> None:
+-    dirs, home = equivalent_xdg_dirs
+-    assert list(getattr(dirs, f"iter_{kind}_paths")()) == [Path(home)]
+-
+-
+-@pytest.mark.parametrize("dirs_class", [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")])
+-@pytest.mark.parametrize("kind", [pytest.param("config", id="config"), pytest.param("data", id="data")])
+-@pytest.mark.parametrize(
+-    "suffix", [pytest.param("", id="same"), pytest.param("/", id="slash"), pytest.param("/.", id="dot")]
+-)
+-def test_equivalent_xdg_files_appear_once(equivalent_xdg_dirs: tuple[Unix | MacOS, str], kind: str) -> None:
+-    dirs, home = equivalent_xdg_dirs
+-    expected = Path(home) / "app.toml"
+-    expected.touch()
+-    assert getattr(dirs, f"find_{kind}_files")("app.toml") == [expected]
+-
+-
+ @pytest.mark.parametrize("kind", _EXISTING_KINDS)
+ def test_find_file_returns_user_file(dirs: Unix, kind: str, user_file: Path) -> None:
+     assert getattr(dirs, f"find_{kind}_file")("app.toml") == user_file
+diff --git a/tests/test_ios.py b/tests/test_ios.py
+index 22a878b..e10a698 100644
+--- a/tests/test_ios.py
++++ b/tests/test_ios.py
+@@ -144,20 +144,3 @@ def test_ios_ignores_xdg_variables(monkeypatch: pytest.MonkeyPatch, container: P
+     assert Path(getattr(IOS(), func)).is_relative_to(container)
+ 
+ 
+-@pytest.mark.usefixtures("_unknown_home")
+-@pytest.mark.parametrize(
+-    ("prop", "path"),
+-    [
+-        pytest.param("user_data_dir", "~/Library/Application Support", id="data"),
+-        pytest.param("user_config_dir", "~/Library/Application Support", id="config"),
+-        pytest.param("user_cache_dir", "~/Library/Caches", id="cache"),
+-        pytest.param("user_log_dir", "~/Library/Logs", id="log"),
+-        pytest.param("user_runtime_dir", "~/tmp", id="runtime"),
+-        pytest.param("user_documents_dir", "~/Documents", id="documents"),
+-        pytest.param("user_applications_dir", "~/Applications", id="applications"),
+-        pytest.param("user_fonts_dir", "~/Library/Fonts", id="fonts"),
+-    ],
+-)
+-def test_without_home_ios_dir_raises(prop: str, path: str) -> None:
+-    with pytest.raises(RuntimeError, match=re.escape(f"could not determine the home directory for {path!r}")):
+-        _ = getattr(IOS(appname="app", version="1.0"), prop)
+diff --git a/tests/test_macos.py b/tests/test_macos.py
+index 7a19126..8ae2c31 100644
+--- a/tests/test_macos.py
++++ b/tests/test_macos.py
+@@ -247,16 +247,6 @@ def test_macos_xdg_media_dirs(monkeypatch: pytest.MonkeyPatch, env_var: str, pro
+     assert getattr(MacOS(), prop) == "/custom/media"
+ 
+ 
+-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs elevated rights on Windows")
+-@pytest.mark.parametrize(("env_var", "prop"), _MEDIA_DIRS)
+-def test_macos_ensure_exists_raises_on_configured_media_file(
+-    monkeypatch: pytest.MonkeyPatch, media_file: Path, env_var: str, prop: str
+-) -> None:
+-    monkeypatch.setenv(env_var, str(media_file))
+-    with pytest.raises(FileExistsError):
+-        getattr(MacOS(ensure_exists=True), prop)
+-
+-
+ def _link_to_directory(path: Path, target: Path) -> None:
+     target.mkdir()
+     path.symlink_to(target)
+@@ -602,12 +592,6 @@ def test_macos_iter_runtime_dirs_no_duplicate(home: str) -> None:
+     assert list(MacOS(appname="foo").iter_runtime_dirs()) == [expected]
+ 
+ 
+-@pytest.mark.usefixtures("_clear_xdg_env", "_unknown_home")
+-def test_without_home_macos_runtime_dir_raises() -> None:
+-    with pytest.raises(RuntimeError, match=r"^could not determine the home directory for '~/Library/Caches/"):
+-        _ = MacOS(appname="app").user_runtime_dir
+-
+-
+ @pytest.mark.usefixtures("_clear_xdg_env")
+ @pytest.mark.parametrize(
+     "homebrew_prefix",
+diff --git a/tests/test_main.py b/tests/test_main.py
+index 13a87e5..e432a02 100644
+--- a/tests/test_main.py
++++ b/tests/test_main.py
+@@ -28,18 +28,6 @@ def test_run_as_module() -> None:
+         assert prop in out
+ 
+ 
+-@pytest.mark.usefixtures("_unknown_home", "_clear_xdg_env")
+-def test_run_prints_missing_home_and_continues(
+-    mocker: MockerFixture, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+-) -> None:
+-    mocker.patch("platformdirs.__main__.PlatformDirs", Unix)
+-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+-    main()
+-    output: Final = capsys.readouterr().out
+-    assert output.count("user_data_dir: could not determine the home directory") == 4
+-    assert output.count("site_data_dir: /usr/local/share/MyApp") == 4
+-
+-
+ def test_run_prints_permission_error_and_continues(
+     mocker: MockerFixture, runtime_temp_dir: Path, capsys: pytest.CaptureFixture[str]
+ ) -> None:
+diff --git a/tests/test_testing.py b/tests/test_testing.py
+index 7f611c2..da73bce 100644
+--- a/tests/test_testing.py
++++ b/tests/test_testing.py
+@@ -59,19 +59,6 @@ def relative_root(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: p
+     return request.param
+ 
+ 
+-def test_isolated_dirs_relative_root_yields_absolute(tmp_path: Path, relative_root: str) -> None:
+-    with isolated_dirs(relative_root) as root:
+-        assert root == tmp_path / "start" / relative_root
+-
+-
+-def test_isolated_dirs_relative_root_survives_chdir(
+-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative_root: str
+-) -> None:
+-    with isolated_dirs(relative_root):
+-        monkeypatch.chdir(tmp_path)
+-        assert _outside(tmp_path / "start" / relative_root) == {}
+-
+-
+ def test_isolated_dirs_redirects_every_accessor(tmp_path: Path) -> None:
+     with isolated_dirs(tmp_path):
+         assert _outside(tmp_path) == {}
+diff --git a/tests/test_unix.py b/tests/test_unix.py
+index a01a75f..f7812c6 100644
+--- a/tests/test_unix.py
++++ b/tests/test_unix.py
+@@ -280,52 +280,6 @@ def test_xdg_variable_custom_value(monkeypatch: pytest.MonkeyPatch, dirs_instanc
+     assert result == "/custom-dir"
+ 
+ 
+-@pytest.mark.parametrize("dirs_class", [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")])
+-@pytest.mark.parametrize(
+-    "kind",
+-    [
+-        pytest.param("data", id="data"),
+-        pytest.param("config", id="config"),
+-        pytest.param("cache", id="cache"),
+-        pytest.param("state", id="state"),
+-    ],
+-)
+-@pytest.mark.parametrize("whitespace", [pytest.param(" ", id="space"), pytest.param("\t", id="tab")])
+-def test_xdg_home_preserves_trailing_whitespace(
+-    monkeypatch: pytest.MonkeyPatch, dirs_class: type[Unix | MacOS], kind: str, whitespace: str
+-) -> None:
+-    home: typing.Final = f"/xdg-fixture/home{whitespace}"
+-    monkeypatch.setenv(f"XDG_{kind.upper()}_HOME", home)
+-    assert getattr(dirs_class(appname="demo"), f"user_{kind}_dir") == f"{home}{os.sep}demo"
+-
+-
+-@pytest.mark.usefixtures("_clear_xdg_env")
+-@pytest.mark.parametrize("dirs_class", [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")])
+-@pytest.mark.parametrize(
+-    "kind",
+-    [
+-        pytest.param("data", id="data"),
+-        pytest.param("config", id="config"),
+-        pytest.param("cache", id="cache"),
+-        pytest.param("state", id="state"),
+-    ],
+-)
+-def test_xdg_home_rejects_leading_whitespace(
+-    monkeypatch: pytest.MonkeyPatch, dirs_class: type[Unix | MacOS], kind: str
+-) -> None:
+-    expected: typing.Final = getattr(dirs_class(appname="demo"), f"user_{kind}_dir")
+-    monkeypatch.setenv(f"XDG_{kind.upper()}_HOME", " /xdg-fixture/home")
+-    assert getattr(dirs_class(appname="demo"), f"user_{kind}_dir") == expected
+-
+-
+-@pytest.mark.parametrize("dirs_class", [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")])
+-def test_xdg_media_preserves_trailing_whitespace(
+-    monkeypatch: pytest.MonkeyPatch, dirs_class: type[Unix | MacOS]
+-) -> None:
+-    monkeypatch.setenv("XDG_DOCUMENTS_DIR", "/xdg-fixture/documents ")
+-    assert dirs_class().user_documents_dir == "/xdg-fixture/documents "
+-
+-
+ @pytest.mark.usefixtures("_geteuid")
+ @pytest.mark.parametrize(
+     ("env_var", "prop", "default"),
+@@ -371,30 +325,6 @@ def test_site_cache_path_multipath_keeps_path_separator_in_app_arguments() -> No
+     assert dirs.site_cache_path == Path("/var/cache", f"org{os.pathsep}app", f"1{os.pathsep}2")
+ 
+ 
+-@pytest.mark.parametrize("prop", ["site_data_dir", "site_config_dir"])
+-@pytest.mark.parametrize(
+-    ("appname", "version"),
+-    [
+-        pytest.param(f"x{os.pathsep}/etc/evil", None, id="appname"),
+-        pytest.param("foo", f"1{os.pathsep}/etc/evil", id="version"),
+-    ],
+-)
+-def test_site_dir_multipath_rejects_path_separator_in_app_arguments(
+-    prop: str, appname: str, version: str | None
+-) -> None:
+-    with pytest.raises(ValueError, match="multipath cannot join"):
+-        getattr(Unix(appname=appname, version=version, multipath=True), prop)
+-
+-
+-def test_site_dir_multipath_rejects_path_separator_before_creating(
+-    monkeypatch: pytest.MonkeyPatch, posix_tmp_path: str
+-) -> None:
+-    monkeypatch.setenv("XDG_DATA_DIRS", f"{posix_tmp_path}/site")
+-    with pytest.raises(ValueError, match="multipath cannot join"):
+-        _ = Unix(appname=f"x{os.pathsep}y", multipath=True, ensure_exists=True).site_data_dir
+-    assert not Path(posix_tmp_path, "site").exists()
+-
+-
+ @pytest.mark.usefixtures("_geteuid")
+ @pytest.mark.parametrize("platform", [pytest.param("freebsd", id="freebsd"), pytest.param("netbsd", id="netbsd")])
+ def test_freebsd_netbsd_site_runtime_dir(monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, platform: str) -> None:
+@@ -472,20 +402,6 @@ def test_user_runtime_dir_temp_fallback_rejects_other_owner(
+         Unix(appname="foo", ensure_exists=ensure_exists).user_runtime_dir  # ruff:ignore[useless-expression]
+ 
+ 
+-@pytest.mark.usefixtures("_geteuid", "runtime_temp_dir")
+-@pytest.mark.parametrize(
+-    ("temp", "expected"),
+-    [
+-        pytest.param("/", "/runtime-1234", id="root"),
+-        pytest.param("/xdg-fixture/temp/", "/xdg-fixture/temp/runtime-1234", id="trailing-slash"),
+-    ],
+-)
+-def test_user_runtime_dir_temp_fallback_single_slash(mocker: MockerFixture, temp: str, expected: str) -> None:
+-    mocker.patch("tempfile.tempdir", temp)
+-    with pytest.warns(RuntimeDirWarning, match=f"^XDG_RUNTIME_DIR is not set, falling back to {re.escape(expected)}$"):
+-        assert Unix().user_runtime_dir == expected
+-
+-
+ _POSIX_ONLY: typing.Final = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX owners or modes")
+ _PROBLEMS: typing.Final = {
+     "symlink": "is a symlink",
+@@ -567,35 +483,6 @@ def test_runtime_dir_invalid_xdg_runtime_dir_warns(
+ _TRAILING_SEPARATORS: typing.Final = ["/", "//", "/.", "/./"]
+ 
+ 
+-@_POSIX_ONLY
+-@pytest.mark.parametrize("suffix", _TRAILING_SEPARATORS)
+-def test_runtime_dir_symlink_xdg_runtime_dir_with_trailing_separator_warns(
+-    session_dir: Path, default_dir: Path, runtime_uid: int, monkeypatch: pytest.MonkeyPatch, suffix: str
+-) -> None:
+-    _create(session_dir, "symlink")
+-    _create(default_dir, "private")
+-    monkeypatch.setenv("XDG_RUNTIME_DIR", f"{session_dir}{suffix}")
+-    with pytest.warns(RuntimeDirWarning) as record:
+-        _ = Unix(appname="app").user_runtime_dir
+-    expected: typing.Final = (
+-        f"XDG_RUNTIME_DIR {session_dir}{suffix} is a symlink, falling back to /run/user/{runtime_uid}"
+-    )
+-    assert [str(warning.message) for warning in record] == [expected]
+-
+-
+-@_POSIX_ONLY
+-@pytest.mark.usefixtures("default_dir")
+-@pytest.mark.filterwarnings("ignore::platformdirs.RuntimeDirWarning")
+-@pytest.mark.parametrize("suffix", _TRAILING_SEPARATORS)
+-def test_runtime_dir_symlink_xdg_runtime_dir_with_trailing_separator_creates_nothing(
+-    session_dir: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+-) -> None:
+-    _create(session_dir, "symlink")
+-    monkeypatch.setenv("XDG_RUNTIME_DIR", f"{session_dir}{suffix}")
+-    _ = Unix(appname="app", ensure_exists=True).user_runtime_dir
+-    assert list(session_dir.iterdir()) == []
+-
+-
+ @_POSIX_ONLY
+ @pytest.mark.usefixtures("runtime_uid")
+ @pytest.mark.filterwarnings("error::platformdirs.RuntimeDirWarning")
+@@ -641,40 +528,6 @@ def test_runtime_dir_unreachable_xdg_runtime_dir_warns(
+     assert (temp_dir / "app").is_dir() is ensure_exists
+ 
+ 
+-@_POSIX_ONLY
+-@pytest.mark.parametrize("kind", ["symlink", "private"])
+-def test_runtime_dir_parent_of_other_user_in_shared_dir_warns(
+-    shared_dir: Path, temp_dir: Path, runtime_uid: int, foreign: set[Path], kind: str
+-) -> None:
+-    _create(planted := shared_dir / "run", kind)
+-    foreign.add(planted)
+-    with pytest.warns(RuntimeDirWarning) as record:
+-        _ = Unix(appname="app", ensure_exists=True).user_runtime_dir
+-    expected: typing.Final = (
+-        f"XDG_RUNTIME_DIR {planted / 'user'} is below {planted}, owned by uid {runtime_uid + 1}, "
+-        f"falling back to {temp_dir}"
+-    )
+-    assert [str(warning.message) for warning in record] == [expected]
+-
+-
+-@_POSIX_ONLY
+-@pytest.mark.filterwarnings("ignore::platformdirs.RuntimeDirWarning")
+-@pytest.mark.parametrize(
+-    ("ensure_exists", "access"),
+-    [
+-        pytest.param(True, attrgetter("user_runtime_dir"), id="ensure-exists"),
+-        pytest.param(False, methodcaller("place_runtime_file", "app.sock"), id="place-runtime-file"),
+-    ],
+-)
+-def test_runtime_dir_parent_of_other_user_in_shared_dir_creates_nothing(
+-    shared_dir: Path, foreign: set[Path], ensure_exists: bool, access: Callable[[Unix], str | Path]
+-) -> None:
+-    _create(planted := shared_dir / "run", "symlink")
+-    foreign.add(planted)
+-    access(Unix(appname="app", ensure_exists=ensure_exists))
+-    assert not list((shared_dir / "run-target").iterdir())
+-
+-
+ @_POSIX_ONLY
+ @pytest.mark.usefixtures("runtime_uid")
+ @pytest.mark.filterwarnings("error::platformdirs.RuntimeDirWarning")
+@@ -683,21 +536,6 @@ def test_runtime_dir_own_parent_in_shared_dir_is_used(shared_dir: Path) -> None:
+     assert Unix(appname="app", ensure_exists=True).user_runtime_dir == str(shared_dir / "run" / "user" / "app")
+ 
+ 
+-@_POSIX_ONLY
+-def test_runtime_dir_parent_writable_by_everyone_warns(
+-    runtime_temp_dir: Path, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+-) -> None:
+-    (open_dir := runtime_temp_dir / "open").mkdir()
+-    open_dir.chmod(0o777)
+-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(session := open_dir / "session"))
+-    with pytest.warns(RuntimeDirWarning) as record:
+-        _ = Unix(appname="app").user_runtime_dir
+-    expected: typing.Final = (
+-        f"XDG_RUNTIME_DIR {session} is below {open_dir}, writable by every user, falling back to {temp_dir}"
+-    )
+-    assert [str(warning.message) for warning in record] == [expected]
+-
+-
+ @pytest.fixture
+ def shared_dir(runtime_temp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+     # Sticky and writable by every user, like /tmp, with XDG_RUNTIME_DIR two levels below it.
+@@ -1003,59 +841,6 @@ def test_folder_not_created_without_ensure_exists(monkeypatch: pytest.MonkeyPatc
+ _CLASSES: typing.Final = [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")]
+ 
+ 
+-@pytest.mark.usefixtures("_clear_xdg_env", "_unknown_home")
+-@pytest.mark.parametrize("dirs_class", _CLASSES)
+-@pytest.mark.parametrize(
+-    "prop",
+-    [
+-        pytest.param(prop, id=prop)
+-        for prop in (
+-            "user_data_dir",
+-            "user_config_dir",
+-            "user_cache_dir",
+-            "user_state_dir",
+-            "user_log_dir",
+-            "user_preference_dir",
+-            "user_documents_dir",
+-            "user_downloads_dir",
+-            "user_pictures_dir",
+-            "user_videos_dir",
+-            "user_music_dir",
+-            "user_desktop_dir",
+-            "user_projects_dir",
+-            "user_publicshare_dir",
+-            "user_templates_dir",
+-            "user_fonts_dir",
+-            "user_bin_dir",
+-            "user_applications_dir",
+-            "user_data_path",
+-        )
+-    ],
+-)
+-def test_without_home_raises(dirs_class: type[Unix | MacOS], prop: str) -> None:
+-    with pytest.raises(RuntimeError, match=r"^could not determine the home directory for '~"):
+-        getattr(dirs_class(appname="app"), prop)
+-
+-
+-@pytest.mark.usefixtures("_clear_xdg_env", "_unknown_home")
+-@pytest.mark.parametrize("dirs_class", _CLASSES)
+-def test_without_home_ensure_exists_creates_nothing(
+-    monkeypatch: pytest.MonkeyPatch, dirs_class: type[Unix | MacOS], tmp_path: Path
+-) -> None:
+-    monkeypatch.chdir(tmp_path)
+-    with pytest.raises(RuntimeError):
+-        _ = dirs_class(appname="app", ensure_exists=True).user_data_dir
+-    assert list(tmp_path.iterdir()) == []
+-
+-
+-@pytest.mark.usefixtures("_clear_xdg_env", "_unknown_home")
+-def test_without_home_raises_for_home_relative_user_dirs_entry(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+-    (tmp_path / "user-dirs.dirs").write_text('XDG_DOCUMENTS_DIR="$HOME/Documents"\n', encoding="utf-8")
+-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+-    with pytest.raises(RuntimeError, match=r"^could not determine the home directory for '~'"):
+-        _ = Unix().user_documents_dir
+-
+-
+ @pytest.mark.usefixtures("_clear_xdg_env", "_unknown_home")
+ @pytest.mark.parametrize("dirs_class", _CLASSES)
+ @pytest.mark.parametrize(
+@@ -1113,52 +898,6 @@ def test_without_home_site_dir_applies(dirs_class: type[Unix | MacOS], prop: str
+     assert getattr(dirs_class(appname="app"), prop) == expected
+ 
+ 
+-@pytest.mark.usefixtures("_clear_xdg_env")
+-@pytest.mark.parametrize("home", [pytest.param("", id="empty"), pytest.param("relhome", id="relative")])
+-@pytest.mark.parametrize(
+-    ("dirs_class", "expected"),
+-    [
+-        pytest.param(Unix, "/home/app-user/.config/app", id="unix"),
+-        pytest.param(MacOS, "/home/app-user/Library/Application Support/app", id="macos"),
+-    ],
+-)
+-def test_unusable_home_uses_passwd_entry(  # ruff:ignore[too-many-arguments]
+-    monkeypatch: pytest.MonkeyPatch,
+-    mocker: MockerFixture,
+-    pwd: ModuleType,
+-    dirs_class: type[Unix | MacOS],
+-    expected: str,
+-    home: str,
+-) -> None:
+-    monkeypatch.setenv("HOME", home)
+-    entry = pwd.struct_passwd(("app-user", "x", 12345, 12345, "", "/home/app-user", "/bin/sh"))
+-    mocker.patch.object(pwd, "getpwuid", return_value=entry)
+-    assert dirs_class(appname="app").user_config_dir == expected
+-
+-
+-@pytest.mark.usefixtures("_clear_xdg_env")
+-@pytest.mark.parametrize("dirs_class", _CLASSES)
+-def test_relative_passwd_home_raises(
+-    monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, pwd: ModuleType, dirs_class: type[Unix | MacOS]
+-) -> None:
+-    monkeypatch.delenv("HOME", raising=False)
+-    entry = pwd.struct_passwd(("app-user", "x", 12345, 12345, "", "relhome", "/bin/sh"))
+-    mocker.patch.object(pwd, "getpwuid", return_value=entry)
+-    with pytest.raises(RuntimeError, match=r"^could not determine the home directory for '~/"):
+-        _ = dirs_class(appname="app").user_config_dir
+-
+-
+-@pytest.mark.usefixtures("_clear_xdg_env", "_unknown_home")
+-@pytest.mark.parametrize("dirs_class", _CLASSES)
+-def test_place_file_without_home_creates_nothing(
+-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dirs_class: type[Unix | MacOS]
+-) -> None:
+-    monkeypatch.chdir(tmp_path)
+-    with pytest.raises(RuntimeError, match=r"^could not determine the home directory for '~/"):
+-        dirs_class(appname="app").place_config_file("app.toml")
+-    assert not (tmp_path / "~").exists()
+-
+-
+ def test_place_runtime_file_rejects_temp_fallback_of_other_owner(mocker: MockerFixture, runtime_temp_dir: Path) -> None:
+     owner: typing.Final = runtime_temp_dir.stat().st_uid
+     (runtime_temp_dir / f"runtime-{owner + 1}").mkdir()
+@@ -1253,33 +992,6 @@ def test_ensure_exists_returns_dangling_media_symlink(  # ruff:ignore[too-many-a
+     assert not link.exists()
+ 
+ 
+-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs elevated rights on Windows")
+-@pytest.mark.parametrize(
+-    ("key", "prop"),
+-    [
+-        pytest.param("XDG_DOCUMENTS_DIR", "user_documents_dir", id="user_documents_dir"),
+-        pytest.param("XDG_MUSIC_DIR", "user_music_dir", id="user_music_dir"),
+-    ],
+-)
+-def test_ensure_exists_raises_on_user_dirs_media_file(
+-    monkeypatch: pytest.MonkeyPatch, user_dirs_file: Path, media_file: Path, key: str, prop: str
+-) -> None:
+-    monkeypatch.delenv(key, raising=False)
+-    user_dirs_file.write_text(f'{key}="{media_file}"\n', encoding="utf-8")
+-    with pytest.raises(FileExistsError):
+-        getattr(Unix(ensure_exists=True), prop)
+-
+-
+-@pytest.mark.skipif(sys.platform == "win32", reason="Windows reads media directories from Known Folders")
+-@pytest.mark.parametrize("suffix", ["dir", "path"])
+-def test_media_function_ensure_exists_raises_on_file(
+-    monkeypatch: pytest.MonkeyPatch, media_file: Path, suffix: str
+-) -> None:
+-    monkeypatch.setenv("XDG_DOCUMENTS_DIR", str(media_file))
+-    with pytest.raises(FileExistsError):
+-        getattr(platformdirs, f"user_documents_{suffix}")(ensure_exists=True)
+-
+-
+ def test_iter_data_dirs_xdg(monkeypatch: pytest.MonkeyPatch) -> None:
+     monkeypatch.setenv("XDG_DATA_HOME", "/xdg/data")
+     monkeypatch.setenv("XDG_DATA_DIRS", f"/xdg/share1{os.pathsep}/xdg/share2")
+@@ -1376,42 +1088,6 @@ def test_site_dirs_fall_back_when_xdg_var_has_no_absolute_paths(
+     assert getattr(Unix(appname="foo"), prop) == expected
+ 
+ 
+-@pytest.mark.parametrize("dirs_class", [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")])
+-@pytest.mark.parametrize(
+-    ("prop", "suffix"),
+-    [
+-        pytest.param("site_data_dir", "foo", id="data"),
+-        pytest.param("site_config_dir", "foo", id="config"),
+-        pytest.param("site_applications_dir", "applications", id="applications"),
+-    ],
+-)
+-def test_site_dirs_filter_relative_entries(
+-    monkeypatch: pytest.MonkeyPatch, dirs_class: type[Unix | MacOS], prop: str, suffix: str
+-) -> None:
+-    value: typing.Final = os.pathsep.join(("relative", "/custom/first", "", "~/relative", " /custom/second "))
+-    monkeypatch.setenv("XDG_DATA_DIRS", value)
+-    monkeypatch.setenv("XDG_CONFIG_DIRS", value)
+-    assert getattr(dirs_class(appname="foo", multipath=True), prop) == f"/custom/first{os.sep}{suffix}"
+-
+-
+-@pytest.mark.parametrize("dirs_class", [pytest.param(Unix, id="unix"), pytest.param(MacOS, id="macos")])
+-@pytest.mark.parametrize(
+-    "kind",
+-    [
+-        pytest.param("data", id="data"),
+-        pytest.param("config", id="config"),
+-    ],
+-)
+-@pytest.mark.parametrize("whitespace", [pytest.param(" ", id="space"), pytest.param("\t", id="tab")])
+-def test_xdg_site_preserves_trailing_whitespace(
+-    monkeypatch: pytest.MonkeyPatch, dirs_class: type[Unix | MacOS], kind: str, whitespace: str
+-) -> None:
+-    monkeypatch.setenv(f"XDG_{kind.upper()}_DIRS", f"/xdg-fixture/first{whitespace}{os.pathsep}/xdg-fixture/second")
+-    assert getattr(dirs_class(appname="demo", multipath=True), f"site_{kind}_dir") == (
+-        f"/xdg-fixture/first{whitespace}{os.sep}demo{os.pathsep}/xdg-fixture/second{os.sep}demo"
+-    )
+-
+-
+ def test_site_data_dir_multipath_falls_back_when_xdg_var_is_all_separators(monkeypatch: pytest.MonkeyPatch) -> None:
+     monkeypatch.setenv("XDG_DATA_DIRS", os.pathsep)
+     dirs = [os.path.join("/usr/local/share", "foo"), os.path.join("/usr/share", "foo")]  # ruff:ignore[os-path-join]
+@@ -1641,69 +1317,19 @@ def test_use_site_for_root_bypasses_xdg_user_vars(
+ 
+ 
+ @pytest.fixture
+-def inherited_media_target(
+-    tmp_path: Path, posix_tmp_path: str, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+-) -> Path:
++def inherited_media_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Path:
+     monkeypatch.setenv("HOME", str(tmp_path))
+     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+-    # The Unix class ignores an XDG path with a Windows drive, so inherit drive-less ones.
+-    target = Path(f"{posix_tmp_path}/inherited/media")
++    target = tmp_path / "inherited" / "media"
+     if (key := request.param) == "user-dirs":
+         (config := tmp_path / "inherited-config").mkdir()
+         (config / "user-dirs.dirs").write_text(f'XDG_DOCUMENTS_DIR="{target.as_posix()}"\n', encoding="utf-8")
+-        monkeypatch.setenv("XDG_CONFIG_HOME", f"{posix_tmp_path}/inherited-config")
++        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+     else:
+-        monkeypatch.setenv(key, target.as_posix())
++        monkeypatch.setenv(key, str(target))
+     return target
+ 
+ 
+-@pytest.mark.usefixtures("_as_root", "inherited_media_target")
+-@pytest.mark.parametrize(
+-    ("inherited_media_target", "prop", "default"),
+-    [
+-        pytest.param("user-dirs", "user_documents_dir", "Documents", id="user-dirs"),
+-        pytest.param("XDG_DOWNLOAD_DIR", "user_downloads_dir", "Downloads", id="XDG_DOWNLOAD_DIR"),
+-        pytest.param("XDG_DATA_HOME", "user_fonts_dir", ".local/share/fonts", id="XDG_DATA_HOME"),
+-    ],
+-    indirect=["inherited_media_target"],
+-)
+-def test_use_site_for_root_bypasses_xdg_media_vars(tmp_path: Path, prop: str, default: str) -> None:
+-    assert getattr(Unix(use_site_for_root=True), prop) == f"{tmp_path}/{default}"
+-
+-
+-@pytest.mark.usefixtures("_as_root")
+-@pytest.mark.parametrize(
+-    ("inherited_media_target", "prop"),
+-    [
+-        pytest.param("user-dirs", "user_documents_dir", id="user-dirs"),
+-        pytest.param("XDG_DOWNLOAD_DIR", "user_downloads_dir", id="XDG_DOWNLOAD_DIR"),
+-    ],
+-    indirect=["inherited_media_target"],
+-)
+-def test_use_site_for_root_creates_no_inherited_media_dir(inherited_media_target: Path, prop: str) -> None:
+-    getattr(Unix(use_site_for_root=True, ensure_exists=True), prop)
+-    assert not inherited_media_target.parent.exists()
+-
+-
+-@pytest.mark.usefixtures("_as_root")
+-@pytest.mark.parametrize("suffix", ["dir", "path"])
+-@pytest.mark.parametrize(
+-    ("inherited_media_target", "prop", "default"),
+-    [
+-        *(pytest.param(*case, id=case[1]) for case in _MEDIA_DIR_CASES),
+-        pytest.param("XDG_DATA_HOME", "user_fonts_dir", ".local/share/fonts", id="user_fonts_dir"),
+-    ],
+-    indirect=["inherited_media_target"],
+-)
+-def test_use_site_for_root_reaches_the_media_function(
+-    mocker: MockerFixture, inherited_media_target: Path, prop: str, default: str, suffix: str
+-) -> None:
+-    mocker.patch("platformdirs.PlatformDirs", Unix)
+-    function = getattr(platformdirs, prop.removesuffix("dir") + suffix)
+-    assert Path(function()).is_relative_to(inherited_media_target)
+-    assert Path(function(use_site_for_root=True)) == Path.home() / default
+-
+-
+ @pytest.mark.usefixtures("_as_root")
+ @pytest.mark.parametrize(
+     ("xdg_var", "func"),
+@@ -1919,14 +1545,6 @@ def test_user_dirs_read_like_xdg_user_dir(content: str, expected: str, tmp_path:
+     assert Unix().user_documents_dir == expected.replace("~", str(tmp_path), 1)
+ 
+ 
+-@pytest.mark.parametrize("blank", [pytest.param(" ", id="spaces"), pytest.param("\t", id="tabs")])
+-def test_user_dirs_long_unquoted_blank_run_reads_in_linear_time(blank: str, user_dirs_file: Path) -> None:
+-    user_dirs_file.write_text(f"XDG_DOCUMENTS_DIR=$HOME/Docs{blank * 40_000}x\n", encoding="utf-8")
+-    started = time.perf_counter()
+-    _ = Unix().user_documents_dir
+-    assert time.perf_counter() - started < 1
+-
+-
+ @pytest.mark.parametrize(
+     ("content", "expected"),
+     [
+@@ -1939,12 +1557,6 @@ def test_user_dirs_undecodable_bytes(content: bytes, expected: str, tmp_path: Pa
+     assert Unix().user_documents_dir == expected.replace("~", str(tmp_path), 1)
+ 
+ 
+-def test_user_dirs_unreadable_file_uses_default(tmp_path: Path, user_dirs_file: Path) -> None:
+-    # a directory stands in for an unreadable file because root ignores a chmod 000
+-    user_dirs_file.mkdir()
+-    assert Unix().user_documents_dir == f"{tmp_path}/Documents"
+-
+-
+ @pytest.fixture
+ def user_dirs_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+     monkeypatch.delenv("XDG_DOCUMENTS_DIR", raising=False)

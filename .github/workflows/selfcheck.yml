@@ -14,6 +14,7 @@ on:
         default: tomlkit-conformance
         type: choice
         options:
+          - platformdirs-xdg-edge-cases
           - mistune-markdown-edge-cases
           - markdown-it-commonmark
           - yarl-url-standards

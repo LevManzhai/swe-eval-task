@@ -1,0 +1,846 @@
+diff --git a/src/platformdirs/__init__.py b/src/platformdirs/__init__.py
+index be0eb4c..1b4b157 100644
+--- a/src/platformdirs/__init__.py
++++ b/src/platformdirs/__init__.py
+@@ -329,90 +329,103 @@ def site_log_dir(
+     ).site_log_dir
+ 
+ 
+-def user_documents_dir(*, ensure_exists: bool = False) -> str:
++def user_documents_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: documents directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_documents_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_documents_dir
+ 
+ 
+-def user_downloads_dir(*, ensure_exists: bool = False) -> str:
++def user_downloads_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: downloads directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_downloads_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_downloads_dir
+ 
+ 
+-def user_pictures_dir(*, ensure_exists: bool = False) -> str:
++def user_pictures_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: pictures directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_pictures_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_pictures_dir
+ 
+ 
+-def user_videos_dir(*, ensure_exists: bool = False) -> str:
++def user_videos_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: videos directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_videos_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_videos_dir
+ 
+ 
+-def user_music_dir(*, ensure_exists: bool = False) -> str:
++def user_music_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: music directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_music_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_music_dir
+ 
+ 
+-def user_desktop_dir(*, ensure_exists: bool = False) -> str:
++def user_desktop_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: desktop directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_desktop_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_desktop_dir
+ 
+ 
+-def user_projects_dir(*, ensure_exists: bool = False) -> str:
++def user_projects_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: projects directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_projects_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_projects_dir
+ 
+ 
+-def user_publicshare_dir(*, ensure_exists: bool = False) -> str:
++def user_publicshare_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: public share directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_publicshare_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_publicshare_dir
+ 
+ 
+-def user_templates_dir(*, ensure_exists: bool = False) -> str:
++def user_templates_dir(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> str:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: templates directory tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_templates_dir
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_templates_dir
++
+ 
++def user_fonts_dir(*, use_site_for_root: bool = False) -> str:
++    """:param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
++
++    :returns: fonts directory tied to the user
+ 
+-def user_fonts_dir() -> str:
+-    """:returns: fonts directory tied to the user"""
+-    return PlatformDirs().user_fonts_dir
++    """
++    return PlatformDirs(use_site_for_root=use_site_for_root).user_fonts_dir
+ 
+ 
+ def user_preference_dir(  # ruff:ignore[too-many-arguments]
+@@ -833,90 +846,103 @@ def site_log_path(
+     ).site_log_path
+ 
+ 
+-def user_documents_path(*, ensure_exists: bool = False) -> Path:
++def user_documents_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: documents path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_documents_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_documents_path
+ 
+ 
+-def user_downloads_path(*, ensure_exists: bool = False) -> Path:
++def user_downloads_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: downloads path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_downloads_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_downloads_path
+ 
+ 
+-def user_pictures_path(*, ensure_exists: bool = False) -> Path:
++def user_pictures_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: pictures path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_pictures_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_pictures_path
+ 
+ 
+-def user_videos_path(*, ensure_exists: bool = False) -> Path:
++def user_videos_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: videos path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_videos_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_videos_path
+ 
+ 
+-def user_music_path(*, ensure_exists: bool = False) -> Path:
++def user_music_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: music path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_music_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_music_path
+ 
+ 
+-def user_desktop_path(*, ensure_exists: bool = False) -> Path:
++def user_desktop_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: desktop path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_desktop_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_desktop_path
+ 
+ 
+-def user_projects_path(*, ensure_exists: bool = False) -> Path:
++def user_projects_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: projects path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_projects_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_projects_path
+ 
+ 
+-def user_publicshare_path(*, ensure_exists: bool = False) -> Path:
++def user_publicshare_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: public share path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_publicshare_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_publicshare_path
+ 
+ 
+-def user_templates_path(*, ensure_exists: bool = False) -> Path:
++def user_templates_path(*, ensure_exists: bool = False, use_site_for_root: bool = False) -> Path:
+     """:param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
++    :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+ 
+     :returns: templates path tied to the user
+ 
+     """
+-    return PlatformDirs(ensure_exists=ensure_exists).user_templates_path
++    return PlatformDirs(ensure_exists=ensure_exists, use_site_for_root=use_site_for_root).user_templates_path
++
+ 
++def user_fonts_path(*, use_site_for_root: bool = False) -> Path:
++    """:param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
++
++    :returns: fonts path tied to the user
+ 
+-def user_fonts_path() -> Path:
+-    """:returns: fonts path tied to the user"""
+-    return PlatformDirs().user_fonts_path
++    """
++    return PlatformDirs(use_site_for_root=use_site_for_root).user_fonts_path
+ 
+ 
+ def user_preference_path(  # ruff:ignore[too-many-arguments]
+diff --git a/src/platformdirs/__main__.py b/src/platformdirs/__main__.py
+index dfb8449..d451b30 100644
+--- a/src/platformdirs/__main__.py
++++ b/src/platformdirs/__main__.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import sys
+ from typing import TYPE_CHECKING
+ 
+ from platformdirs import PlatformDirs, __version__
+@@ -62,14 +63,24 @@ def main() -> None:
+ 
+ def _print_dirs(dirs: PlatformDirsABC) -> None:
+     for prop in PROPS:
+-        print(f"{prop}: {_dir_or_error(dirs, prop)}")  # ruff:ignore[print]
++        _print_line(f"{prop}: {_dir_or_error(dirs, prop)}")
++
++
++def _print_line(line: str) -> None:
++    # Paths can hold bytes the terminal encoding cannot show, such as undecodable ones kept by surrogateescape.
++    try:
++        print(line)  # ruff:ignore[print]
++    except UnicodeEncodeError:
++        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
++        print(line.encode(encoding, "backslashreplace").decode(encoding))  # ruff:ignore[print]
+ 
+ 
+ def _dir_or_error(dirs: PlatformDirsABC, prop: str) -> str:
+-    # user_runtime_dir raises when its temporary fallback is not a directory the user owns.
++    # Report what fails instead of stopping: user_runtime_dir raises when its temporary fallback is not a directory the
++    # user owns, an unknown home raises RuntimeError, and a multipath join can raise ValueError.
+     try:
+         return getattr(dirs, prop)
+-    except PermissionError as error:
++    except Exception as error:  # ruff:ignore[blind-except]
+         return str(error)
+ 
+ 
+diff --git a/src/platformdirs/_xdg.py b/src/platformdirs/_xdg.py
+index 642842e..6551e82 100644
+--- a/src/platformdirs/_xdg.py
++++ b/src/platformdirs/_xdg.py
+@@ -8,7 +8,7 @@ import sys
+ from contextlib import suppress
+ from typing import Final
+ 
+-from .api import PlatformDirsABC
++from .api import PlatformDirsABC, _unique_dirs
+ 
+ 
+ class XDGMixin(PlatformDirsABC):
+@@ -131,14 +131,16 @@ class XDGMixin(PlatformDirsABC):
+         return self._xdg_media_dir("XDG_TEMPLATES_DIR") or super().user_templates_dir
+ 
+     def _xdg_media_dir(self, env_var: str) -> str | None:
+-        if path := _xdg_dir(env_var):
++        # Root redirected to the site directories ignores the media directories sudo passes on from the invoking user.
++        if not self._use_site and (path := _xdg_dir(env_var)):
+             self._optionally_create_media_directory(path)
+-        return path
++            return path
++        return None
+ 
+     @property
+     def user_fonts_dir(self) -> str:
+         """Fonts directory tied to the user, from ``$XDG_DATA_HOME/fonts`` if set, else platform default."""
+-        if path := _xdg_dir("XDG_DATA_HOME"):
++        if not self._use_site and (path := _xdg_dir("XDG_DATA_HOME")):
+             # posixpath keeps the XDG separator even when this mixin runs on a non-POSIX host.
+             return posixpath.join(path, "fonts")
+         return super().user_fonts_dir
+@@ -160,33 +162,38 @@ class XDGMixin(PlatformDirsABC):
+     def site_applications_dir(self) -> str:
+         """Applications directories shared by users, from ``$XDG_DATA_DIRS`` if set, else platform default."""
+         dirs = self._site_applications_dirs
+-        return os.pathsep.join(dirs) if self.multipath else dirs[0]
++        return self._join_site_dirs(dirs) if self.multipath else dirs[0]
+ 
+ 
+ def _xdg_dir(env_var: str) -> str | None:
+-    path: Final = os.environ.get(env_var, "").strip()
++    # The spec only accepts absolute paths and an accepted value is used as given, blanks included.
++    path: Final = os.environ.get(env_var, "")
+     return path if posixpath.isabs(path) else None
+ 
+ 
+ def _xdg_dir_list(env_var: str) -> list[str]:
+-    return [
+-        stripped for path in os.environ.get(env_var, "").split(os.pathsep) if posixpath.isabs(stripped := path.strip())
+-    ]
++    return _unique_dirs(path for path in os.environ.get(env_var, "").split(os.pathsep) if posixpath.isabs(path))
+ 
+ 
+ def _expand_user(path: str) -> str:
+-    """Expand the leading ``~`` of ``path`` like :func:`os.path.expanduser`, treating an empty ``HOME`` as unset on POSIX.
++    """Expand the leading ``~`` of ``path`` like :func:`os.path.expanduser`.
++
++    On POSIX, ``HOME`` counts only when it is an absolute path: an empty or relative one is treated as unset, and the
++    password database is asked instead.
+ 
+     :raises RuntimeError: if the home directory cannot be resolved.
+ 
+     """
+-    if sys.platform != "win32" and "HOME" in os.environ and not os.environ["HOME"]:
+-        # expanduser roots the path at / for an empty HOME; Rust's std::env::home_dir treats it as unset too
++    home = os.environ.get("HOME")
++    if sys.platform != "win32" and home is not None and not posixpath.isabs(home):
++        # expanduser roots the path at / for an empty HOME and at the working directory for a relative one; Rust's
++        # std::env::home_dir treats an empty one as unset too
+         expanded = path
+         with suppress(ImportError, KeyError):
+             import pwd  # ruff:ignore[import-outside-top-level]  # missing on WASI
+ 
+-            expanded = pwd.getpwuid(os.getuid()).pw_dir.rstrip("/") + path[1:] or "/"
++            if posixpath.isabs(entry := pwd.getpwuid(os.getuid()).pw_dir):
++                expanded = entry.rstrip("/") + path[1:] or "/"
+     else:
+         expanded = os.path.expanduser(path)  # ruff:ignore[os-path-expanduser]  # str(Path) rewrites separators on Windows
+     if expanded.startswith("~"):
+diff --git a/src/platformdirs/api.py b/src/platformdirs/api.py
+index c7e1a52..23cc234 100644
+--- a/src/platformdirs/api.py
++++ b/src/platformdirs/api.py
+@@ -4,7 +4,6 @@ from __future__ import annotations
+ 
+ import os
+ from abc import ABC, abstractmethod
+-from contextlib import suppress
+ from copy import copy
+ from pathlib import Path
+ from typing import TYPE_CHECKING
+@@ -81,7 +80,9 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
+         """Whether to redirect ``user_*_dir`` calls to their ``site_*_dir`` equivalents when the effective uid is 0.
+ 
+         Only has an effect on Unix. Disabled by default for backwards compatibility. When enabled, XDG user environment
+-        variables (e.g. ``XDG_DATA_HOME``) are bypassed for the redirected directories.
++        variables (e.g. ``XDG_DATA_HOME``) are bypassed for the redirected directories. Directories without a site
++        equivalent, such as the media and fonts directories, ignore ``XDG_*_DIR``, ``XDG_DATA_HOME`` and
++        ``user-dirs.dirs`` too, since ``sudo`` passes them on from the invoking user, and use their defaults.
+ 
+         """
+ 
+@@ -155,16 +156,39 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
+ 
+     def _optionally_create_media_directory(self, path: str) -> None:
+         # Only called for a media directory the user configured. Media directories are often symlinks to removable or
+-        # network storage, so a dangling link is returned as-is, like before ensure_exists covered them.
+-        with suppress(FileExistsError):
++        # network storage, so a dangling link is returned as-is, like before ensure_exists covered them. Anything else
++        # in the way, such as a file or a link to one, is not a directory, so the error propagates.
++        try:
+             self._optionally_create_directory(path, private=False)
++        except FileExistsError:
++            if not (os.path.islink(path) and not os.path.exists(path)):
++                raise
+ 
+     def _select_site_dirs(self, dirs: list[str]) -> str:
+         # Site lists are built without touching the disk, so ensure_exists only creates what the caller gets back.
+-        selected = dirs if self.multipath else dirs[:1]
++        if not self.multipath:
++            selected = dirs[:1]
++            joined = selected[0]
++        else:
++            joined = self._join_site_dirs(selected := _unique_dirs(dirs))
+         for path in selected:
+             self._optionally_create_directory(path, private=False)
+-        return os.pathsep.join(selected)
++        return joined
++
++    def _join_site_dirs(self, dirs: list[str]) -> str:
++        """Join ``dirs`` with :data:`os.pathsep` for ``multipath``, each directory once.
++
++        :raises ValueError: if an entry contains :data:`os.pathsep`, since splitting the result would not give it back.
++
++        """
++        unique = _unique_dirs(dirs)
++        if clashing := [path for path in unique if os.pathsep in path]:
++            msg = (
++                f"cannot join {clashing[0]!r} with {os.pathsep!r} under multipath, as it contains the separator; "
++                "use the iter_*_dirs methods or multipath=False instead"
++            )
++            raise ValueError(msg)
++        return os.pathsep.join(unique)
+ 
+     def _create_as_yielded(self, dirs: Iterable[str]) -> Iterator[str]:
+         for path in dirs:
+@@ -706,16 +730,36 @@ def _ensure_home_known(path: str) -> None:
+ 
+ 
+ def _unique(dirs: Iterable[str]) -> Iterator[str]:
+-    """:yield: ``dirs`` in order, skipping any directory already yielded."""
++    """:yield: ``dirs`` in order, skipping any directory already yielded, however it is spelled."""
+     # Lazy on purpose: under ensure_exists reading a site_*_dir creates it, so draining ``dirs`` up front would
+     # create directories for a caller that stops after the first entry.
+     seen: set[str] = set()
+     for path in dirs:
+-        if path not in seen:
+-            seen.add(path)
++        if (key := _dir_key(path)) not in seen:
++            seen.add(key)
+             yield path
+ 
+ 
++def _dir_key(path: str) -> str:
++    """Return a spelling-independent key for ``path``, so ``/a/b``, ``/a//b/`` and ``/a/./b`` compare equal."""
++    key = os.path.normpath(path)  # ruff:ignore[os-path-normpath]
++    if os.sep == "/" and key.startswith("//"):
++        # POSIX leaves a leading // implementation defined; every supported system treats it as /.
++        key = "/" + key.lstrip("/")
++    return key
++
++
++def _unique_dirs(dirs: Iterable[str]) -> list[str]:
++    """:returns: ``dirs`` in order, keeping the first spelling of each directory."""
++    seen: set[str] = set()
++    result: list[str] = []
++    for path in dirs:
++        if (key := _dir_key(path)) not in seen:
++            seen.add(key)
++            result.append(path)
++    return result
++
++
+ def _make_private_directories(path: Path) -> None:
+     # XDG asks for 0o700 on each directory created on the way, while Path.mkdir(parents=True) applies it to the last.
+     try:
+diff --git a/src/platformdirs/testing.py b/src/platformdirs/testing.py
+index 914a84e..052969f 100644
+--- a/src/platformdirs/testing.py
++++ b/src/platformdirs/testing.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ from contextlib import contextmanager
+ from pathlib import Path
+ from typing import TYPE_CHECKING, Final
+@@ -10,7 +11,6 @@ import platformdirs
+ from platformdirs.api import PlatformDirsABC
+ 
+ if TYPE_CHECKING:
+-    import os
+     from collections.abc import Generator
+ 
+ _APP_KINDS: Final[frozenset[str]] = frozenset({
+@@ -41,12 +41,14 @@ def isolated_dirs(root: str | os.PathLike[str]) -> Generator[Path, None, None]:
+ 
+     On Unix, ``use_site_for_root`` is ignored inside the context so user and site directories keep separate kinds.
+ 
++    A relative ``root`` is anchored to the working directory on entry, so changing it inside the context moves nothing.
++
+     :param root: directory that holds the redirected directories
+ 
+-    :returns: ``root`` as a :class:`~pathlib.Path`
++    :returns: ``root`` as an absolute :class:`~pathlib.Path`
+ 
+     """
+-    base = Path(root)
++    base = Path(os.path.abspath(root))  # ruff:ignore[os-path-abspath]
+     patches = {
+         name: _redirect(
+             base / (kind := name.removesuffix("_dir")), app=kind in _APP_KINDS, private=kind.startswith("user_")
+diff --git a/src/platformdirs/unix.py b/src/platformdirs/unix.py
+index e953dbe..fefed45 100644
+--- a/src/platformdirs/unix.py
++++ b/src/platformdirs/unix.py
+@@ -2,7 +2,9 @@
+ 
+ from __future__ import annotations
+ 
++import errno
+ import os
++import posixpath
+ import re
+ import stat
+ import sys
+@@ -10,7 +12,7 @@ import warnings
+ from contextlib import suppress
+ from pathlib import Path
+ from tempfile import gettempdir
+-from typing import TYPE_CHECKING, Final, NoReturn
++from typing import TYPE_CHECKING, Final, NoReturn, TextIO
+ 
+ from ._xdg import XDGMixin, _expand_user, _xdg_dir
+ from .api import PlatformDirsABC, RuntimeDirWarning
+@@ -144,7 +146,8 @@ class _UnixDefaults(PlatformDirsABC):  # ruff:ignore[too-many-public-methods]
+         return self._user_media_dir("XDG_TEMPLATES_DIR", "~/Templates")
+ 
+     def _user_media_dir(self, key: str, default: str) -> str:
+-        if path := _get_user_dirs_folder(key):
++        # user-dirs.dirs sits in XDG_CONFIG_HOME, which root redirected to the site directories inherits from sudo.
++        if not self._use_site and (path := _get_user_dirs_folder(key)):
+             self._optionally_create_media_directory(path)
+             return path
+         return _expand_user(default)
+@@ -189,7 +192,7 @@ class _UnixDefaults(PlatformDirsABC):  # ruff:ignore[too-many-public-methods]
+ 
+     def _temp_runtime_dir(self) -> str:
+         # Another user can pre-create this predictable name, and XDG requires an owned runtime dir with mode 0700.
+-        path = f"{gettempdir()}/runtime-{geteuid()}"
++        path = _temp_runtime_dir_path()
+         with suppress(FileExistsError):
+             self._optionally_create_directory(path, private=True)
+         if problem := _runtime_dir_problem(path, missing_ok=not self.ensure_exists, check_mode=False):
+@@ -335,51 +338,122 @@ class Unix(XDGMixin, _UnixDefaults):
+         return self.site_applications_path if self._use_site else super().user_applications_path
+ 
+ 
+-_USER_DIRS_LINE: Final = re.compile(
+-    r"""
+-    [ \t]*(?P<key>\w+)[ \t]*=[ \t]*  # KEY=, blanks allowed around the key and after the =
+-    (?:
+-        "(?P<quoted>(?:[^"\\]|\\.)*)"  # a double-quoted value with backslash escapes, text after it ignored
+-        |(?P<bare>[^"\s].*?)          # or an unquoted value, up to
+-        (?:[ \t]+\#.*|[ \t]*)$         # a comment, which sh starts at a word-initial #, or the line end
+-    )
+-    """,
+-    re.VERBOSE,
+-)
++_USER_DIRS_KEY: Final = re.compile(r"[ \t]*(?P<key>\w+)[ \t]*=[ \t]*")
++_USER_DIRS_BLANKS: Final = " \t"
++
++
++def _temp_runtime_dir_path() -> str:
++    # os.path.join keeps a temporary directory of / from turning into //runtime-<uid>, which pathlib treats as another
++    # root, and uses the native separator wherever gettempdir points.
++    return os.path.join(gettempdir(), f"runtime-{geteuid()}")  # ruff:ignore[os-path-join]
+ 
+ 
+ def _get_user_dirs_folder(key: str) -> str | None:
+     """Return directory from user-dirs.dirs config file.
+ 
+     ``xdg-user-dirs-update`` writes shell assignments, so match each line like ``xdg-user-dir`` does and keep the last
+-    valid assignment to ``key``.
++    valid assignment to ``key``. A missing, unreadable or unusual file, such as a directory or a FIFO, counts as having
++    no assignment, so the default applies.
+ 
+     See https://freedesktop.org/wiki/Software/xdg-user-dirs/.
+ 
+     """
+-    config_home = _xdg_dir("XDG_CONFIG_HOME") or _expand_user("~/.config")
+-    user_dirs_config_path = Path(config_home) / "user-dirs.dirs"
+-    if not user_dirs_config_path.exists():
++    try:
++        config_home = _xdg_dir("XDG_CONFIG_HOME") or _expand_user("~/.config")
++    except RuntimeError:
+         return None
+     folder = None
+-    # the file holds raw path bytes, and surrogateescape round-trips undecodable ones like os.fsdecode
+-    with user_dirs_config_path.open(encoding=sys.getfilesystemencoding(), errors="surrogateescape") as stream:
+-        for line in stream:
+-            if (entry := _USER_DIRS_LINE.match(line)) and entry["key"] == key:
+-                folder = _resolve_user_dirs_value(entry) or folder
++    try:
++        lines = _read_user_dirs_lines(os.path.join(config_home, "user-dirs.dirs"))  # ruff:ignore[os-path-join]
++        if lines is None:
++            return None
++        for line in lines:
++            if (entry := _parse_user_dirs_line(line)) is not None and entry[0] == key:
++                folder = _resolve_user_dirs_value(*entry[1:]) or folder
++    except (OSError, ValueError):
++        return None
+     return folder
+ 
+ 
+-def _resolve_user_dirs_value(entry: re.Match[str]) -> str | None:
+-    value = entry["bare"] if entry["quoted"] is None else entry["quoted"]
++def _read_user_dirs_lines(path: str) -> Iterator[str] | None:
++    # A FIFO would block a plain open, and a device such as /dev/zero would never end, so only read regular files.
++    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
++    try:
++        fd = os.open(path, flags)
++    except OSError:
++        return None
++    try:
++        if not stat.S_ISREG(os.fstat(fd).st_mode):
++            os.close(fd)
++            return None
++        # the file holds raw path bytes, and surrogateescape round-trips undecodable ones like os.fsdecode
++        stream = open(fd, encoding=sys.getfilesystemencoding(), errors="surrogateescape")  # ruff:ignore[open-file-with-context-handler]
++    except BaseException:
++        os.close(fd)
++        raise
++    return _lines_of(stream)
++
++
++def _lines_of(stream: TextIO) -> Iterator[str]:
++    with stream:
++        yield from stream
++
++
++def _parse_user_dirs_line(line: str) -> tuple[str, str, bool] | None:
++    """Split a ``KEY=value`` line into the key, the raw value and whether it was quoted, in time linear in the line.
++
++    A double-quoted value takes backslash escapes and ignores the text after the closing quote. An unquoted value runs
++    up to a comment, which sh starts at a word-initial ``#``, or to the blanks at the line end.
++
++    """
++    if (match := _USER_DIRS_KEY.match(line)) is None:
++        return None
++    rest = line[match.end() :]
++    rest = rest.removesuffix("\n")
++    if "\n" in rest:  # only a single line can hold an assignment
++        return None
++    if rest.startswith('"'):
++        index, size = 1, len(rest)
++        while index < size:
++            char = rest[index]
++            if char == '"':
++                return match["key"], rest[1:index], True
++            if char == "\\":
++                index += 1
++                if index >= size:
++                    return None
++            index += 1
++        return None
++    if not rest or rest[0].isspace():
++        return None
++    index, size = 1, len(rest)
++    while index < size:
++        if rest[index] in _USER_DIRS_BLANKS:
++            end = index
++            while end < size and rest[end] in _USER_DIRS_BLANKS:
++                end += 1
++            if end == size or rest[end] == "#":
++                return match["key"], rest[:index], False
++            index = end
++        else:
++            index += 1
++    return match["key"], rest, False
++
++
++def _resolve_user_dirs_value(value: str, quoted: bool) -> str | None:  # ruff:ignore[boolean-type-hint-positional-argument]
++    if "\0" in value:  # no path holds a NUL, and the os functions reject one
++        return None
+     if value == "$HOME" or value.startswith("$HOME/"):
+         # A home of / would give "//Desktop", which pathlib keeps as a distinct root.
+-        prefix, value = _expand_user("~").rstrip("/"), value.removeprefix("$HOME")
++        try:
++            prefix, value = _expand_user("~").rstrip("/"), value.removeprefix("$HOME")
++        except RuntimeError:  # an unknown home leaves this entry unusable, not the whole file
++            return None
+     elif value.startswith("/"):
+         prefix = ""
+     else:
+         return None
+-    if entry["quoted"] is not None:
++    if quoted:
+         # xdg-user-dirs-update backslash-escapes $, `, " and \ inside the quotes.
+         value = re.sub(r'\\([$`"\\])', r"\1", value)
+     return f"{prefix}{value}" or "/"
+@@ -388,7 +462,7 @@ def _resolve_user_dirs_value(entry: re.Match[str]) -> str | None:
+ def _in_own_runtime_dir(path: Path) -> bool:
+     # The lookup let a missing runtime directory pass, so another user may have created it since. The fallback goes
+     # first because a rejected XDG_RUNTIME_DIR, such as /tmp, contains it.
+-    for base in (f"{gettempdir()}/runtime-{geteuid()}", _xdg_dir("XDG_RUNTIME_DIR")):
++    for base in (_temp_runtime_dir_path(), _xdg_dir("XDG_RUNTIME_DIR")):
+         if base and path.is_relative_to(base):
+             return not _runtime_dir_problem(base, missing_ok=False, check_mode=False)
+     return True
+@@ -397,24 +471,108 @@ def _in_own_runtime_dir(path: Path) -> bool:
+ def _runtime_dir_problem(path: str, *, missing_ok: bool, check_mode: bool = True) -> str | None:
+     """Return why ``path`` fails the checks of Qt's ``checkXdgRuntimeDir``, or ``None`` if it passes.
+ 
+-    A missing ``path`` passes under ``missing_ok``. A caller that then creates it or reads below it has to check again,
+-    since another user can create it in between.
++    On top of that, no directory above ``path`` may let another user replace it: each one, after following symlinks,
++    has to belong to root or the user and must not be writable by others unless it is sticky, like ``/tmp``. Trailing
++    separators and ``.`` components do not hide a symlink. A missing ``path`` passes under ``missing_ok``. A caller that
++    then creates it or reads below it has to check again, since another user can create it in between.
+ 
+     """
++    entry = _strip_trailing(path)
++    uid = geteuid()
++    if entry.rsplit("/", 1)[-1] == "..":
++        # The entry is a directory reached by climbing, so check the directory the walk lands on.
++        problem, resolved = _ancestors_problem(path, f"{entry}/.", uid)
++        entry = resolved or entry
++    else:
++        problem = None
+     try:
+-        info = os.lstat(path)
++        info = os.lstat(entry)
+     except FileNotFoundError:
+-        return None if missing_ok else f"{path} is missing"
++        if not missing_ok:
++            return f"{path} is missing"
++        info = None
+     except OSError as error:
+         return f"{path} cannot be checked: {error.strerror}"
+-    mode = info.st_mode & 0o777
+-    checks = (
+-        (stat.S_ISLNK(info.st_mode), "is a symlink"),
+-        (not stat.S_ISDIR(info.st_mode), "is not a directory"),
+-        (info.st_uid != (uid := geteuid()), f"is owned by uid {info.st_uid}, not {uid}"),
+-        (check_mode and mode != _RUNTIME_DIR_MODE, f"has mode {mode:04o}, not {_RUNTIME_DIR_MODE:04o}"),
+-    )
+-    return next((f"{path} {problem}" for failed, problem in checks if failed), None)
++    if info is not None:
++        mode = info.st_mode & 0o777
++        checks = (
++            (stat.S_ISLNK(info.st_mode), "is a symlink"),
++            (not stat.S_ISDIR(info.st_mode), "is not a directory"),
++            (info.st_uid != uid, f"is owned by uid {info.st_uid}, not {uid}"),
++            (check_mode and mode != _RUNTIME_DIR_MODE, f"has mode {mode:04o}, not {_RUNTIME_DIR_MODE:04o}"),
++        )
++        if found := next((f"{path} {problem}" for failed, problem in checks if failed), None):
++            return found
++    return problem or _ancestors_problem(path, entry, uid)[0]
++
++
++def _strip_trailing(path: str) -> str:
++    # lstat follows a symlink spelled with a trailing / or /., so check the entry itself.
++    while path not in {"/", "//"} and path.endswith(("/", "/.")):
++        path = path.removesuffix(".").removesuffix("/") or "/"
++    return path
++
++
++def _ancestors_problem(path: str, entry: str, uid: int) -> tuple[str | None, str | None]:
++    """Check every directory above ``entry`` the way the kernel walks it, following symlinks.
++
++    :returns: the problem, if any, and the symlink-free parent joined with the last component, or ``None`` for it when a
++        directory on the way is missing.
++
++    """
++    *parents, last = entry.split("/")
++    pending = [part for part in parents if part not in {"", "."}]
++    if problem := _directory_problem(path, current := "/", uid):
++        return problem, None
++    links = 0
++    while pending:
++        part = pending.pop(0)
++        if part == "..":
++            current = posixpath.dirname(current)
++            continue
++        candidate = posixpath.join(current, part)
++        try:
++            info = os.lstat(candidate)
++        except FileNotFoundError:
++            # Nothing below can exist yet; the caller decides about a missing runtime directory.
++            return None, None
++        except OSError as error:
++            return f"{path} cannot be checked: {error.strerror}", None
++        if info.st_uid not in {0, uid}:
++            return f"{path} can be replaced by uid {info.st_uid}, who owns {candidate}", None
++        if stat.S_ISLNK(info.st_mode):
++            if (links := links + 1) > _MAX_SYMLINKS:
++                return f"{path} cannot be checked: {os.strerror(errno.ELOOP)}", None
++            try:
++                target = os.readlink(candidate)
++            except OSError as error:
++                return f"{path} cannot be checked: {error.strerror}", None
++            if target.startswith("/"):
++                current = "/"
++            pending[:0] = [piece for piece in target.split("/") if piece not in {"", "."}]
++            continue
++        if not stat.S_ISDIR(info.st_mode):
++            return f"{path} cannot be checked: {os.strerror(errno.ENOTDIR)}", None
++        if problem := _directory_problem(path, candidate, uid, info):
++            return problem, None
++        current = candidate
++    if last in {"", ".", ".."}:
++        # Only reached for an entry ending in .., whose parents the walk above already resolved.
++        return None, current
++    return None, posixpath.join(current, last)
++
++
++def _directory_problem(path: str, directory: str, uid: int, info: os.stat_result | None = None) -> str | None:
++    if info is None:
++        try:
++            info = os.lstat(directory)
++        except OSError:
++            return None
++    if info.st_uid not in {0, uid}:
++        return f"{path} can be replaced by uid {info.st_uid}, who owns {directory}"
++    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and not info.st_mode & stat.S_ISVTX:
++        return f"{path} can be replaced by other users, who can write to {directory}"
++    return None
+ 
+ 
+ def _warn_once(message: str) -> None:
+@@ -426,6 +584,7 @@ def _warn_once(message: str) -> None:
+ 
+ _WARNED: Final[set[str]] = set()
+ _RUNTIME_DIR_MODE: Final = 0o700
++_MAX_SYMLINKS: Final = 40
+ 
+ 
+ __all__ = [
